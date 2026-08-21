@@ -237,7 +237,7 @@ export default function PhotoMenu() {
           setMenu(null);
         }}
       >
-        {readFullscreenLabels() ? "Hide names" : "Show names"}
+        {readFullscreenLabels() ? "Hide labels" : "Show labels"}
       </button>
       <button
         type="button"

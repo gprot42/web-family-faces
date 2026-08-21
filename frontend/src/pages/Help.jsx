@@ -71,10 +71,9 @@ export default function Help() {
               Keep the right ones. Not this person sends a face back to To name.
             </li>
             <li>
-              <Link to="/search?by=name">Find by name</Link> looks up a person in the database.{" "}
-              <Link to="/search?by=photo">Find by photo</Link> looks up a filename or folder.
-              On a person page you can add a <strong>nickname</strong>; search and name suggestions
-              find them by that as well as the full name.
+              <strong>Search</strong> in the bottom right looks up a person by name, or matches a
+              snapshot to a face already in the catalog. On a person page you can add a{" "}
+              <strong>nickname</strong>; search finds them by that as well as the full name.
             </li>
           </ul>
         </section>
@@ -156,6 +155,7 @@ export default function Help() {
           <div><kbd>n</kbd> new person</div>
           <div><kbd>u</kbd> unassign</div>
           <div><kbd>j</kbd> / <kbd>k</kbd> next / previous face</div>
+          <div><kbd>l</kbd> hide or show name labels on the picture</div>
           <div><kbd>←</kbd> / <kbd>→</kbd> previous / next photo. Name fields are not auto-selected, so the arrows keep changing pictures.</div>
           <div>Right-click a photo to copy it, rotate it, add a tag, add a face, re-identify unnamed faces, sharpen a temporary Grok preview, change it with a Grok prompt, remove a named person or an unnamed face, or delete it from the catalog. The original file stays where it is.</div>
           <div>
@@ -166,7 +166,7 @@ export default function Help() {
             in DB View are about the person. All of them stay in the catalog, never on the original
             file.
           </div>
-          <div>Click the photo for fullscreen · drag the dotted handle on the options bar to move it · Hide names / Show names on the picture · ← → other photos · <kbd>+</kbd> / <kbd>−</kbd> or pinch to zoom · <kbd>0</kbd> or click to fit · any other key or click to exit</div>
+          <div>Click the photo for fullscreen · drag the dotted handle on the options bar to move it · Hide labels / Show labels on the picture (<kbd>l</kbd>) · ← → other photos · <kbd>+</kbd> / <kbd>−</kbd> or pinch to zoom · <kbd>0</kbd> or click to fit · any other key or click to exit</div>
           <div>
             <strong>Play album</strong> or <strong>Play person</strong> walks the pictures in date
             order, names on. <kbd>space</kbd> pause · <kbd>esc</kbd> exit
@@ -199,9 +199,10 @@ export default function Help() {
             unchanged / changed / missing.
           </li>
           <li>
-            <strong>Save a copy of names</strong> writes a gzip of the catalog. The app also saves one
-            automatically while it is open, after Find Known Faces, and keeps the last 14 copies.
-            Photo files stay on the NAS — back those up separately.
+            <strong>Back up names</strong> writes a gzip of the name catalog. After you choose it, the
+            button stays marked <strong>Names backed up</strong>. The app also backs up automatically
+            while it is open, after Find Known Faces, and keeps the last 14 copies. Photo files stay
+            on the NAS — back those up separately.
           </li>
         </ul>
       </section>

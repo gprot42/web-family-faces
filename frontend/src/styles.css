@@ -728,6 +728,20 @@ button.ghost {
   box-shadow: none;
 }
 button.ghost:hover { background: var(--bg-deep); color: var(--ink); box-shadow: none; }
+button.picked {
+  background: var(--pine);
+  color: var(--on-accent);
+  border-color: var(--pine);
+  box-shadow: none;
+}
+button.picked:hover {
+  background: color-mix(in srgb, var(--pine) 88%, black);
+  border-color: color-mix(in srgb, var(--pine) 88%, black);
+  color: var(--on-accent);
+}
+.backup-status {
+  margin-top: 12px;
+}
 button.danger {
   background: var(--secondary-bg);
   color: var(--danger-ink);
@@ -959,6 +973,24 @@ button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shado
 .folder-filter-fold[open] summary::before { transform: rotate(45deg); }
 .folder-filter-fold[open] summary { margin-bottom: 10px; }
 .folder-filter-fold .person-chips { margin-top: 2px; }
+.folder-photos .folder-filter-fold {
+  margin-bottom: 18px;
+}
+.folder-photos .folder-filter-fold summary {
+  font-weight: 650;
+  color: var(--ink);
+}
+.folder-photos .folder-filter-fold input[type="search"] {
+  display: block;
+  width: min(100%, 28rem);
+  margin: 0 0 10px;
+}
+.folder-photos .folder-filter-fold .person-chips {
+  max-height: min(40vh, 16rem);
+  overflow: auto;
+  margin-bottom: 0;
+  padding-right: 4px;
+}
 .person-chips {
   display: flex;
   flex-wrap: wrap;
@@ -1013,12 +1045,126 @@ button.person-chip[aria-pressed="true"] .hint {
 
 .folder-block { margin-bottom: 28px; scroll-margin-top: 16px; }
 .folder-block.current {
-  padding: 12px 14px 16px;
-  margin-left: -14px;
-  margin-right: -14px;
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--accent-soft) 55%, var(--bg));
-  box-shadow: inset 3px 0 0 var(--accent);
+  padding: 0;
+  margin-left: 0;
+  margin-right: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.album-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 8px 0 22px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+.album-head-copy .eyebrow {
+  margin: 0 0 4px;
+}
+.album-head h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(1.55rem, 2.4vw, 2.15rem);
+  font-weight: 560;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+.album-head-count {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+.album-head-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.folder-gallery {
+  column-count: 3;
+  column-gap: 18px;
+}
+.folder-gallery .label-card {
+  display: inline-block;
+  width: 100%;
+  margin: 0 0 18px;
+  break-inside: avoid;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+}
+.folder-gallery .labeled {
+  display: block;
+  position: relative;
+  aspect-ratio: var(--tile-ar, 4 / 3);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--photo-stage);
+  box-shadow: 0 10px 28px rgba(43, 37, 31, 0.12);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+.folder-gallery .label-card:hover .labeled {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 36px rgba(43, 37, 31, 0.16);
+}
+.folder-gallery .labeled-inner,
+.folder-gallery .labeled-inner.crowd,
+.folder-gallery .labeled-inner.place-below,
+.folder-gallery .labeled-inner.place-above,
+.folder-gallery .labeled-inner.place-on {
+  position: absolute;
+  inset: 0;
+  padding: 10px 8px 14px;
+}
+.folder-gallery .labeled-inner img,
+.folder-gallery .labeled-inner.crowd img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.folder-gallery .photo-caption {
+  margin-top: 8px;
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.01em;
+  opacity: 0.72;
+}
+.folder-gallery .label-card:hover .photo-caption {
+  opacity: 1;
+  color: var(--ink);
+}
+.folder-gallery .photo-caption .photo-comment-snip {
+  margin-top: 2px;
+  color: var(--ink);
+}
+.album-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 8px;
+  padding: 18px 0 8px;
+}
+.album-more p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+@media (max-width: 1100px) {
+  .folder-gallery { column-count: 2; }
+}
+@media (max-width: 640px) {
+  .folder-gallery { column-count: 1; column-gap: 0; }
+  .album-head {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
 }
 .person-chips.nested-albums {
   margin-top: -10px;
@@ -1170,6 +1316,10 @@ button.person-chip[aria-pressed="true"] .hint {
 .labeled-inner.place-on { padding-top: 10px; padding-bottom: 10px; }
 .labeled-inner.place-above { padding-top: 26px; padding-bottom: 8px; }
 .labeled-inner.place-below { padding-top: 8px; padding-bottom: 28px; }
+.labeled-inner.crowd {
+  padding-top: 28px;
+  padding-bottom: 34px;
+}
 .labeled-inner img { width: 100%; display: block; object-fit: contain; }
 .name-row {
   display: flex;
@@ -1238,7 +1388,7 @@ button.person-chip[aria-pressed="true"] .hint {
 .nametag.place-below, .nametag.place-below:hover { transform: translate(-50%, 3px); }
 .nametag.place-left, .nametag.place-left:hover { transform: translate(calc(-100% - 4px), -50%); }
 .nametag.place-right, .nametag.place-right:hover { transform: translate(4px, -50%); }
-.nametag.movable { cursor: grab; touch-action: none; }
+.nametag.movable { cursor: grab; touch-action: none; z-index: 6; }
 .nametag.movable:active, .nametag.dragging { cursor: grabbing; }
 .nametag.dragging { z-index: 8; }
 .nametag.compact {
@@ -1434,6 +1584,17 @@ button.saved {
   white-space: nowrap;
   box-sizing: border-box;
 }
+.photo-seq {
+  min-width: 4.5em;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  text-align: center;
+  white-space: nowrap;
+}
 .photo-head-views {
   min-width: 0;
   justify-self: end;
@@ -1476,6 +1637,10 @@ button.saved {
 .photo-page .labeled-inner.fit {
   padding: 0;
   width: auto;
+}
+.photo-page .labeled-inner.fit.crowd {
+  padding-top: 20px;
+  padding-bottom: 24px;
 }
 .photo-page .labeled-inner.fit img {
   width: min(var(--stage-w, 100%), calc(var(--stage-h, 100%) * var(--photo-ar, 1)));
@@ -1529,6 +1694,7 @@ button.saved {
 .photo-page aside {
   overflow: auto;
   min-height: 0;
+  padding-bottom: 88px;
 }
 .photo-page .face-row {
   padding: 8px 8px 8px 10px;
@@ -1984,7 +2150,43 @@ button.saved {
   left: 12px;
   bottom: 12px;
   z-index: 12;
-  max-width: min(420px, calc(100vw - 24px));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: min(520px, calc(100% - 24px));
+}
+.photo-labels-chip {
+  display: inline-flex;
+  margin: 0;
+  min-height: 0;
+  padding: 7px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--paper) 90%, transparent);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.photo-labels-chip:hover {
+  background: var(--paper);
+  color: var(--ink);
+  transform: none;
+  box-shadow: var(--shadow);
+}
+.photo-labels-chip.is-off {
+  background: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 70%, white);
+  color: var(--on-accent, #fffdfa);
+}
+.photo-labels-chip.is-off:hover {
+  background: color-mix(in srgb, var(--accent) 88%, #1a1612);
+  color: var(--on-accent, #fffdfa);
 }
 .photo-sharpen-badge {
   position: absolute;
@@ -3747,7 +3949,19 @@ kbd {
   flex-shrink: 0;
   background: var(--bg-deep);
 }
+.app:has(.photo-full) .people-search-fab,
+.app:has(.photo-full) .people-search-panel {
+  display: none;
+}
+.app:has(.photo-page) .people-search-fab,
+.app:has(.photo-page) .people-search-panel {
+  right: max(328px, calc(26vw + 40px));
+}
 @media (max-width: 900px) {
   .people-search-fab { right: 16px; bottom: 16px; }
   .people-search-panel { right: 16px; bottom: 80px; }
+  .app:has(.photo-page) .people-search-fab,
+  .app:has(.photo-page) .people-search-panel {
+    right: 16px;
+  }
 }

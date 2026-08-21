@@ -17,8 +17,44 @@ function folderOf(path) {
   return parts.length >= 2 ? parts[parts.length - 2] : "Photos";
 }
 
+function photosInExactFolder(folderPath, items) {
+  const prefix = String(folderPath || "").replace(/\/$/, "");
+  if (!prefix) return items || [];
+  return (items || []).filter((p) => {
+    const parent = String(p.path || "").replace(/\/[^/]+$/, "");
+    return parent === prefix;
+  });
+}
+
 function folderAnchor(name) {
   return `folder-${encodeURIComponent(name).replace(/%/g, "")}`;
+}
+
+const FOLDER_SEL_KEY = "photosort-folder-sel";
+
+function readFolderSel() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(FOLDER_SEL_KEY) || "null");
+    if (!raw || typeof raw !== "object") return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+function writeFolderSel(sel) {
+  try {
+    if (!sel) localStorage.removeItem(FOLDER_SEL_KEY);
+    else localStorage.setItem(FOLDER_SEL_KEY, JSON.stringify(sel));
+  } catch {
+    /* private mode */
+  }
+}
+
+function writeFolderHash(hash) {
+  const next = `${window.location.pathname}${window.location.search}${hash || ""}`;
+  const cur = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (cur !== next) window.history.replaceState(null, "", next);
 }
 
 function catalogTree(catalog) {
@@ -73,7 +109,7 @@ function preferLargerCopy(photos) {
   return [...best.values()];
 }
 
-const ALBUM_PAGE = 16;
+const ALBUM_PAGE = 36;
 
 async function loadAllPhotos(params = {}, onPage) {
   const page = 500;
@@ -127,6 +163,17 @@ function FolderPhotos() {
   const [openPaths, setOpenPaths] = useState([]);
   const [activeFolder, setActiveFolder] = useState("");
   const [activePath, setActivePath] = useState("");
+  const [folderQuery, setFolderQuery] = useState("");
+
+  useEffect(() => {
+    const sel = readFolderSel();
+    if (!sel?.path) return undefined;
+    setActiveFolder(sel.folder || "");
+    setActivePath(sel.group || sel.path);
+    setOpenPaths([sel.path]);
+    fetchAlbum(sel.path).catch(() => {});
+    return undefined;
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -211,12 +258,6 @@ function FolderPhotos() {
           if (!cancelled) setData(next);
         } else {
           setData({ items: [], total: wanted.reduce((n, album) => n + (album.photos || 0), 0) });
-          const hashName = window.location.hash.replace(/^#/, "");
-          if (!hashName) {
-            const first = wanted.slice(0, 2);
-            setOpenPaths(first.map((album) => album.path));
-            await Promise.all(first.map((album) => fetchAlbum(album.path)));
-          }
         }
       } catch {
         if (!cancelled) setCatalog([]);
@@ -232,15 +273,14 @@ function FolderPhotos() {
     };
   }, [q, unidentified, saved]);
 
-  useEffect(() => {
-    if (q || unidentified) return;
-    if (openPaths.length) return;
-    if (window.location.hash.replace(/^#/, "")) return;
-    const first = (catalog || []).filter((album) => album.path && album.photos > 0).slice(0, 2);
-    if (!first.length) return;
-    setOpenPaths(first.map((album) => album.path));
-    first.forEach((album) => fetchAlbum(album.path));
-  }, [catalog, openPaths.length, q, unidentified]);
+  const appliedSel = useRef("");
+
+  function rememberSel(sel) {
+    if (!sel?.hash) return;
+    appliedSel.current = sel.hash;
+    writeFolderSel(sel);
+    writeFolderHash(`#${sel.hash}`);
+  }
 
   useEffect(() => {
     if (!importing || !saved.length || q || unidentified) return undefined;
@@ -317,13 +357,7 @@ function FolderPhotos() {
     const list = (albums || []).filter((album) => album?.path);
     if (!list.length) return;
     const show = list.slice(0, fetchFirst);
-    setOpenPaths((cur) => {
-      const next = [...cur];
-      for (const album of show) {
-        if (!next.includes(album.path)) next.push(album.path);
-      }
-      return next;
-    });
+    setOpenPaths(show.map((album) => album.path));
     show.forEach((album) => {
       if (!(albumPhotosRef.current[album.path]?.items || []).length) fetchAlbum(album.path);
     });
@@ -333,28 +367,92 @@ function FolderPhotos() {
     if (!group?.path) return;
     setActiveFolder(group.name);
     setActivePath(group.path);
-    setOpenPaths((cur) => (cur.includes(group.path) ? cur : [...cur, group.path]));
-    if (!(albumPhotosRef.current[group.path]?.items || []).length) fetchAlbum(group.path);
+    if (group.albums.length) {
+      const show = group.albums.slice(0, 4);
+      setOpenPaths([group.path, ...show.map((album) => album.path)]);
+      if (!(albumPhotosRef.current[group.path]?.items || []).length) fetchAlbum(group.path);
+      show.forEach((album) => {
+        if (!(albumPhotosRef.current[album.path]?.items || []).length) fetchAlbum(album.path);
+      });
+    } else {
+      setOpenPaths([group.path]);
+      if (!(albumPhotosRef.current[group.path]?.items || []).length) fetchAlbum(group.path);
+    }
+    rememberSel({ hash: folderAnchor(group.name), path: group.path, folder: group.name, kind: "group" });
+  }
+
+  function openAlbum(album, parent) {
+    if (!album?.path) return;
+    const group = parent || tree.groups.find((item) => item.path === album.group_path);
+    setActiveFolder(album.folder);
+    setActivePath(group?.path || album.path);
+    setOpenPaths([album.path]);
+    if (!(albumPhotosRef.current[album.path]?.items || []).length) fetchAlbum(album.path);
+    rememberSel({
+      hash: folderAnchor(album.folder),
+      path: album.path,
+      folder: album.folder,
+      group: group?.path || "",
+      kind: "album",
+    });
+  }
+
+  function selectFromLocation(treeNow) {
+    if (q || unidentified) return;
+    if (!treeNow.groups.length && !treeNow.ungrouped.length) return;
+    const raw = window.location.hash.replace(/^#/, "");
+    const savedSel = readFolderSel();
+    const wanted = raw || savedSel?.hash || "";
+    const albums = [...treeNow.ungrouped, ...treeNow.groups.flatMap((item) => item.albums)];
+    if (wanted) {
+      const group = treeNow.groups.find((item) => folderAnchor(item.name) === wanted);
+      if (group) {
+        if (appliedSel.current === wanted && activePath === group.path) return;
+        openGroup(group);
+        return;
+      }
+      const album = albums.find(
+        (item) => folderAnchor(item.folder) === wanted || folderAnchor(`${item.group || ""}--${item.folder}`) === wanted,
+      );
+      if (album) {
+        if (appliedSel.current === wanted && activeFolder === album.folder) return;
+        openAlbum(album);
+        return;
+      }
+      if (savedSel?.path) {
+        const byPath = albums.find((item) => item.path === savedSel.path);
+        if (byPath) {
+          openAlbum(byPath);
+          return;
+        }
+        const groupByPath = treeNow.groups.find((item) => item.path === savedSel.path);
+        if (groupByPath) {
+          openGroup(groupByPath);
+          return;
+        }
+      }
+    }
+    if (appliedSel.current) return;
+    if (treeNow.groups[0]) openGroup(treeNow.groups[0]);
+    else if (treeNow.ungrouped[0]) openAlbum(treeNow.ungrouped[0]);
   }
 
   useEffect(() => {
-    const raw = window.location.hash.replace(/^#/, "");
-    if (!raw) return;
-    const group = tree.groups.find((item) => folderAnchor(item.name) === raw);
-    if (group) {
-      openGroup(group);
-      return;
+    selectFromLocation(tree);
+  }, [tree, q, unidentified]);
+
+  useEffect(() => {
+    function onHash() {
+      appliedSel.current = "";
+      selectFromLocation(tree);
     }
-    const albums = [...tree.ungrouped, ...tree.groups.flatMap((item) => item.albums)];
-    const album = albums.find(
-      (item) => folderAnchor(item.folder) === raw || folderAnchor(`${item.group || ""}--${item.folder}`) === raw,
-    );
-    if (!album) return;
-    const parent = tree.groups.find((item) => item.path === album.group_path);
-    setActiveFolder(album.folder);
-    setActivePath(parent?.path || album.path);
-    openAlbums([album], 1);
-  }, [tree]);
+    window.addEventListener("hashchange", onHash);
+    window.addEventListener("popstate", onHash);
+    return () => {
+      window.removeEventListener("hashchange", onHash);
+      window.removeEventListener("popstate", onHash);
+    };
+  }, [tree, q, unidentified]);
 
   useEffect(() => {
     if (!activeFolder) return undefined;
@@ -432,8 +530,14 @@ function FolderPhotos() {
     }
   }
 
+  const folderNeedle = folderQuery.trim().toLowerCase();
+  const folderShown = (name) =>
+    !folderNeedle || String(name || "").toLowerCase().includes(folderNeedle);
+  const visibleGroups = tree.groups.filter((group) => folderShown(group.name));
+  const visibleUngrouped = tree.ungrouped.filter((album) => folderShown(album.folder));
+
   return (
-    <div>
+    <div className="folder-photos">
       <div className="page-head">
         <div>
           <p className="eyebrow">By album</p>
@@ -629,10 +733,48 @@ function FolderPhotos() {
             ))
         : (
         <>
+          {!tree.groups.length && !tree.ungrouped.length && openPaths[0] ? (
+            <AlbumBlock
+              folder={activeFolder || "Album"}
+              photos={albumPhotos[openPaths[0]]?.items || []}
+              meta={{
+                path: openPaths[0],
+                total: albumPhotos[openPaths[0]]?.total,
+              }}
+              current
+              resetting={resetting}
+              onPlay={async () => {
+                const all = preferLargerCopy(
+                  (await loadAllPhotos({ folder: [openPaths[0]] })).items || [],
+                );
+                beginPlay(nav, all, { kind: "album", title: activeFolder || "Album", from: "/photos" });
+              }}
+              onReset={() => resetMatching(activeFolder)}
+              onNeed={() => fetchAlbum(openPaths[0])}
+              onMore={() =>
+                fetchAlbum(
+                  openPaths[0],
+                  Math.min((albumPhotos[openPaths[0]]?.total || 0) + ALBUM_PAGE, 500),
+                )
+              }
+            />
+          ) : null}
           {tree.groups.length || tree.ungrouped.length > 1 ? (
             <>
-              <div className="person-chips" role="navigation" aria-label="Folders">
-                {tree.groups.map((group) => (
+              <details className="folder-filter folder-filter-fold">
+                <summary>
+                  Folders
+                  {activeFolder ? <span className="hint"> · {activeFolder}</span> : null}
+                </summary>
+                <input
+                  type="search"
+                  value={folderQuery}
+                  onChange={(e) => setFolderQuery(e.target.value)}
+                  placeholder="Find a folder"
+                  aria-label="Find a folder"
+                />
+                <div className="person-chips" role="navigation" aria-label="Folders">
+                {visibleGroups.map((group) => (
                   <a
                     key={group.path}
                     className={`person-chip${activePath === group.path ? " active" : ""}`}
@@ -641,10 +783,6 @@ function FolderPhotos() {
                     onClick={(event) => {
                       event.preventDefault();
                       openGroup(group);
-                      const hash = `#${folderAnchor(group.name)}`;
-                      if (window.location.hash !== hash) {
-                        window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${hash}`);
-                      }
                     }}
                     {...tip(`Show the ${group.albums.length} albums inside ${group.name}.`)}
                   >
@@ -655,7 +793,7 @@ function FolderPhotos() {
                     </span>
                   </a>
                 ))}
-                {tree.ungrouped.map((album) => (
+                {visibleUngrouped.map((album) => (
                   <a
                     key={album.path}
                     className={`person-chip${activePath === album.path ? " active" : ""}`}
@@ -663,13 +801,7 @@ function FolderPhotos() {
                     aria-current={activePath === album.path ? "true" : undefined}
                     onClick={(event) => {
                       event.preventDefault();
-                      setActiveFolder(album.folder);
-                      setActivePath(album.path);
-                      openAlbums([album]);
-                      const hash = `#${folderAnchor(album.folder)}`;
-                      if (window.location.hash !== hash) {
-                        window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${hash}`);
-                      }
+                      openAlbum(album);
                     }}
                     {...tip(`Show photos in ${album.folder}.`)}
                   >
@@ -677,12 +809,10 @@ function FolderPhotos() {
                     <span className="hint"> · {album.photos}</span>
                   </a>
                 ))}
-              </div>
+                </div>
+              </details>
               {tree.groups
-                .filter(
-                  (group) =>
-                    activePath === group.path || group.albums.some((album) => openPaths.includes(album.path)),
-                )
+                .filter((group) => activePath === group.path)
                 .map((group) => (
                   <div
                     key={`${group.path}-nested`}
@@ -697,12 +827,7 @@ function FolderPhotos() {
                         href={`#${folderAnchor(album.folder)}`}
                         onClick={(event) => {
                           event.preventDefault();
-                          setActiveFolder(album.folder);
-                          setActivePath(group.path);
-                          openAlbums([album], 1);
-                          requestAnimationFrame(() => {
-                            document.getElementById(folderAnchor(album.folder))?.scrollIntoView({ block: "start" });
-                          });
+                          openAlbum(album, group);
                         }}
                         {...tip(`Show photos in ${album.folder}.`)}
                       >
@@ -715,10 +840,17 @@ function FolderPhotos() {
             </>
           ) : null}
           {tree.groups.map((group) => {
-            const kids = group.albums.filter((album) => openPaths.includes(album.path));
-            const showAll = openPaths.includes(group.path) && activeFolder === group.name;
-            if (!showAll && !kids.length && activePath !== group.path) return null;
+            const viewingGroup = activePath === group.path;
+            const viewingWhole = viewingGroup && activeFolder === group.name;
+            const kids = viewingWhole
+              ? group.albums
+              : group.albums.filter((album) => openPaths.includes(album.path));
+            if (!viewingGroup && !kids.length) return null;
+            const showMixed = viewingWhole && !group.albums.length;
             const loadedGroup = albumPhotos[group.path] || { items: [], total: group.total };
+            const nestedCount = group.albums.reduce((n, album) => n + (album.photos || 0), 0);
+            const rootTotal = Math.max(0, (group.total || 0) - nestedCount);
+            const rootPhotos = photosInExactFolder(group.path, loadedGroup.items || []);
             return (
               <section
                 key={group.path}
@@ -736,7 +868,7 @@ function FolderPhotos() {
                     </span>
                   </span>
                 </h2>
-                {showAll || (activePath === group.path && !kids.length) ? (
+                {showMixed ? (
                   <AlbumBlock
                     folder={group.name}
                     photos={loadedGroup.items || []}
@@ -758,9 +890,31 @@ function FolderPhotos() {
                     }
                   />
                 ) : null}
-                {showAll
-                  ? null
-                  : kids.map((album) => {
+                {viewingWhole && !showMixed && rootTotal > 0 ? (
+                  <AlbumBlock
+                    folder={group.name}
+                    photos={rootPhotos}
+                    meta={{ path: group.path, total: rootTotal }}
+                    current={activeFolder === group.name}
+                    onSelect={() => setActiveFolder(group.name)}
+                    resetting={resetting}
+                    onPlay={async () => {
+                      const all = photosInExactFolder(
+                        group.path,
+                        preferLargerCopy((await loadAllPhotos({ folder: [group.path] })).items || []),
+                      );
+                      beginPlay(nav, all, { kind: "album", title: group.name, from: "/photos" });
+                    }}
+                    onReset={() => resetMatching(group.name)}
+                    onNeed={() => {
+                      if (!(loadedGroup.items || []).length) fetchAlbum(group.path);
+                    }}
+                    onMore={() =>
+                      fetchAlbum(group.path, Math.min((loadedGroup.items || []).length + ALBUM_PAGE, 500))
+                    }
+                  />
+                ) : null}
+                {kids.map((album) => {
                   const loaded = albumPhotos[album.path] || { items: [], total: album.photos };
                   return (
                     <AlbumBlock
@@ -847,27 +1001,26 @@ function AlbumBlock({ folder, photos, meta, current, onSelect, resetting, onPlay
   return (
     <section
       ref={ref}
-      className={`folder-block${current ? " current" : ""}`}
+      className={`folder-block album-block${current ? " current" : ""}`}
       id={anchor ? folderAnchor(folder) : undefined}
       onClick={() => onSelect?.()}
     >
-      <h2 className="folder-head">
-        <span>
-          <span className="group-kind">Album</span>
-          {folder}
-          <span className="hint">
-            {" "}
-            · {total} photo{total === 1 ? "" : "s"}
-          </span>
-        </span>
-        <div className="row" style={{ gap: 8 }}>
+      <header className="album-head">
+        <div className="album-head-copy">
+          <p className="eyebrow">Album</p>
+          <h2>{folder}</h2>
+          <p className="album-head-count">
+            {total} photo{total === 1 ? "" : "s"}
+          </p>
+        </div>
+        <div className="album-head-actions">
           <button
             type="button"
             className="secondary"
             onClick={onPlay}
             {...tip(`Play ${folder} in date order, names on. Fullscreen.`)}
           >
-            Play album
+            Play
           </button>
           <button
             type="button"
@@ -879,34 +1032,50 @@ function AlbumBlock({ folder, photos, meta, current, onSelect, resetting, onPlay
             Reset matching
           </button>
         </div>
-      </h2>
+      </header>
       {photos.length ? (
-        <div className="label-grid">
-          {photos.map((p) => (
-            <div className="label-card" key={p.id}>
+        <div className="folder-gallery">
+          {photos.map((p) => {
+            const rot = (((Number(p.rotation) || 0) % 360) + 360) % 360;
+            const swapped = rot === 90 || rot === 270;
+            const tileAr =
+              p.width > 0 && p.height > 0
+                ? swapped
+                  ? `${p.height} / ${p.width}`
+                  : `${p.width} / ${p.height}`
+                : "4 / 3";
+            return (
+            <div
+              className="label-card"
+              key={p.id}
+              style={{ "--tile-ar": tileAr }}
+            >
               <LabeledPhoto
                 photo={p}
                 src={p.thumb_url}
                 to={photoLink(p.id)}
                 toState={{ fullscreen: true, from: "/photos" }}
               />
-              <div className="meta">
-                {p.filename}
+              <div className="photo-caption">
+                {p.taken_at ? p.taken_at.slice(0, 10) : p.filename}
                 {p.comment ? <div className="photo-comment-snip">{p.comment}</div> : null}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <p className="hint">Loading photos…</p>
       )}
       {meta?.path && total > photos.length && photos.length ? (
-        <p className="hint" style={{ marginTop: 10 }}>
-          Showing {photos.length} of {total}.{" "}
-          <button type="button" className="ghost" onClick={onMore}>
-            Show more
+        <div className="album-more">
+          <p>
+            {photos.length} of {total}
+          </p>
+          <button type="button" className="secondary" onClick={onMore}>
+            Show more photos
           </button>
-        </p>
+        </div>
       ) : null}
     </section>
   );

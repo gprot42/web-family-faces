@@ -1,4 +1,4 @@
-import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import Dashboard from "./pages/Dashboard.jsx";
@@ -16,6 +16,7 @@ import Tree from "./pages/Tree.jsx";
 import TipLayer from "./components/TipLayer.jsx";
 import PhotoMenu from "./components/PhotoMenu.jsx";
 import BrandLogo from "./components/BrandLogo.jsx";
+import PeopleSearch from "./components/PeopleSearch.jsx";
 import { tip } from "./tip.js";
 
 function navActive(on) {
@@ -35,21 +36,6 @@ export default function App() {
   const peopleNav = loc.pathname.startsWith("/people") || (onPhotoDetail && personQ);
   const [stats, setStats] = useState(null);
   const [jobs, setJobs] = useState(null);
-  const [q, setQ] = useState(() => new URLSearchParams(loc.search).get("q") || "");
-  const findBy = search.get("by") === "photo" ? "photo" : "name";
-  const onFind = loc.pathname === "/search";
-  const nav = useNavigate();
-
-  useEffect(() => {
-    if (loc.pathname === "/search") setQ(new URLSearchParams(loc.search).get("q") || "");
-  }, [loc.pathname, loc.search]);
-
-  function findHref(by, query = q) {
-    const next = new URLSearchParams();
-    next.set("by", by);
-    if (query.trim()) next.set("q", query.trim());
-    return `/search?${next}`;
-  }
 
   const statsPending = useRef(false);
   const statsAgain = useRef(false);
@@ -158,37 +144,14 @@ export default function App() {
           <NavLink to="/" end {...tip("Folder summary: how many people and faces are named, and start a scan.")}>
             Summary
           </NavLink>
-          <form
-            className="nav-search"
-            onSubmit={(e) => {
-              e.preventDefault();
-              nav(findHref(onFind ? findBy : "name"));
-            }}
+          <NavLink
+            to="/photos"
+            className={() => navActive(folderNav)}
+            aria-current={folderNav ? "page" : undefined}
+            {...tip("Folder view: photos with names on each person.")}
           >
-            <input
-              type="search"
-              value={q}
-              placeholder={onFind && findBy === "photo" ? "Find by photo" : "Find by name"}
-              aria-label={onFind && findBy === "photo" ? "Find by photo" : "Find by name"}
-              onChange={(e) => setQ(e.target.value)}
-            />
-            <div className="nav-find">
-              <Link
-                to={findHref("name")}
-                className={onFind && findBy === "name" ? "active" : undefined}
-                {...tip("Find a person already stored in the database.")}
-              >
-                Find by name
-              </Link>
-              <Link
-                to={findHref("photo")}
-                className={onFind && findBy === "photo" ? "active" : undefined}
-                {...tip("Find a photo by filename or folder. Previews are local; open one to read the NAS file.")}
-              >
-                Find by photo
-              </Link>
-            </div>
-          </form>
+            Folder View
+          </NavLink>
           <NavLink
             to="/to-name"
             {...tip("Groups of unnamed faces. Name a whole group at once instead of photo by photo.")}
@@ -204,14 +167,6 @@ export default function App() {
           >
             Check names
             {stats?.faces_auto ? <span className="nav-count">{stats.faces_auto}</span> : null}
-          </NavLink>
-          <NavLink
-            to="/photos"
-            className={() => navActive(folderNav)}
-            aria-current={folderNav ? "page" : undefined}
-            {...tip("Folder view: photos with names on each person.")}
-          >
-            Folder View
           </NavLink>
           <NavLink
             to="/people"
@@ -268,6 +223,7 @@ export default function App() {
           <Route path="/help" element={<Help />} />
         </Routes>
       </main>
+      <PeopleSearch />
     </div>
   );
 }

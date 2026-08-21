@@ -15,8 +15,9 @@ from .db import connect, init_db
 from .originals import drop_preview_rows, preview_path_sql
 from .util import bytes_to_embedding, l2_normalize, now_iso
 
-_COVER_CANDIDATES = 12
+_COVER_CANDIDATES = 20
 _COVER_RECENT = 8
+_COVER_LARGE = 8
 
 
 def age_band(age: float | None) -> str:
@@ -120,16 +121,16 @@ def _faces_on_photos(conn, photo_ids: list[int]) -> dict[int, list[Any]]:
     return out
 
 
-_look_cache: dict[tuple[str, int], tuple[float, float]] = {}
+_look_cache: dict[tuple[str, int], tuple[float, float, float]] = {}
 
 
-def _crop_look_scores(face_id: int) -> tuple[float, float]:
-    """(color 0-1, view 0-1) from one crop read. Missing crops stay neutral."""
+def _crop_look_scores(face_id: int) -> tuple[float, float, float]:
+    """(color 0-1, lit 0-1, view 0-1) from one crop read. Missing crops stay neutral."""
     path = CROP_DIR / f"{int(face_id)}.jpg"
     try:
         mtime = path.stat().st_mtime_ns
     except OSError:
-        return 0.5, 0.45
+        return 0.5, 0.5, 0.45
     key = (str(path), mtime)
     cached = _look_cache.get(key)
     if cached:
@@ -143,7 +144,7 @@ def _crop_look_scores(face_id: int) -> tuple[float, float]:
         img.close()
         raw = small.tobytes()
     except Exception:
-        return 0.5, 0.45
+        return 0.5, 0.5, 0.45
     n = max(1, len(raw) // 3)
     colorful = 0
     luma = []
@@ -162,23 +163,31 @@ def _crop_look_scores(face_id: int) -> tuple[float, float]:
     mean = sum(luma) / n
     var = sum((p - mean) ** 2 for p in luma) / n
     std = var ** 0.5
-    if mean < 42:
-        bright = 0.2 * (mean / 42.0)
+    # Faces in DB View covers should be readable: dim indoor shots lose to well-lit ones.
+    if mean < 72:
+        lit = 0.0
+        bright = 0.18 * (mean / 72.0)
+    elif mean < 105:
+        lit = 0.4
+        bright = 0.25 + 0.4 * ((mean - 72) / 33.0)
     elif mean > 215:
+        lit = 0.55
         bright = max(0.15, 1.0 - (mean - 215) / 40.0)
     else:
-        bright = 0.55 + 0.45 * (1.0 - abs(mean - 132) / 90.0)
-    view = 0.5 * bright + 0.5 * min(1.0, std / 48.0)
-    _look_cache[key] = (color, view)
+        lit = 1.0
+        bright = 0.7 + 0.3 * (1.0 - abs(mean - 140) / 110.0)
+    view = 0.7 * bright + 0.3 * min(1.0, std / 48.0)
+    scores = (color, lit, view)
+    _look_cache[key] = scores
     if len(_look_cache) > 8000:
         for old in list(_look_cache)[:2000]:
             _look_cache.pop(old, None)
-    return color, view
+    return scores
 
 
 def _crop_view_score(face_id: int) -> float:
     """0-1: prefer mid-bright, contrasty crops over dark or washed-out ones."""
-    return _crop_look_scores(face_id)[1]
+    return _crop_look_scores(face_id)[2]
 
 
 def _crop_color_score(face_id: int) -> float:
@@ -326,8 +335,8 @@ def _cover_rank(
     unobscured = 1.0 if blocked < 0.28 else 0.0
     det = float(row["det_score"] or 0)
     size = min(1.0, (_face_area(row) ** 0.5) / 160.0)
-    color, view = _crop_look_scores(int(row["id"]))
-    return (unobscured, color, sex_match, name_hit, 1.0 - blocked, view, det, size)
+    color, lit, view = _crop_look_scores(int(row["id"]))
+    return (unobscured, color, lit, sex_match, name_hit, 1.0 - blocked, view, det, size)
 
 
 def _sex_centroids(conn, person_ids: list[int]) -> dict[int, dict[str, Any]]:
@@ -442,7 +451,11 @@ def _best_cover_ids(
                    ROW_NUMBER() OVER (
                        PARTITION BY f.person_id
                        ORDER BY ph.taken_at IS NULL, ph.taken_at DESC, f.det_score DESC, f.id
-                   ) AS recent_rn
+                   ) AS recent_rn,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY f.person_id
+                       ORDER BY ((f.x2 - f.x1) * (f.y2 - f.y1)) DESC, f.det_score DESC, f.id
+                   ) AS size_rn
             FROM faces f
             JOIN photos ph ON ph.id = f.photo_id
             JOIN votes v ON v.person_id = f.person_id
@@ -453,9 +466,9 @@ def _best_cover_ids(
               AND {preview_path_sql("ph.path")}
               {extra}
         ) ranked
-        WHERE det_rn <= ? OR recent_rn <= ?
+        WHERE det_rn <= ? OR recent_rn <= ? OR size_rn <= ?
         """,
-        (*params, *params, _COVER_CANDIDATES, _COVER_RECENT),
+        (*params, *params, _COVER_CANDIDATES, _COVER_RECENT, _COVER_LARGE),
     ).fetchall()
     by_person: dict[int, list[Any]] = {}
     seen: set[int] = set()
@@ -710,6 +723,17 @@ def find_person_by_name(name: str) -> dict[str, Any] | None:
             person = dict(item)
             if needle in nickname_keys(person.get("nickname")):
                 return person
+        if " " not in needle:
+            hits = []
+            for item in conn.execute("SELECT * FROM people").fetchall():
+                person = dict(item)
+                if is_unknown_name(person.get("name") or ""):
+                    continue
+                first = str(person.get("name") or "").strip().split()
+                if first and first[0].casefold() == needle:
+                    hits.append(person)
+            if len(hits) == 1:
+                return hits[0]
         return None
     finally:
         conn.close()
@@ -759,8 +783,10 @@ def create_unknown_person() -> dict[str, Any]:
     return create_person(name, notes="Name not known yet.")
 
 
-def list_people(folder: str | None = None, *, lite: bool = False) -> list[dict[str, Any]]:
+def list_people(folder: str | None = None, *, lite: bool = False, names: bool = False) -> list[dict[str, Any]]:
     wanted = (folder or "").strip() or None
+    if names and not wanted:
+        return _list_people_names()
     people = _list_people_covers_lite() if lite and not wanted else _list_people_covers()
     if not wanted:
         return people
@@ -778,6 +804,16 @@ def list_people(folder: str | None = None, *, lite: bool = False) -> list[dict[s
         person["age_max"] = info["age_max"]
         out.append(person)
     return out
+
+
+def _list_people_names() -> list[dict[str, Any]]:
+    """Name typeahead: every catalog person, no face or cover scan."""
+    conn = connect()
+    init_db(conn)
+    try:
+        return [dict(r) for r in conn.execute("SELECT * FROM people ORDER BY name COLLATE NOCASE").fetchall()]
+    finally:
+        conn.close()
 
 
 def _list_people_covers_lite() -> list[dict[str, Any]]:
@@ -925,8 +961,11 @@ def _folder_people_stats(wanted: str) -> dict[int, dict[str, Any]]:
             pool = [row for row in cands if _row_sex(row) == want] if want else list(cands)
             if not pool:
                 pool = list(cands)
-            pool.sort(key=lambda row: (float(row["det_score"] or 0), _face_area(row)), reverse=True)
-            pool = pool[:_COVER_CANDIDATES]
+            top_det = sorted(
+                pool, key=lambda row: (float(row["det_score"] or 0), _face_area(row)), reverse=True
+            )[:_COVER_CANDIDATES]
+            top_large = sorted(pool, key=_face_area, reverse=True)[:_COVER_LARGE]
+            pool = list({int(row["id"]): row for row in [*top_det, *top_large]}.values())
             item["cover_face_id"] = int(
                 max(
                     pool,
@@ -2255,9 +2294,12 @@ def restore_faces(face_ids: list[int]) -> int:
             ids,
         )
         conn.commit()
-        return int(cur.rowcount)
+        n = int(cur.rowcount)
     finally:
         conn.close()
+    if n:
+        _sync_sidecars_for_faces(ids)
+    return n
 
 
 def set_face_tag(

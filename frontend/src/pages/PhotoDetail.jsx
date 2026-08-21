@@ -7,12 +7,14 @@ import BackButton from "../components/BackButton.jsx";
 import ViewSwitch from "../components/ViewSwitch.jsx";
 import LabeledPhoto, { displayFaces, faceMark, faceTone, overlayFaces, unnamedName } from "../components/LabeledPhoto.jsx";
 import { applyFullscreenLabels, FULLSCREEN_LABELS_EVENT, readFullscreenLabels } from "../nametag.js";
+import NamesToggle from "../components/NamesToggle.jsx";
 import { PLAY_EVENT, enterBrowserFullscreen, exitBrowserFullscreen, playHref, playIndexOf, prefetchPlay, readPlay, stopPlay, updatePlay } from "../play.js";
 import PersonPicker from "../components/PersonPicker.jsx";
 import FamousLookup from "../components/FamousLookup.jsx";
 import ImaginePrompt from "../components/ImaginePrompt.jsx";
 import NameSuggest from "../components/NameSuggest.jsx";
-import { matchPeople, uniqueFirstName } from "../nameSuggest.js";
+import { completeUniqueFirstName, matchPeople, uniqueFirstName } from "../nameSuggest.js";
+import { loadCachedPeople, saveCachedPeople } from "../peopleCache.js";
 import { emitPhotoChange, PHOTO_CHANGE_EVENT, showPhotoMenu } from "../photoMenu.js";
 import { clearRematchUndo, readRematchUndo, writeRematchUndo } from "../rematchUndo.js";
 import { peekUndo, popUndo, pushFaceUndo, pushUndo } from "../editUndo.js";
@@ -89,6 +91,23 @@ function wheelZoomFactor(event) {
   return Math.exp(-dy * k);
 }
 
+function photoSequence(photo) {
+  const index = Number(photo?.photo_index);
+  const count = Number(photo?.photo_count);
+  if (!Number.isFinite(index) || !Number.isFinite(count) || index < 1 || count < 1) return null;
+  return { index, count, label: `photo ${index} of ${count}` };
+}
+
+function mergePeopleKeepCovers(items, cur) {
+  if (!cur?.length) return items;
+  const prevById = new Map(cur.map((p) => [String(p.id), p]));
+  return items.map((p) => {
+    const prev = prevById.get(String(p.id));
+    if (!prev?.cover_url || p.cover_url) return p;
+    return { ...p, cover_url: prev.cover_url, cover_face_id: p.cover_face_id || prev.cover_face_id };
+  });
+}
+
 function eventOrigin(event, el) {
   const host = (el || event.currentTarget)?.getBoundingClientRect?.();
   if (!host) return { x: 0, y: 0 };
@@ -114,7 +133,7 @@ export default function PhotoDetail() {
   const [note, setNote] = useState("");
   const [changingId, setChangingId] = useState(null);
   const [categories, setCategories] = useState({});
-  const [people, setPeople] = useState([]);
+  const [people, setPeople] = useState(() => loadCachedPeople(""));
   const [photoSrc, setPhotoSrc] = useState("");
   const [namePick, setNamePick] = useState(-1);
   const [commentDraft, setCommentDraft] = useState("");
@@ -364,18 +383,31 @@ export default function PhotoDetail() {
   }, [err, id]);
 
   useEffect(() => {
-    if (people.length) return undefined;
     let cancelled = false;
+    const cached = loadCachedPeople("");
+    if (cached.length) setPeople(cached);
+    const loadLite = () =>
+      api.people(undefined, { lite: 1 }).then((listed) => {
+        if (cancelled) return;
+        const items = listed.items || [];
+        setPeople(items);
+        saveCachedPeople("", items);
+      });
     api
-      .people(undefined, { lite: 1 })
+      .people(undefined, { names: 1 })
       .then((listed) => {
-        if (!cancelled) setPeople(listed.items || []);
+        if (cancelled) return;
+        const items = listed.items || [];
+        if (items.length) setPeople((cur) => mergePeopleKeepCovers(items, cur));
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) loadLite().catch(() => {});
+      });
     return () => {
       cancelled = true;
     };
-  }, [people.length]);
+  }, []);
 
   useEffect(() => {
     if (!photo) return undefined;
@@ -938,6 +970,10 @@ export default function PhotoDetail() {
           resetZoom();
           return;
         }
+        if (e.key === "l" || e.key === "L") {
+          setFullLabels(applyFullscreenLabels(!readFullscreenLabels()));
+          return;
+        }
         if (e.key === " " || e.key === "Spacebar") {
           if (readPlay()) togglePlay();
           return;
@@ -954,6 +990,7 @@ export default function PhotoDetail() {
       if (e.key === "+" || e.key === "=" || e.code === "NumpadAdd") nudgeZoom(1);
       if (e.key === "-" || e.key === "_" || e.code === "Minus" || e.code === "NumpadSubtract") nudgeZoom(-1);
       if (e.key === "0") resetZoom();
+      if (e.key === "l" || e.key === "L") setFullLabels(applyFullscreenLabels(!readFullscreenLabels()));
       if (e.key === "j") setActive(faces[Math.min(faces.length - 1, idx + 1)]?.id);
       if (e.key === "k") setActive(faces[Math.max(0, idx - 1)]?.id);
       if (e.key === "n") {
@@ -1245,13 +1282,10 @@ export default function PhotoDetail() {
     setNote("Restoring this face…");
     paintFace(faceId, { assigned_how: null, quality: "ok" });
     try {
-      const result = await api.restoreFace(faceId);
+      await api.restoreFace(faceId);
       await load();
       selectFace(faceId);
-      setNote("This face is a person again. Matching names in the background — you can keep browsing.");
-      if (result?.started && result.photo_id) {
-        watchMatch(result.photo_id, { start: { started: true, status: "running" }, restoredFaceId: faceId });
-      }
+      setNote("This face is a person again. You can type a name.");
     } catch (ex) {
       setNote("");
       setErr(ex.message || "Could not restore this face.");
@@ -1681,6 +1715,8 @@ export default function PhotoDetail() {
     selectFace(f.id);
   }
 
+  const seq = photoSequence(photo);
+
   return (
     <div className="photo-page">
       <div className="page-head">
@@ -1704,7 +1740,13 @@ export default function PhotoDetail() {
           </div>
           <h1>{photo.filename}</h1>
           <p className="lede" {...tip("Keys: 1–5 save a suggested name, n new name, u remove name, j/k face, ←/→ photo.")}>
-            {photo.taken_at ? photo.taken_at.slice(0, 10) : "No date"} · {visibleFaces.length} face(s)
+            {[
+              photo.taken_at ? photo.taken_at.slice(0, 10) : "No date",
+              seq?.label,
+              `${visibleFaces.length} face(s)`,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
           </p>
           {note ? (
             <p className="save-note" role="status" aria-live="polite">
@@ -1728,6 +1770,11 @@ export default function PhotoDetail() {
             <Link className="btn secondary" to={hrefFor(photo.prev_id)} state={photoNavState()} {...tip(personId ? "Previous photo of this person." : "Open the previous photo in the album.")}>
               Previous
             </Link>
+          ) : null}
+          {seq ? (
+            <span className="photo-seq" aria-live="polite">
+              {seq.index} of {seq.count}
+            </span>
           ) : null}
           {photo.next_id ? (
             <Link className="btn secondary" to={hrefFor(photo.next_id)} state={photoNavState()} {...tip(personId ? "Next photo of this person." : "Open the next photo in the album.")}>
@@ -1787,23 +1834,7 @@ export default function PhotoDetail() {
             >
               400%
             </button>
-            <button
-              type="button"
-              className="secondary"
-              aria-pressed={fullLabels}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setFullLabels(applyFullscreenLabels(!fullLabels));
-              }}
-              {...tip(
-                fullLabels
-                  ? "Hide name labels on the picture."
-                  : "Show name labels on the picture.",
-              )}
-            >
-              {fullLabels ? "Hide names" : "Show names"}
-            </button>
+            <NamesToggle />
             {(photo.faces || []).some((f) => f.person_id && f.assigned_how !== "junk") ? (
               <button
                 type="button"
@@ -1929,7 +1960,7 @@ export default function PhotoDetail() {
                   if (clickResetsZoom()) return;
                   setFull(true);
                 }}
-                overlayTags={fullLabels && zoom < 1.35}
+                overlayTags={fullLabels}
                 showUnnamed
                 movable
                 onTagMove={moveTag}
@@ -2033,6 +2064,7 @@ export default function PhotoDetail() {
                 {photo.comment || "Add a note"}
               </button>
             )}
+            <NamesToggle className="photo-labels-chip" />
           </div>
         </div>
         <aside>
@@ -2103,11 +2135,16 @@ export default function PhotoDetail() {
                   value={draftName(f)}
                   placeholder="Type their name"
                   autoComplete="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  aria-autocomplete="list"
+                  aria-expanded={catalogHits(f, draftName(f)).length > 0}
                   disabled={savingId === f.id}
                   onClick={(e) => e.stopPropagation()}
                   onChange={(e) => {
                     const value = e.target.value;
-                    setDrafts((cur) => ({ ...cur, [f.id]: value }));
+                    const unique = completeUniqueFirstName(value, people, { excludeId: f.person_id });
+                    setDrafts((cur) => ({ ...cur, [f.id]: unique ? unique.name : value }));
                     setNamePick(-1);
                     if (savedId === f.id) setSavedId(null);
                   }}
@@ -2533,18 +2570,7 @@ export default function PhotoDetail() {
             >
               {photo.comment ? "Edit comment" : "Add comment"}
             </button>
-            <button
-              type="button"
-              aria-pressed={fullLabels}
-              onClick={() => setFullLabels(applyFullscreenLabels(!fullLabels))}
-              {...tip(
-                fullLabels
-                  ? "Hide name labels on the picture."
-                  : "Show name labels on the picture.",
-              )}
-            >
-              {fullLabels ? "Hide names" : "Show names"}
-            </button>
+            <NamesToggle className="" />
             {(photo.faces || []).some((f) => f.person_id && f.assigned_how !== "junk") ? (
               <button
                 type="button"
@@ -2649,6 +2675,11 @@ export default function PhotoDetail() {
             <p className="photo-full-caption">
               {play.title || "Play"}
               {playIndex() >= 0 ? ` · ${playIndex() + 1} of ${play.ids.length}` : ""}
+            </p>
+          ) : seq ? (
+            <p className="photo-full-caption">
+              Photo {seq.index} of {seq.count}
+              {photo.taken_at ? ` · ${photo.taken_at.slice(0, 10)}` : ""}
             </p>
           ) : null}
           {photo.comment ? <p className="photo-full-comment">{photo.comment}</p> : null}

@@ -1,4 +1,4 @@
-export const PEOPLE_CACHE_KEY = "photosort-people-lite-v2";
+export const PEOPLE_CACHE_KEY = "photosort-people-lite-v3";
 
 export function loadCachedPeople(folder) {
   try {

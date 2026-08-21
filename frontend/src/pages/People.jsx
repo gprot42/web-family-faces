@@ -3,7 +3,6 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { tip } from "../tip.js";
 import ViewSwitch from "../components/ViewSwitch.jsx";
-import PeopleSearch from "../components/PeopleSearch.jsx";
 import { loadCachedPeople, patchCachedPerson, saveCachedPeople } from "../peopleCache.js";
 
 const IGNORE_KEY = "photosort-merge-ignore";
@@ -325,7 +324,6 @@ export default function People() {
       {ready && people.length && !grouped.length ? (
         <div className="card empty">No people in this category yet. Mark someone Family, Work, or Other on their card.</div>
       ) : null}
-      <PeopleSearch />
     </div>
   );
 }

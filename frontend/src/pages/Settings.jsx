@@ -288,14 +288,14 @@ export default function Settings() {
         <p>Where the name sits relative to each person. Applies on Folder View and when you open a photo.</p>
         <label
           className="settings-check"
-          {...tip("Keep names on each person when you click a photo large. Turn off for a clean picture.")}
+          {...tip("Show name labels on each person when you open a photo. Turn off for a clean picture. You can still Hide labels / Show labels on the photo.")}
         >
           <input
             type="checkbox"
             checked={fullscreenLabels}
             onChange={(e) => setFullscreenLabels(applyFullscreenLabelsDefault(e.target.checked))}
           />
-          <span>Show names in fullscreen</span>
+          <span>Show name labels on photos</span>
         </label>
         <div className="theme-grid nametag-grid" role="radiogroup" aria-label="Name position">
           {NAMETAG_PLACEMENTS.map((item) => {

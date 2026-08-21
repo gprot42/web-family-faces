@@ -22,16 +22,16 @@ export default function NamesToggle({ className = "secondary" }) {
   return (
     <button
       type="button"
-      className={className || undefined}
+      className={[className, on ? "" : "is-off"].filter(Boolean).join(" ")}
       aria-pressed={on}
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
         toggle();
       }}
-      {...tip(on ? "Hide name labels on the pictures." : "Show name labels on the pictures.")}
+      {...tip(on ? "Hide name labels on the picture." : "Show name labels on the picture.")}
     >
-      {on ? "Hide names" : "Show names"}
+      {on ? "Hide labels" : "Show labels"}
     </button>
   );
 }

@@ -693,20 +693,19 @@ _PREVIEW_PH = """
 """
 
 
-def _neighbor_ids(
-    conn,
-    photo_id: int,
+def _parent_folder(path: str | None) -> str:
+    text = str(path or "").replace("\\", "/").rstrip("/")
+    if "/" not in text:
+        return ""
+    return text.rsplit("/", 1)[0]
+
+
+def _sequence_from(
     person_id: int | None = None,
     tag: str | None = None,
-) -> tuple[int | None, int | None]:
-    """Prev/next in album order: dated photos first, then undated, then id."""
-    row = conn.execute(
-        "SELECT id, taken_at FROM photos WHERE id = ?",
-        (photo_id,),
-    ).fetchone()
-    if not row:
-        return None, None
-    taken = row["taken_at"]
+    folder: str | None = None,
+) -> tuple[str, tuple]:
+    """FROM/WHERE for person, tag, or album photo order."""
     label = photos_mod.normalize_tag(tag or "")
     if person_id:
         from_sql = f"""
@@ -715,22 +714,57 @@ def _neighbor_ids(
             WHERE IFNULL(ph.hidden, 0) = 0
             {_PREVIEW_PH}
         """
-        base: tuple = (int(person_id),)
-    elif label:
+        return from_sql, (int(person_id),)
+    if label:
         from_sql = f"""
             FROM photos ph
             JOIN photo_tags t ON t.photo_id = ph.id AND t.tag = ? COLLATE NOCASE
             WHERE IFNULL(ph.hidden, 0) = 0
             {_PREVIEW_PH}
         """
-        base = (label,)
-    else:
+        return from_sql, (label,)
+    folder = str(folder or "").strip().rstrip("/")
+    if folder:
+        like = f"{_sql_like_literal(folder)}/%"
+        nested = f"{_sql_like_literal(folder)}/%/%"
         from_sql = f"""
             FROM photos ph
             WHERE IFNULL(ph.hidden, 0) = 0
             {_PREVIEW_PH}
+              AND ph.path LIKE ? ESCAPE '#'
+              AND ph.path NOT LIKE ? ESCAPE '#'
         """
-        base = ()
+        return from_sql, (like, nested)
+    from_sql = f"""
+        FROM photos ph
+        WHERE IFNULL(ph.hidden, 0) = 0
+        {_PREVIEW_PH}
+    """
+    return from_sql, ()
+
+
+def _sequence_folder(person_id: int | None, tag: str | None, path: str | None) -> str | None:
+    if person_id or photos_mod.normalize_tag(tag or ""):
+        return None
+    folder = _parent_folder(path)
+    return folder or None
+
+
+def _neighbor_ids(
+    conn,
+    photo_id: int,
+    person_id: int | None = None,
+    tag: str | None = None,
+) -> tuple[int | None, int | None]:
+    """Prev/next in album order: dated photos first, then undated, then id."""
+    row = conn.execute(
+        "SELECT id, taken_at, path FROM photos WHERE id = ?",
+        (photo_id,),
+    ).fetchone()
+    if not row:
+        return None, None
+    taken = row["taken_at"]
+    from_sql, base = _sequence_from(person_id, tag, _sequence_folder(person_id, tag, row["path"]))
     if taken is None:
         prev = conn.execute(
             f"""
@@ -785,6 +819,42 @@ def _neighbor_ids(
     return (int(prev["id"]) if prev else None, int(nxt["id"]) if nxt else None)
 
 
+def _sequence_place(
+    conn,
+    photo_id: int,
+    person_id: int | None = None,
+    tag: str | None = None,
+) -> tuple[int | None, int | None]:
+    """1-based index and count in the same order as prev/next neighbors."""
+    photo = conn.execute("SELECT path FROM photos WHERE id = ?", (photo_id,)).fetchone()
+    if not photo:
+        return None, None
+    folder = _sequence_folder(person_id, tag, photo["path"])
+    if not person_id and not photos_mod.normalize_tag(tag or "") and not folder:
+        return None, None
+    from_sql, base = _sequence_from(person_id, tag, folder)
+    row = conn.execute(
+        f"""
+        SELECT idx, n FROM (
+            SELECT ph.id AS id,
+                   ROW_NUMBER() OVER (
+                       ORDER BY ph.taken_at IS NULL, ph.taken_at, ph.id
+                   ) AS idx,
+                   COUNT(*) OVER () AS n
+            FROM (
+                SELECT DISTINCT ph.id, ph.taken_at
+                {from_sql}
+            ) ph
+        )
+        WHERE id = ?
+        """,
+        (*base, photo_id),
+    ).fetchone()
+    if not row:
+        return None, None
+    return int(row["idx"]), int(row["n"])
+
+
 @app.get("/api/photos/{photo_id}")
 def get_photo(
     photo_id: int,
@@ -819,6 +889,9 @@ def get_photo(
                 face["taken_at"] = payload["taken_at"]
             face["suggestions"] = []
         payload["prev_id"], payload["next_id"] = _neighbor_ids(conn, photo_id, person_id, tag)
+        payload["photo_index"], payload["photo_count"] = _sequence_place(
+            conn, photo_id, person_id, tag
+        )
         payload["person_id"] = person_id
         if photos_mod.normalize_tag(tag or ""):
             payload["tag"] = photos_mod.normalize_tag(tag or "")
@@ -865,9 +938,9 @@ def _photo_match_busy(photo_id: int | None = None) -> bool:
         return (_photo_match.get(int(photo_id)) or {}).get("status") == "running"
 
 
-def _run_photo_match(photo_id: int) -> None:
+def _run_photo_match(photo_id: int, detect: bool = True) -> None:
     try:
-        out = match_mod.match_photo(photo_id)
+        out = match_mod.match_photo(photo_id, detect=detect)
         with _photo_match_lock:
             _photo_match[int(photo_id)] = {"status": "done", **out}
     except Exception as exc:  # noqa: BLE001 — status is polled by the UI
@@ -879,7 +952,7 @@ def _run_photo_match(photo_id: int) -> None:
             }
 
 
-def _start_photo_match(photo_id: int) -> dict[str, Any]:
+def _start_photo_match(photo_id: int, *, detect: bool = True) -> dict[str, Any]:
     pid = int(photo_id)
     with _photo_match_lock:
         cur = _photo_match.get(pid) or {}
@@ -888,7 +961,7 @@ def _start_photo_match(photo_id: int) -> dict[str, Any]:
         _photo_match[pid] = {"status": "running", "photo_id": pid}
     threading.Thread(
         target=_run_photo_match,
-        args=(pid,),
+        args=(pid, detect),
         daemon=True,
         name=f"photosort-photo-match-{pid}",
     ).start()
@@ -1247,9 +1320,9 @@ def restore_face(face_id: int) -> dict[str, Any]:
         photo_id = int(row["photo_id"]) if row and row["photo_id"] else None
     finally:
         conn.close()
-    if photo_id:
-        _start_photo_match(photo_id)
-    return {"ok": True, "restored": n, "photo_id": photo_id, "assigned": [], "started": True}
+    # Do not rematch here. Matching would hide this crop again as a statue,
+    # undoing This is a person. The user can type a name on the card.
+    return {"ok": True, "restored": n, "photo_id": photo_id, "assigned": [], "started": False}
 
 
 @app.get("/api/faces/{face_id}/suggestions")
@@ -1743,14 +1816,15 @@ def confirm_face(face_id: int) -> dict[str, Any]:
 def list_people(
     folder: str | None = Query(default=None),
     lite: bool = False,
+    names: bool = False,
 ) -> dict[str, Any]:
     items = [
         person_public(p, cover_size=128)
-        for p in people_mod.list_people(folder=folder, lite=lite)
+        for p in people_mod.list_people(folder=folder, lite=lite, names=names)
     ]
     return {
         "items": items,
-        "folders": [] if lite else people_mod.list_people_folders(),
+        "folders": [] if lite or names else people_mod.list_people_folders(),
     }
 
 

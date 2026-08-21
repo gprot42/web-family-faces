@@ -1090,6 +1090,38 @@ def test_assign_cluster_by_face_ids_after_cluster_rebuild(tmp_path, monkeypatch)
     assert any(p["name"] == "Lila Cole" and p["cover_face_id"] == 1 for p in lite)
 
 
+def test_list_people_names_skips_cover_scan(tmp_path, monkeypatch):
+    conn = _setup(tmp_path, monkeypatch)
+    conn.close()
+    named = create_person("Lila Cole")
+    create_person("Adam Cole")
+    import photosort.people as people_mod
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("names lists should not scan faces for covers")
+
+    monkeypatch.setattr(people_mod, "_list_people_covers", boom)
+    monkeypatch.setattr(people_mod, "_list_people_covers_lite", boom)
+    monkeypatch.setattr(people_mod, "_sex_centroids", boom)
+    names = list_people(names=True)
+    found = {p["name"]: p for p in names}
+    assert "Lila Cole" in found
+    assert "Adam Cole" in found
+    assert found["Lila Cole"]["id"] == named["id"]
+    assert found["Lila Cole"].get("cover_face_id") is None
+
+
+def test_find_person_by_unique_first_name(tmp_path, monkeypatch):
+    conn = _setup(tmp_path, monkeypatch)
+    conn.close()
+    lila = create_person("Lila Cole")
+    create_person("Adam Cole")
+    assert find_person_by_name("Lila")["id"] == lila["id"]
+    create_person("Lila Cruz")
+    assert find_person_by_name("Lila") is None
+    assert find_person_by_name("Lila Cole")["id"] == lila["id"]
+
+
 def test_list_people_cover_prefers_clear_crop(tmp_path, monkeypatch):
     from PIL import Image
 
@@ -1250,6 +1282,45 @@ def test_list_people_cover_prefers_color_over_bw(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
     Image.new("RGB", (64, 64), (128, 128, 128)).save(crops / "1.jpg", "JPEG")
+    Image.new("RGB", (64, 64), (190, 110, 80)).save(crops / "2.jpg", "JPEG")
+    listed = {p["name"]: p for p in list_people()}
+    assert listed["Adam Cole"]["cover_face_id"] == 2
+    lite = {p["name"]: p for p in list_people(lite=True)}
+    assert lite["Adam Cole"]["cover_face_id"] == 2
+
+
+def test_list_people_cover_prefers_bright_over_dark(tmp_path, monkeypatch):
+    from PIL import Image
+
+    conn = _setup(tmp_path, monkeypatch)
+    crops = tmp_path / "crops"
+    crops.mkdir()
+    monkeypatch.setattr(config, "CROP_DIR", crops)
+    import photosort.people as people_mod
+
+    monkeypatch.setattr(people_mod, "CROP_DIR", crops)
+    person = create_person("Adam Cole")
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/albums/Adam Cole night.jpg", "d", 200, 200, now_iso()),
+    )
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/albums/picnic.jpg", "c", 200, 200, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (id, photo_id, x1, y1, x2, y2, det_score, quality, person_id, created_at)
+           VALUES (1,1,0,0,90,90,0.99,'ok',?,?)""",
+        (person["id"], now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (id, photo_id, x1, y1, x2, y2, det_score, quality, person_id, created_at)
+           VALUES (2,2,0,0,50,50,0.72,'ok',?,?)""",
+        (person["id"], now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    Image.new("RGB", (64, 64), (88, 42, 22)).save(crops / "1.jpg", "JPEG")
     Image.new("RGB", (64, 64), (190, 110, 80)).save(crops / "2.jpg", "JPEG")
     listed = {p["name"]: p for p in list_people()}
     assert listed["Adam Cole"]["cover_face_id"] == 2
@@ -1760,6 +1831,40 @@ def test_assign_face_http_reuses_name_and_sets_category(tmp_path, monkeypatch):
     response = client.post("/api/faces/1/assign", json={"name": "jordan cole", "category": "family"})
     assert response.status_code == 200
     assert response.json()["person_id"] == first["id"]
+
+
+def test_assign_face_http_uses_unique_first_name(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from photosort import catalog, originals
+    from photosort.main import app
+
+    conn = _setup(tmp_path, monkeypatch)
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setattr(config, "DATA_DIR", data)
+    monkeypatch.setattr(config, "BACKUP_DIR", data / "backups")
+    monkeypatch.setattr(catalog, "DB_PATH", config.DB_PATH)
+    monkeypatch.setattr(catalog, "BACKUP_DIR", data / "backups")
+    monkeypatch.setattr(originals, "DATA_DIR", data)
+    (data / "backups").mkdir()
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        (str(tmp_path / "a.jpg"), "a", 100, 100, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, created_at)
+           VALUES (1,0,0,10,10,0.9,'ok',?)""",
+        (now_iso(),),
+    )
+    conn.commit()
+    conn.close()
+    first = create_person("Jordan Cole", category="family")
+    client = TestClient(app)
+    names = client.get("/api/people", params={"names": "true"}).json()
+    assert any(p["name"] == "Jordan Cole" for p in names["items"])
+    response = client.post("/api/faces/1/assign", json={"name": "Jordan"})
+    assert response.status_code == 200
+    assert response.json()["person_id"] == first["id"]
     conn = connect()
     row = conn.execute("SELECT person_id FROM faces WHERE id = 1").fetchone()
     conn.close()
@@ -1837,6 +1942,71 @@ def test_restore_faces_undoes_junk(tmp_path, monkeypatch):
     conn.close()
     assert row["quality"] == "ok"
     assert row["assigned_how"] is None
+
+
+def test_restore_faces_clears_sidecar_junk_so_apply_does_not_rehide(tmp_path, monkeypatch):
+    import json
+    from photosort import originals, sidecar
+    from photosort.people import junk_faces, restore_faces
+
+    album = tmp_path / "album"
+    album.mkdir()
+    photo = album / "picnic.jpg"
+    photo.write_bytes(b"x")
+    conn = _setup(tmp_path, monkeypatch)
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setattr(originals, "DATA_DIR", data)
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        (str(photo), "a", 100, 100, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, created_at)
+           VALUES (1,0,0,10,10,0.9,'ok',?)""",
+        (now_iso(),),
+    )
+    conn.commit()
+    conn.close()
+    assert junk_faces([1]) == 1
+    payload = json.loads((album / originals.SIDECAR_NAME).read_text(encoding="utf-8"))
+    assert payload["photos"]["picnic.jpg"]["faces"][0]["junk"] is True
+    assert restore_faces([1]) == 1
+    side = album / originals.SIDECAR_NAME
+    if side.exists():
+        payload = json.loads(side.read_text(encoding="utf-8"))
+        stored = (payload.get("photos") or {}).get("picnic.jpg", {}).get("faces") or []
+        assert not any(item.get("junk") for item in stored)
+    sidecar.apply_to_photos([1])
+    conn = connect()
+    row = conn.execute("SELECT assigned_how, quality FROM faces WHERE id = 1").fetchone()
+    conn.close()
+    assert row["assigned_how"] is None
+    assert row["quality"] == "ok"
+
+
+def test_match_photo_skip_detect_does_not_rescan(tmp_path, monkeypatch):
+    from photosort import faces as faces_mod, match as match_mod
+
+    conn = _setup(tmp_path, monkeypatch)
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/album/a.jpg", "a", 100, 100, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, created_at)
+           VALUES (1,0,0,10,10,0.9,'ok',?)""",
+        (now_iso(),),
+    )
+    conn.commit()
+    conn.close()
+
+    def boom(*_a, **_k):
+        raise AssertionError("restore rematch must not rescan")
+
+    monkeypatch.setattr(faces_mod, "scan_photo", boom)
+    monkeypatch.setattr(faces_mod, "analyzer_status", lambda: {"ready": True})
+    match_mod.match_photo(1, detect=False)
 
 
 def test_name_cluster_http_saves_category(tmp_path, monkeypatch):

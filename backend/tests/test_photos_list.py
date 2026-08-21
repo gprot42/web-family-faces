@@ -279,10 +279,61 @@ def test_photo_neighbors_use_person_join(tmp_path, monkeypatch):
     assert photo["id"] == 1
     assert photo["prev_id"] == 3
     assert photo["next_id"] is None
+    assert photo["photo_index"] == 2
+    assert photo["photo_count"] == 2
+    first = client.get("/api/photos/3", params={"person_id": 1}).json()
+    assert first["prev_id"] is None
+    assert first["next_id"] == 1
+    assert first["photo_index"] == 1
+    assert first["photo_count"] == 2
+    album = client.get("/api/photos/1").json()
+    assert album["photo_index"] == 2
+    assert album["photo_count"] == 2
+    other = client.get("/api/photos/2").json()
+    assert other["photo_index"] == 1
+    assert other["photo_count"] == 1
+    assert other["prev_id"] is None
+    assert other["next_id"] is None
     lite = client.get("/api/photos/1", params={"person_id": 1, "lite": "true"}).json()
     assert lite["prev_id"] == 3
     assert lite["next_id"] is None
+    assert lite["photo_index"] == 2
+    assert lite["photo_count"] == 2
     assert lite["faces"][0]["suggestions"] == []
+
+
+def test_photo_neighbors_stay_in_folder(tmp_path, monkeypatch):
+    _db(tmp_path, monkeypatch)
+    conn = connect()
+    conn.execute(
+        "INSERT INTO photos (path, sha256, taken_at, width, height, created_at) VALUES (?,?,?,?,?,?)",
+        ("/Volumes/share/1995 - Coast/c.jpg", "c", "2004-01-02T00:00:00", 100, 100, now_iso()),
+    )
+    conn.execute(
+        "INSERT INTO photos (path, sha256, taken_at, width, height, created_at) VALUES (?,?,?,?,?,?)",
+        ("/Volumes/share/1995 - Coast/nested/d.jpg", "d", "2004-01-03T00:00:00", 100, 100, now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    client = TestClient(app)
+    first = client.get("/api/photos/3").json()
+    assert first["filename"] == "c.jpg"
+    assert first["photo_index"] == 1
+    assert first["photo_count"] == 2
+    assert first["prev_id"] is None
+    assert first["next_id"] == 1
+    last = client.get("/api/photos/1").json()
+    assert last["filename"] == "a.jpg"
+    assert last["photo_index"] == 2
+    assert last["photo_count"] == 2
+    assert last["prev_id"] == 3
+    assert last["next_id"] is None
+    nested = client.get("/api/photos/4").json()
+    assert nested["filename"] == "d.jpg"
+    assert nested["photo_index"] == 1
+    assert nested["photo_count"] == 1
+    assert nested["prev_id"] is None
+    assert nested["next_id"] is None
 
 
 def test_box_iou_identical_is_one():

@@ -1272,7 +1272,7 @@ def rescue_hidden_named_faces(
             conn.close()
 
 
-def match_photo(photo_id: int) -> dict:
+def match_photo(photo_id: int, *, detect: bool = True) -> dict:
     """Match unnamed faces on one photo to the catalog. Rescan only if someone is still unnamed."""
     from . import faces as faces_mod
 
@@ -1303,7 +1303,7 @@ def match_photo(photo_id: int) -> dict:
         photo = conn.execute("SELECT * FROM photos WHERE id = ?", (int(photo_id),)).fetchone()
     finally:
         conn.close()
-    need_detect = int(unnamed) > 0 or int(have_faces) == 0
+    need_detect = bool(detect) and (int(unnamed) > 0 or int(have_faces) == 0)
     if need_detect and photo and faces_mod.analyzer_status().get("ready"):
         conn = connect()
         init_db(conn)

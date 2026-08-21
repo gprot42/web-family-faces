@@ -41,7 +41,8 @@ export function queryMatchesName(query, name) {
 export function scoreName(query, name) {
   const q = String(query || "").trim().toLowerCase();
   const n = String(name || "").trim().toLowerCase();
-  if (q.length < 2 || !n || n === q) return 0;
+  if (q.length < 2 || !n) return 0;
+  if (n === q) return 180;
   const qParts = tokens(q);
   const nParts = tokens(n);
   if (!qParts.length || !nParts.length) return 0;
@@ -69,11 +70,19 @@ export function matchPeople(query, people, { excludeId, limit = 6 } = {}) {
     if (excludeId != null && String(person.id) === String(excludeId)) continue;
     const name = String(person.name || "").trim();
     const nick = String(person.nickname || "").trim();
-    const score = Math.max(scoreName(q, name), nick ? scoreName(q, nick) + 4 : 0);
+    const nameScore = scoreName(q, name);
+    const nickScore = nick ? scoreName(q, nick) : 0;
+    const score = Math.max(nameScore, nickScore ? nickScore + 4 : 0);
     if (score > 0) scored.push({ person, score });
   }
   scored.sort((a, b) => b.score - a.score || String(a.person.name).localeCompare(String(b.person.name)));
   return scored.slice(0, limit).map((row) => row.person);
+}
+
+function firstTokens(person) {
+  const first = tokens(person?.name)[0] || "";
+  const nickFirst = tokens(String(person?.nickname || "").split(/[,;/]/)[0])[0] || "";
+  return { first, nickFirst };
 }
 
 export function uniqueFirstName(query, people, { excludeId } = {}) {
@@ -83,11 +92,19 @@ export function uniqueFirstName(query, people, { excludeId } = {}) {
   for (const person of people || []) {
     if (person?.unknown_name) continue;
     if (excludeId != null && String(person.id) === String(excludeId)) continue;
-    const first = tokens(person.name)[0] || "";
-    const nickFirst = tokens(String(person.nickname || "").split(/[,;/]/)[0])[0] || "";
-    if (first === q || nickFirst === q) hits.push(person);
+    const { first, nickFirst } = firstTokens(person);
+    if (first === q || nickFirst === q || first.startsWith(q) || nickFirst.startsWith(q)) hits.push(person);
   }
   return hits.length === 1 ? hits[0] : null;
+}
+
+export function completeUniqueFirstName(query, people, { excludeId } = {}) {
+  const unique = uniqueFirstName(query, people, { excludeId });
+  if (!unique) return null;
+  const q = String(query || "").trim().toLowerCase();
+  const { first, nickFirst } = firstTokens(unique);
+  if (first === q || nickFirst === q) return unique;
+  return null;
 }
 
 export function splitNameMatch(query, name) {

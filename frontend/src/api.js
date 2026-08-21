@@ -183,6 +183,7 @@ export const api = {
     const q = new URLSearchParams();
     if (folder) q.set("folder", folder);
     if (opts.lite) q.set("lite", "1");
+    if (opts.names) q.set("names", "1");
     const qs = q.toString();
     return request(`/api/people${qs ? `?${qs}` : ""}`);
   },

@@ -29,6 +29,8 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
   const [err, setErr] = useState("");
   const [picker, setPicker] = useState(false);
   const [backupMsg, setBackupMsg] = useState("");
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupDone, setBackupDone] = useState(false);
   const foldersAtPickerOpen = useRef(folders);
 
   useEffect(() => {
@@ -103,6 +105,24 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
     setFolders(next);
     setTyped("");
     return next;
+  }
+
+  async function backUpNames() {
+    setBackupBusy(true);
+    setBackupMsg("");
+    try {
+      const result = await api.backup();
+      const where = result.path || "the backups folder";
+      const size = result.bytes ? ` · ${fmtBytes(result.bytes)}` : "";
+      setBackupDone(true);
+      setBackupMsg(`Name catalog backed up to ${where}${size}. Photo files were not copied.`);
+      onChange?.();
+    } catch (ex) {
+      setBackupDone(false);
+      setBackupMsg(ex.message || "Could not back up the name catalog.");
+    } finally {
+      setBackupBusy(false);
+    }
   }
 
   async function startFindFaces(paths) {
@@ -382,32 +402,31 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
           </button>
           <button
             type="button"
-            className="ghost"
-            onClick={() =>
-              api.backup().then((r) => {
-                const where = r.path || "the backups folder";
-                const size = r.bytes ? ` (${fmtBytes(r.bytes)})` : "";
-                setBackupMsg(`Compressed catalog saved to ${where}${size}.`);
-                onChange?.();
-              })
-            }
-            {...tip("Save a gzip copy of the name catalog now. Automatic backups also run while the app is open. Photo files are not copied.")}
+            className={backupDone ? "picked" : "secondary"}
+            aria-pressed={backupDone}
+            disabled={backupBusy}
+            onClick={backUpNames}
+            {...tip("Back up the name catalog now (gzip). The app also backs up automatically while it is open. Photo files are not copied.")}
           >
-            Save a copy of names
+            {backupBusy ? "Backing up…" : backupDone ? "Names backed up" : "Back up names"}
           </button>
         </div>
-        {backupMsg ? <p className="hint">{backupMsg}</p> : null}
+        {backupMsg ? (
+          <p className={backupDone ? "save-note backup-status" : "error"} role="status">
+            {backupMsg}
+          </p>
+        ) : null}
         {stats?.backup?.latest ? (
           <p className="hint">
-            Last catalog backup: {stats.backup.latest.name}
+            Latest backup: {stats.backup.latest.name}
             {stats.backup.latest.compressed ? " · gzip" : ""}
-            {stats.backup.latest.bytes ? ` · ${fmtBytes(stats.backup.latest.bytes)}` : ""}. Kept in{" "}
-            <code>{stats.backup.dir}</code>. Up to {stats.backup.keep} copies.
+            {stats.backup.latest.bytes ? ` · ${fmtBytes(stats.backup.latest.bytes)}` : ""}. Stored in{" "}
+            <code>{stats.backup.dir}</code>. The last {stats.backup.keep} backups are kept.
           </p>
         ) : (
           <p className="hint">
-            Catalog backups are gzip files under the app data folder. Photo files on the NAS are not
-            copied.
+            Back up names saves a gzip of the name catalog in the app data folder. Photo files on the
+            NAS are not copied — back those up separately.
           </p>
         )}
         {folders.length ? (
