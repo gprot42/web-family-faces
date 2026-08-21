@@ -1,0 +1,47 @@
+0 HEAD
+1 SOUR Family Tree Maker
+1 GEDC
+2 VERS 5.5
+0 @I1@ INDI
+1 NAME John /Smith/
+1 SEX M
+1 BIRT
+2 DATE 12 MAR 1850
+2 PLAC London, England
+1 DEAT
+2 DATE 4 JAN 1921
+1 FAMS @F1@
+1 FAMC @F0@
+1 NOTE Worked as a printer.
+2 CONC  Lived near the river.
+0 @I2@ INDI
+1 NAME Jane /Doe/
+1 SEX F
+1 BIRT
+2 DATE 1852
+1 FAMS @F1@
+0 @I3@ INDI
+1 NAME Alice /Smith/
+1 SEX F
+1 BIRT
+2 DATE 1874
+1 FAMC @F1@
+0 @I4@ INDI
+1 NAME William /Smith/
+1 SEX M
+1 FAMC @F0@
+0 @I5@ INDI
+1 NAME Mary /Jones/
+1 SEX F
+0 @F0@ FAM
+1 HUSB @I4@
+1 WIFE @I5@
+1 CHIL @I1@
+0 @F1@ FAM
+1 HUSB @I1@
+1 WIFE @I2@
+1 MARR
+2 DATE 1872
+2 PLAC Kent
+1 CHIL @I3@
+0 TRLR
