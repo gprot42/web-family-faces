@@ -147,25 +147,30 @@ function faceBoxStyle(face, w, h) {
   };
 }
 
-function pctRect(face, w, h) {
-  const padX = Math.max(4, (face.x2 - face.x1) * 0.24);
-  const padY = Math.max(6, (face.y2 - face.y1) * 0.32);
+function tagFaceRect(face, w, h) {
+  const fw = Math.max(1, face.x2 - face.x1);
+  const fh = Math.max(1, face.y2 - face.y1);
+  const padX = fw * 0.05;
+  const padTop = fh * 0.08;
+  const padBot = fh * 0.04;
   return {
     x1: (100 * (face.x1 - padX)) / w,
-    y1: (100 * (face.y1 - padY)) / h,
+    y1: (100 * (face.y1 - padTop)) / h,
     x2: (100 * (face.x2 + padX)) / w,
-    y2: (100 * (face.y2 + padY)) / h,
+    y2: (100 * (face.y2 + padBot)) / h,
   };
 }
 
 function bodyRect(faceRect) {
   const fw = Math.max(2, faceRect.x2 - faceRect.x1);
   const fh = Math.max(2, faceRect.y2 - faceRect.y1);
+  const room = Math.max(0, 100 - faceRect.y2);
+  const mul = fh > 28 ? 0.2 : fh > 16 ? 0.5 : fh > 9 ? 0.95 : 1.25;
   return {
-    x1: faceRect.x1 - fw * 0.18,
+    x1: faceRect.x1 - fw * 0.1,
     y1: faceRect.y2,
-    x2: faceRect.x2 + fw * 0.18,
-    y2: Math.min(100, faceRect.y2 + fh * 1.85),
+    x2: faceRect.x2 + fw * 0.1,
+    y2: faceRect.y2 + Math.min(room, fh * mul),
   };
 }
 
@@ -179,7 +184,7 @@ function overlapArea(a, b) {
   return x * y;
 }
 
-function tagRect(left, top, tw, th, place, gap = 1.6) {
+function tagRect(left, top, tw, th, place, gap = 0.55) {
   if (place === "above") {
     return { x1: left - tw / 2, y1: top - th - gap, x2: left + tw / 2, y2: top - gap };
   }
@@ -210,7 +215,25 @@ function clusterAround(index, rects) {
   });
 }
 
-function outwardPlaces(faceRect, clusterRects, preferred) {
+function someoneInFront(faceRect, faceRects) {
+  const fh = Math.max(2, faceRect.y2 - faceRect.y1);
+  const fw = Math.max(2, faceRect.x2 - faceRect.x1);
+  return faceRects.some((other) => {
+    if (other === faceRect) return false;
+    const overlapX = Math.min(faceRect.x2, other.x2) - Math.max(faceRect.x1, other.x1);
+    if (overlapX < fw * 0.18) return false;
+    return other.y1 > faceRect.y1 + fh * 0.35 && other.y1 < faceRect.y2 + fh * 2.4;
+  });
+}
+
+function shortName(label) {
+  const text = String(label || "").trim();
+  if (!text) return text;
+  const word = text.split(/\s+/)[0];
+  return word.length <= 12 ? word : `${word.slice(0, 11)}…`;
+}
+
+function outwardPlaces(faceRect, clusterRects, preferred, faceRects) {
   const own = centerOf(faceRect);
   let cx = 0;
   let cy = 0;
@@ -219,15 +242,16 @@ function outwardPlaces(faceRect, clusterRects, preferred) {
     cx += c.x;
     cy += c.y;
   }
-  cx /= clusterRects.length;
-  cy /= clusterRects.length;
+  cx /= clusterRects.length || 1;
+  cy /= clusterRects.length || 1;
   const dx = own.x - cx;
   const dy = own.y - cy;
+  const blockedBelow = someoneInFront(faceRect, faceRects || clusterRects);
   const ranked = [
     { place: "right", score: dx },
     { place: "left", score: -dx },
-    { place: "below", score: dy },
-    { place: "above", score: -dy },
+    { place: "below", score: blockedBelow ? dy - 8 : dy },
+    { place: "above", score: blockedBelow ? -dy + 6 : -dy },
   ].sort((a, b) => b.score - a.score);
   const order = ranked.map((item) => item.place);
   const nearTop = faceRect.y1 < 9;
@@ -236,7 +260,7 @@ function outwardPlaces(faceRect, clusterRects, preferred) {
   const nearRight = faceRect.x2 > 92;
   const filtered = order.filter((place) => {
     if (place === "above" && nearTop) return false;
-    if (place === "below" && nearBottom) return false;
+    if (place === "below" && (nearBottom || blockedBelow)) return false;
     if (place === "left" && nearLeft) return false;
     if (place === "right" && nearRight) return false;
     return true;
@@ -245,7 +269,8 @@ function outwardPlaces(faceRect, clusterRects, preferred) {
   if (!crowded && preferred && preferred !== "on") {
     return [...new Set([preferred, ...filtered, ...order])];
   }
-  const places = [...new Set([...filtered, ...order, "above", "below", "right", "left"])];
+  const crowdOrder = blockedBelow ? ["above", "right", "left", "below"] : order;
+  const places = [...new Set([...filtered, ...crowdOrder, "above", "right", "left", "below"])];
   if (preferred === "on" && !crowded) places.push("on");
   return places;
 }
@@ -260,33 +285,34 @@ function anchorFor(faceRect, place, standoff = 0) {
   return { left, top: topMid };
 }
 
-function scoreTag(rect, tagObstacles, faceRects, bodyRects, ownFace, place, preferred, outward) {
+function scoreTag(rect, tagObstacles, faceRects, bodyRects, ownFace, place, preferred, outward, blockedBelow) {
   let score = outOfBounds(rect) * 90;
   for (const other of tagObstacles) {
     const area = overlapArea(rect, other);
-    if (area) score += area * 28;
+    if (area) score += area * 55;
   }
   for (const face of faceRects) {
     const area = overlapArea(rect, face);
     if (!area) continue;
     const own = Math.abs(face.x1 - ownFace.x1) < 0.01 && Math.abs(face.y1 - ownFace.y1) < 0.01;
-    score += area * (own ? 70 : 48);
+    score += area * (own ? 95 : 160);
   }
   for (const body of bodyRects) {
     const area = overlapArea(rect, body);
-    if (area) score += area * 18;
+    if (area) score += area * 52;
   }
   const ac = centerOf(ownFace);
   const tc = { x: (rect.x1 + rect.x2) / 2, y: (rect.y1 + rect.y2) / 2 };
   const dist = Math.hypot(tc.x - ac.x, tc.y - ac.y);
   const faceSize = Math.max(ownFace.x2 - ownFace.x1, ownFace.y2 - ownFace.y1);
-  score += dist * 0.5;
-  if (dist > faceSize * 2.1 + 7) score += (dist - faceSize * 2.1) * 2.4;
-  if (place === preferred && outward.length <= 1) score -= 1.6;
-  if (place === outward[0]) score -= 2.6;
-  if (place === outward[1]) score -= 1.1;
-  if (place === "above") score -= 0.45;
-  if (place === "on") score += 14;
+  score += dist * 1.35;
+  if (dist > faceSize * 1.6 + 3) score += (dist - faceSize * 1.6) * 6;
+  if (place === preferred && !blockedBelow) score -= 5.2;
+  if (place === outward[0]) score -= 2.2;
+  if (place === outward[1]) score -= 0.8;
+  if (place === "above") score -= blockedBelow ? 3.2 : 0.35;
+  if (place === "below" && blockedBelow) score += 22;
+  if (place === "on") score += 28;
   return score;
 }
 
@@ -300,19 +326,25 @@ function pinOf(face, pins) {
 }
 
 function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = null) {
-  const compact = faces.length >= 5;
-  const faceRects = faces.map((face) => pctRect(face, w, h));
+  const crowd = faces.length >= 8;
+  const compactUnnamed = faces.length >= 5;
+  const faceRects = faces.map((face) => tagFaceRect(face, w, h));
   const bodyRects = faceRects.map((rect) => bodyRect(rect));
   const jobs = faces
     .map((face, index) => {
       const named = !isUnknownFace(face);
-      const label = named ? faceLabel(face, true) : unnamedName(face, faces);
+      const compact = compactUnnamed && !named;
+      const full = named ? faceLabel(face, true) : unnamedName(face, faces);
+      const n = faceMark(face, faces);
+      const label = compact ? String(n || "") : named && crowd ? shortName(full) : full;
       const chars = String(label || "").length;
-      const tw = Math.min(32, Math.max(7.2, chars * 0.78 + 6.2));
-      const th = 4.4;
-      return { face, index, named, label, tw, th, compact: compact && !named, faceRect: faceRects[index] };
+      const tw = compact
+        ? 3.8
+        : Math.min(crowd ? 20 : 32, Math.max(6.2, chars * (crowd ? 0.72 : 0.78) + (crowd ? 7.2 : 6.2)));
+      const th = compact ? 3.4 : crowd ? 4.0 : 4.4;
+      return { face, index, named, label, tw, th, compact, faceRect: faceRects[index] };
     })
-    .filter((job) => keepUnnamed || !job.compact);
+    .filter((job) => job.named || keepUnnamed || !job.compact);
   jobs.sort((a, b) => {
     const ac = centerOf(a.faceRect);
     const bc = centerOf(b.faceRect);
@@ -337,18 +369,26 @@ function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = nul
     placed.push({ ...job, left: pin.left, top: pin.top, place: "manual", rect });
     pinnedIds.add(job.face.id);
   }
-  const standOffs = [0.8, 2.4, 4.4, 7.2, 10.5];
-  const slides = [0, -4, 4, -8, 8];
+  const standOffs = crowd ? [0.2, 0.55, 1.1, 1.9, 2.8, 4.0] : [0.15, 0.45, 1.0, 1.8];
+  const slides = crowd ? [0, -1.4, 1.4, -2.8, 2.8, -4.4, 4.4] : [0, -1.6, 1.6, -3.2, 3.2];
   for (const job of jobs) {
     if (pinnedIds.has(job.face.id)) continue;
     const cluster = clusterAround(job.index, faceRects);
-    const outward = outwardPlaces(job.faceRect, cluster, preferredPlace);
+    const blockedBelow = someoneInFront(job.faceRect, faceRects);
+    const outward = outwardPlaces(job.faceRect, cluster, preferredPlace, faceRects);
+    const faceSize = Math.max(job.faceRect.x2 - job.faceRect.x1, job.faceRect.y2 - job.faceRect.y1);
+    const maxOff = Math.max(crowd ? 1.6 : 0.8, faceSize * (crowd ? 0.55 : 0.32));
     let best = null;
     let bestScore = Infinity;
     for (const side of outward) {
       for (const standoff of standOffs) {
+        if (standoff > maxOff) continue;
         for (const slide of slides) {
-          const anchor = anchorFor(job.faceRect, side, standoff);
+          const body = bodyRects[job.index];
+          const anchor =
+            side === "below" && preferredPlace === "below" && body && faceSize < 14 && !blockedBelow
+              ? { left: (job.faceRect.x1 + job.faceRect.x2) / 2, top: body.y2 + standoff }
+              : anchorFor(job.faceRect, side, standoff);
           let left = anchor.left;
           let top = anchor.top;
           if (side === "above" || side === "below" || side === "on") left += slide;
@@ -365,6 +405,7 @@ function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = nul
             side,
             preferredPlace,
             outward,
+            blockedBelow,
           );
           if (score < bestScore) {
             bestScore = score;
@@ -706,18 +747,19 @@ export default function LabeledPhoto({
             group.items.map((item) => {
               const f = item.face;
               const unknown = isUnknownFace(f);
-              const label = unknown ? unnamedName(f, faces) : item.label || faceLabel(f, true);
-              const n = unknown ? null : faceMark(f, faces);
+              const label = item.label || (unknown ? unnamedName(f, faces) : faceLabel(f, true));
+              const n = faceMark(f, faces);
               const dragging = dragPin?.id === f.id;
               return (
                 <button
                   key={`tag-${f.id}`}
                   type="button"
-                  className={`nametag place-${item.place} ${isUnknownFace(f) ? "unnamed" : "named"} ${item.compact ? "compact" : ""} ${f.id === activeId ? "active" : ""} ${movable ? "movable" : ""} ${dragging ? "dragging" : ""}`}
+                  className={`nametag place-${item.place} ${unknown ? "unnamed" : "named"} ${item.compact ? "compact" : ""} ${f.id === activeId ? "active" : ""} ${movable ? "movable" : ""} ${dragging ? "dragging" : ""}`}
                   style={{ left: `${item.left}%`, top: `${item.top}%`, ...toneVars(f, faces) }}
                   data-face-id={f.id}
                   aria-label={
-                    (n ? `${n}. ${label || "Face"}` : label || "Face") + (f.comment ? `. ${f.comment}` : "")
+                    (unknown ? unnamedName(f, faces) : n ? `${n}. ${label || "Face"}` : label || "Face") +
+                    (f.comment ? `. ${f.comment}` : "")
                   }
                   title={f.comment || undefined}
                   onPointerDown={(e) => onTagPointerDown(e, f, { left: item.left, top: item.top })}
@@ -727,8 +769,14 @@ export default function LabeledPhoto({
                   onDoubleClick={(e) => onTagDoubleClick(e, f)}
                   onClick={(e) => onTagClick(e, f)}
                 >
-                  {n ? <span className="nametag-n">{n}</span> : null}
-                  {label}
+                  {item.compact ? (
+                    <span className="nametag-n">{n || label}</span>
+                  ) : (
+                    <>
+                      {n ? <span className="nametag-n">{n}</span> : null}
+                      {label}
+                    </>
+                  )}
                 </button>
               );
             }),

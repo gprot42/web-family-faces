@@ -7,7 +7,8 @@ import { matchPeople, uniqueFirstName } from "../nameSuggest.js";
 import FamousLookup from "../components/FamousLookup.jsx";
 import JobGauge from "../components/JobGauge.jsx";
 import NameSuggest from "../components/NameSuggest.jsx";
-import PersonPicker from "../components/PersonPicker.jsx";
+import PersonPicker, { isPersonDrag, personFromDataTransfer } from "../components/PersonPicker.jsx";
+import { saveCachedPeople } from "../peopleCache.js";
 
 function clusterKey(cluster) {
   const ids = cluster.face_ids;
@@ -15,18 +16,19 @@ function clusterKey(cluster) {
   return `c-${cluster.id}`;
 }
 
-function useNearViewport(startNear) {
+function useNearViewport(startNear, rootRef) {
   const ref = useRef(null);
   const [near, setNear] = useState(Boolean(startNear));
   useEffect(() => {
     const node = ref.current;
     if (!node) return undefined;
     const io = new IntersectionObserver(([entry]) => setNear(entry.isIntersecting), {
-      rootMargin: "200px 0px",
+      root: rootRef?.current || null,
+      rootMargin: "400px 0px",
     });
     io.observe(node);
     return () => io.disconnect();
-  }, []);
+  }, [rootRef]);
   return [ref, near];
 }
 
@@ -37,6 +39,12 @@ const CATEGORIES = [
 ];
 
 const POS_KEY = "photosort-to-name-pos";
+const NAMED_W_KEY = "photosort-to-name-named-w";
+const HAS_NAMED_KEY = "photosort-to-name-has-named";
+const NAMED_W_MIN = 280;
+const NAMED_W_DEFAULT = 340;
+const NAMED_W_MAX = 720;
+const GROUPS_MIN = 480;
 
 function readToNamePos() {
   try {
@@ -48,16 +56,80 @@ function readToNamePos() {
 
 function writeToNamePos(pos) {
   try {
-    sessionStorage.setItem(POS_KEY, JSON.stringify(pos));
+    const prev = readToNamePos() || {};
+    sessionStorage.setItem(POS_KEY, JSON.stringify({ ...prev, ...pos }));
   } catch {
     /* ignore quota */
   }
 }
 
-export default function Clusters({ onChange }) {
+function applyToNamePos(el, pos) {
+  if (!el || !pos) return false;
+  const crop = pos.faceId ? el.querySelector(`[data-face-id="${pos.faceId}"]`) : null;
+  const card = pos.clusterId ? el.querySelector(`[data-cluster-id="${pos.clusterId}"]`) : null;
+  const target = crop || card;
+  if (target) {
+    target.scrollIntoView({ block: "center", inline: "nearest" });
+    return true;
+  }
+  if (pos.scrollTop != null && Number(pos.scrollTop) > 0) {
+    el.scrollTop = Number(pos.scrollTop) || 0;
+    return true;
+  }
+  return false;
+}
+
+function readHasNamed() {
+  try {
+    return localStorage.getItem(HAS_NAMED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeHasNamed(on) {
+  try {
+    localStorage.setItem(HAS_NAMED_KEY, on ? "1" : "0");
+  } catch {
+    /* private mode */
+  }
+}
+
+function readNamedWidth() {
+  try {
+    const n = Number(localStorage.getItem(NAMED_W_KEY));
+    if (Number.isFinite(n) && n >= NAMED_W_MIN) return Math.round(n);
+  } catch {
+    /* private mode */
+  }
+  return NAMED_W_DEFAULT;
+}
+
+function writeNamedWidth(w) {
+  try {
+    localStorage.setItem(NAMED_W_KEY, String(Math.round(w)));
+  } catch {
+    /* private mode */
+  }
+}
+
+function namedMax(layoutEl) {
+  const layoutW = layoutEl?.clientWidth || 0;
+  if (!layoutW) return NAMED_W_MAX;
+  return Math.max(NAMED_W_MIN, Math.min(NAMED_W_MAX, layoutW - GROUPS_MIN));
+}
+
+function clampNamedWidth(w, layoutEl) {
+  const n = Number(w);
+  const fallback = Number.isFinite(n) ? n : NAMED_W_DEFAULT;
+  return Math.round(Math.min(namedMax(layoutEl), Math.max(NAMED_W_MIN, fallback)));
+}
+
+export default function Clusters({ onChange, stats }) {
   const [items, setItems] = useState([]);
   const [people, setPeople] = useState([]);
   const [err, setErr] = useState("");
+  const [saveErr, setSaveErr] = useState(null);
   const [savingId, setSavingId] = useState(null);
   const [saved, setSaved] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -65,6 +137,13 @@ export default function Clusters({ onChange }) {
   const [activeId, setActiveId] = useState(null);
   const [catById, setCatById] = useState({});
   const groupsRef = useRef(null);
+  const layoutRef = useRef(null);
+  const namedNow = useRef(readNamedWidth());
+  const dragNamed = useRef(null);
+  const [namedW, setNamedW] = useState(() => namedNow.current);
+  const [resizingNamed, setResizingNamed] = useState(false);
+  const [peopleReady, setPeopleReady] = useState(false);
+  const [hasNamedHint] = useState(() => readHasNamed());
   const restoredPos = useRef(false);
   const [job, setJob] = useState(null);
   const [lookupOk, setLookupOk] = useState(true);
@@ -121,12 +200,21 @@ export default function Clusters({ onChange }) {
   }, []);
 
   async function refresh() {
+    const peopleP = api
+      .people(undefined, { lite: true })
+      .then((p) => {
+        const items = p.items || [];
+        setPeople(items);
+        setPeopleReady(true);
+        writeHasNamed(items.some((person) => !person.unknown_name));
+        saveCachedPeople("", items);
+      })
+      .catch(() => {
+        setPeopleReady(true);
+      });
     const c = await api.clusters();
     setItems(c.items || []);
-    api
-      .people(undefined, { lite: true })
-      .then((p) => setPeople(p.items || []))
-      .catch(() => {});
+    peopleP.catch(() => {});
     return Boolean(c.clustering) && !(c.items || []).length;
   }
 
@@ -182,23 +270,109 @@ export default function Clusters({ onChange }) {
     };
   }, [activeId]);
 
+  function applyNamedWidth(next) {
+    const w = clampNamedWidth(next, layoutRef.current);
+    namedNow.current = w;
+    setNamedW(w);
+    return w;
+  }
+
   useEffect(() => {
-    if (loading || restoredPos.current) return;
-    const el = groupsRef.current;
+    applyNamedWidth(namedNow.current);
+    function onWin() {
+      applyNamedWidth(namedNow.current);
+    }
+    window.addEventListener("resize", onWin);
+    return () => {
+      window.removeEventListener("resize", onWin);
+      document.documentElement.classList.remove("to-name-resizing");
+    };
+  }, []);
+
+  function onNamedResizeStart(e) {
+    if (e.button != null && e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragNamed.current = {
+      x: e.clientX,
+      w: namedNow.current,
+      max: namedMax(layoutRef.current),
+      pointerId: e.pointerId,
+    };
+    setResizingNamed(true);
+    document.documentElement.classList.add("to-name-resizing");
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  }
+
+  function onNamedResizeMove(e) {
+    const drag = dragNamed.current;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    applyNamedWidth(drag.w + (drag.x - e.clientX));
+  }
+
+  function onNamedResizeEnd(e) {
+    const drag = dragNamed.current;
+    if (!drag || (e.pointerId != null && drag.pointerId !== e.pointerId)) return;
+    dragNamed.current = null;
+    setResizingNamed(false);
+    document.documentElement.classList.remove("to-name-resizing");
+    writeNamedWidth(namedNow.current);
+    try {
+      e.currentTarget.releasePointerCapture?.(e.pointerId);
+    } catch {
+      /* already released */
+    }
+    if (e.pointerType !== "keyboard") e.currentTarget.blur?.();
+  }
+
+  function onNamedResizeKey(e) {
+    const step = e.shiftKey ? 64 : 24;
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      writeNamedWidth(applyNamedWidth(namedNow.current + step));
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      writeNamedWidth(applyNamedWidth(namedNow.current - step));
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      writeNamedWidth(applyNamedWidth(NAMED_W_DEFAULT));
+    } else if (e.key === "End") {
+      e.preventDefault();
+      writeNamedWidth(applyNamedWidth(namedMax(layoutRef.current)));
+    }
+  }
+
+  function onNamedResizeReset() {
+    writeNamedWidth(applyNamedWidth(NAMED_W_DEFAULT));
+  }
+
+  useEffect(() => {
+    if (loading || !items.length || restoredPos.current) return;
     const pos = readToNamePos();
-    if (!el || !pos) return;
-    restoredPos.current = true;
+    if (!pos) {
+      restoredPos.current = true;
+      return undefined;
+    }
+    const el = groupsRef.current;
+    if (!el) return undefined;
     if (pos.activeId && items.some((item) => item.id === pos.activeId)) {
       setActiveId(pos.activeId);
     }
-    const apply = () => {
-      const card = pos.clusterId
-        ? el.querySelector(`[data-cluster-id="${pos.clusterId}"]`)
-        : null;
-      if (card) card.scrollIntoView({ block: "start" });
-      else el.scrollTop = Number(pos.scrollTop) || 0;
+    let tries = 0;
+    let timer = 0;
+    const tryApply = () => {
+      if (applyToNamePos(el, pos) || tries >= 16) {
+        restoredPos.current = true;
+        return;
+      }
+      tries += 1;
+      timer = window.setTimeout(tryApply, 50);
     };
-    requestAnimationFrame(() => requestAnimationFrame(apply));
+    const raf = requestAnimationFrame(() => requestAnimationFrame(tryApply));
+    return () => {
+      cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
+    };
   }, [loading, items]);
 
   function faceIdsOf(id) {
@@ -209,46 +383,60 @@ export default function Clusters({ onChange }) {
     return [];
   }
 
-  async function finishSave(id, name, result, faceCount) {
-    setSaved({
-      name,
-      faces: result.assigned || faceCount || 0,
-      also: result.also_matched || 0,
-    });
+  async function failSave(id, ex, extra = {}) {
+    const message = ex.message || "Could not save.";
+    setSaved(null);
+    setErr(message);
+    setSaveErr({ id, message });
+    api.reportError(message, { page: "to-name", cluster_id: id, ...extra }).catch(() => {});
     await refresh();
-    onChange?.();
+    requestAnimationFrame(() => {
+      const root = groupsRef.current;
+      const card = root?.querySelector(`[data-cluster-id="${id}"]`);
+      const banner = card?.querySelector(".save-error") || root?.querySelector(".save-error") || card;
+      banner?.scrollIntoView({ block: "center", inline: "nearest" });
+    });
   }
 
   async function nameCluster(id, name, category) {
     setErr("");
+    setSaveErr(null);
     const faceIds = faceIdsOf(id);
     const namedCount = faceIds.length;
-    setItems((cur) => cur.filter((c) => c.id !== id));
-    setSaved({ name, faces: namedCount, also: 0 });
-    onChange?.({
-      unknown_clusters: -1,
-      faces_unknown: -namedCount,
-      people: 1,
-      people_named: 1,
-    });
+    setSavingId(id);
     try {
       const result = await api.nameCluster(id, name, faceIds, category);
       if (!result.assigned) {
-        throw new Error("That group was regrouped. Save this name again.");
+        throw new Error(
+          result.message ||
+            "Could not attach that name to these faces. If they are someone already in the catalog, click that person. Otherwise mark mixed faces Not this person and try again.",
+        );
       }
+      setItems((cur) => cur.filter((c) => c.id !== id));
       setSaved({
         name: result.person?.name || name,
-        faces: result.assigned || faceCount,
+        faces: result.assigned || namedCount,
         also: result.also_matched || 0,
+        leftover: result.remaining || 0,
       });
-    } catch (ex) {
-      setErr(ex.message);
+      onChange?.({
+        unknown_clusters: result.remaining ? 0 : -1,
+        faces_unknown: -(result.assigned || namedCount),
+        people: 1,
+        people_named: 1,
+      });
       await refresh();
+      onChange?.();
+    } catch (ex) {
+      await failSave(id, ex, { action: "name" });
+    } finally {
+      setSavingId(null);
     }
   }
 
   async function markJunk(id) {
     setErr("");
+    setSaveErr(null);
     const faceIds = faceIdsOf(id);
     const namedCount = faceIds.length;
     setItems((cur) => cur.filter((c) => c.id !== id));
@@ -257,16 +445,18 @@ export default function Clusters({ onChange }) {
     try {
       const result = await api.junkCluster(id, faceIds);
       if (!result.cleared) {
-        throw new Error("That group was regrouped. Click Not a person again.");
+        throw new Error(result.message || "That group was regrouped. Click Not a person again.");
       }
-    } catch (ex) {
-      setErr(ex.message);
       await refresh();
+      onChange?.();
+    } catch (ex) {
+      await failSave(id, ex, { action: "junk" });
     }
   }
 
   async function markUnknown(id, category) {
     setErr("");
+    setSaveErr(null);
     const faceIds = faceIdsOf(id);
     const namedCount = faceIds.length;
     setItems((cur) => cur.filter((c) => c.id !== id));
@@ -280,45 +470,52 @@ export default function Clusters({ onChange }) {
     try {
       const result = await api.unknownCluster(id, category, faceIds);
       if (!result.assigned) {
-        throw new Error("That group was regrouped. Click Unknown again.");
+        throw new Error(result.message || "That group was regrouped. Click Unknown again.");
       }
-      api
-        .people(undefined, { lite: true })
-        .then((p) => setPeople(p.items || []))
-        .catch(() => {});
-    } catch (ex) {
-      setErr(ex.message);
       await refresh();
+      onChange?.();
+    } catch (ex) {
+      await failSave(id, ex, { action: "unknown" });
     }
   }
 
   async function assignToPerson(id, person, category) {
     setErr("");
+    setSaveErr(null);
     const faceIds = faceIdsOf(id);
     const namedCount = faceIds.length;
-    setItems((cur) => cur.filter((c) => c.id !== id));
-    setSaved({ name: person.name, faces: namedCount, also: 0 });
-    onChange?.({ unknown_clusters: -1, faces_unknown: -namedCount });
+    setSavingId(id);
     try {
       const result = await api.assignCluster(id, person.id, faceIds, category);
       if (!result.assigned) {
-        throw new Error("That group was regrouped. Click the name again.");
+        throw new Error(
+          result.message ||
+            "Could not attach that catalog name to these faces. Mark mixed faces Not this person and try again.",
+        );
       }
-      if (result.also_matched) {
-        setSaved({
-          name: person.name,
-          faces: result.assigned || faceCount,
-          also: result.also_matched,
-        });
-      }
-    } catch (ex) {
-      setErr(ex.message);
+      setItems((cur) => cur.filter((c) => c.id !== id));
+      setSaved({
+        name: person.name,
+        faces: result.assigned || namedCount,
+        also: result.also_matched || 0,
+        leftover: result.remaining || 0,
+      });
+      onChange?.({ unknown_clusters: result.remaining ? 0 : -1, faces_unknown: -(result.assigned || namedCount) });
       await refresh();
+      onChange?.();
+    } catch (ex) {
+      await failSave(id, ex, { action: "assign" });
+    } finally {
+      setSavingId(null);
     }
   }
 
   const identifying = Boolean(job && (job.status === "running" || job.status === "queued"));
   const identifyPaused = Boolean(job && job.status === "paused");
+  const hasNamedPeople = people.some((p) => !p.unknown_name);
+  const hasNamed =
+    hasNamedPeople ||
+    ((loading || items.length > 0) && (hasNamedHint || Number(stats?.people_named) > 0));
 
   async function startIdentify() {
     setErr("");
@@ -337,7 +534,11 @@ export default function Clusters({ onChange }) {
 
   return (
     <div className="to-name-page">
-      <div className={`to-name-layout${people.some((p) => !p.unknown_name) && items.length ? " has-named" : ""}`}>
+      <div
+        ref={layoutRef}
+        className={`to-name-layout${hasNamed ? " has-named" : ""}${resizingNamed ? " resizing" : ""}`}
+        style={hasNamed ? { "--named-panel-w": `${namedW}px` } : undefined}
+      >
         <div className="to-name-groups" ref={groupsRef}>
           <div className={`to-name-sticky${identifying || identifyPaused ? " busy" : ""}`}>
             <div className="page-head">
@@ -375,7 +576,11 @@ export default function Clusters({ onChange }) {
               <JobGauge job={job} title="Identifying faces" resumeable={false} compact />
             ) : null}
           </div>
-          {err ? <p className="error">{err}</p> : null}
+          {err ? (
+            <p className="error save-error" role="alert">
+              {err}
+            </p>
+          ) : null}
           {identifyNote ? (
             <div className="save-note" role="status">
               {identifyNote}. Groups named from the catalog also appear under Check names.
@@ -385,7 +590,11 @@ export default function Clusters({ onChange }) {
             <div className="save-note" role="status" aria-live="polite">
               Saved {saved.name}. {saved.faces} face{saved.faces === 1 ? "" : "s"} in that group
               {saved.also ? ` · ${saved.also} more matched` : ""}.
-              {items.length ? " Next group is below." : " Nothing left to name here."}
+              {saved.leftover
+                ? ` ${saved.leftover} face${saved.leftover === 1 ? "" : "s"} still unnamed in that group — name or split them below.`
+                : items.length
+                  ? " Next group is below."
+                  : " Nothing left to name here."}
             </div>
           ) : null}
           {loading ? (
@@ -403,6 +612,7 @@ export default function Clusters({ onChange }) {
               cluster={c}
               people={people}
               saving={savingId === c.id}
+              saveError={saveErr?.id === c.id ? saveErr.message : ""}
               eager={i === 0}
               active={c.id === activeId}
               category={catById[c.id] || ""}
@@ -412,15 +622,35 @@ export default function Clusters({ onChange }) {
               onAssign={assignToPerson}
               onUnknown={markUnknown}
               onJunk={markJunk}
-              onOpenPhoto={() => rememberPos({ clusterId: c.id, activeId: c.id })}
+              scrollRoot={groupsRef}
+              onOpenPhoto={(face) =>
+                rememberPos({ clusterId: c.id, activeId: c.id, faceId: face?.id })
+              }
               onChange={refresh}
               lookupOk={lookupOk}
             />
           ))}
         </div>
-        {items.length && people.some((p) => !p.unknown_name) ? (
+        {hasNamed ? (
           <aside className="to-name-named">
-            <div className="cluster-or">or click someone already named</div>
+            <div
+              className="to-name-named-resize"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize named people list"
+              aria-valuemin={NAMED_W_MIN}
+              aria-valuemax={namedMax(layoutRef.current)}
+              aria-valuenow={namedW}
+              tabIndex={0}
+              onPointerDown={onNamedResizeStart}
+              onPointerMove={onNamedResizeMove}
+              onPointerUp={onNamedResizeEnd}
+              onPointerCancel={onNamedResizeEnd}
+              onKeyDown={onNamedResizeKey}
+              onDoubleClick={onNamedResizeReset}
+              {...tip("Drag left to show more people. Double-click to reset.")}
+            />
+            <div className="cluster-or">or click or drag someone already named</div>
             <p className="hint">
               Applies to the highlighted group
               {items.find((c) => c.id === activeId)
@@ -428,17 +658,21 @@ export default function Clusters({ onChange }) {
                 : ""}
               .
             </p>
-            <PersonPicker
-              people={people}
-              showCategoryFilter
-              categoryFilter={showCats}
-              onCategoryFilter={setShowCats}
-              hint="This whole group gets that name."
-              onPick={(p) => {
-                const target = items.find((c) => c.id === activeId) || items[0];
-                if (target) assignToPerson(target.id, p, catById[target.id] || "");
-              }}
-            />
+            {peopleReady ? (
+              <PersonPicker
+                people={people}
+                showCategoryFilter
+                categoryFilter={showCats}
+                onCategoryFilter={setShowCats}
+                hint="Click to name the highlighted group, or drag onto Name this person."
+                onPick={(p) => {
+                  const target = items.find((c) => c.id === activeId) || items[0];
+                  if (target) assignToPerson(target.id, p, catById[target.id] || "");
+                }}
+              />
+            ) : (
+              <p className="hint">Loading names…</p>
+            )}
           </aside>
         ) : null}
       </div>
@@ -450,6 +684,7 @@ function ClusterCard({
   cluster,
   people,
   saving,
+  saveError,
   eager,
   active,
   category,
@@ -461,12 +696,15 @@ function ClusterCard({
   onJunk,
   onOpenPhoto,
   onChange,
+  scrollRoot,
   lookupOk = true,
 }) {
   const [name, setName] = useState("");
   const [namePick, setNamePick] = useState(-1);
   const [picked, setPicked] = useState([]);
-  const [cardRef, near] = useNearViewport(eager);
+  const [dropOver, setDropOver] = useState(false);
+  const dragDepth = useRef(0);
+  const [cardRef, near] = useNearViewport(eager, scrollRoot);
   const canSplit = cluster.faces.length > 1;
   const canSave = Boolean(name.trim()) && !saving;
   const catalogHits = matchPeople(name, people);
@@ -504,6 +742,34 @@ function ClusterCard({
     else onName(cluster.id, typed, category);
   }
 
+  function acceptPersonDrop(event) {
+    if (saving || !isPersonDrag(event.dataTransfer)) return false;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    return true;
+  }
+
+  function onPersonDragEnter(event) {
+    if (!acceptPersonDrop(event)) return;
+    dragDepth.current += 1;
+    setDropOver(true);
+  }
+
+  function onPersonDragLeave() {
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDropOver(false);
+  }
+
+  function onPersonDrop(event) {
+    acceptPersonDrop(event);
+    dragDepth.current = 0;
+    setDropOver(false);
+    const dragged = personFromDataTransfer(event.dataTransfer);
+    if (!dragged) return;
+    const person = people.find((p) => Number(p.id) === Number(dragged.id));
+    if (person) onAssign(cluster.id, person, category);
+  }
+
   const lookupProps = {
     clusterId: cluster.id,
     faceIds: (cluster.faces || []).map((f) => f.id),
@@ -529,7 +795,7 @@ function ClusterCard({
     <div
       ref={cardRef}
       data-cluster-id={cluster.id}
-      className={`card cluster${active ? " active" : ""}`}
+      className={`card cluster${active ? " active" : ""}${saveError ? " has-save-error" : ""}`}
       onPointerDown={onActivate}
     >
       <div className="cluster-faces">
@@ -539,6 +805,7 @@ function ClusterCard({
               ? `${cluster.faces.length} of ${cluster.face_count} faces`
               : `${cluster.face_count} face${cluster.face_count === 1 ? "" : "s"}`}
           </strong>
+          <span className="hint">#{cluster.id}</span>
           <span className="hint">{groupWhen(cluster)}</span>
           <FamousLookup variant="launch" {...lookupProps} />
         </div>
@@ -554,13 +821,13 @@ function ClusterCard({
             const selected = picked.includes(f.id);
             const photoTo = f.photo_id ? `/photos/${f.photo_id}` : null;
             return (
-              <div key={f.id} className={`crop ${selected ? "picked" : ""}`}>
+              <div key={f.id} data-face-id={f.id} className={`crop ${selected ? "picked" : ""}`}>
                 {near && photoTo ? (
                   <Link
                     className="crop-photo"
                     to={photoTo}
                     state={{ fullscreen: true, from: "/to-name" }}
-                    onClick={() => onOpenPhoto?.()}
+                    onClick={() => onOpenPhoto?.(f)}
                     {...tip("Open the whole photo. Original stays on the NAS.")}
                   >
                     <img src={f.crop_url} alt="" decoding="async" />
@@ -570,7 +837,7 @@ function ClusterCard({
                 ) : (
                   <span className="crop-ph" />
                 )}
-                {near && canSplit ? (
+                {canSplit ? (
                   <button
                     type="button"
                     className={`crop-mark ${selected ? "on" : ""}`}
@@ -593,11 +860,11 @@ function ClusterCard({
             );
           })}
         </div>
-        {near && canSplit ? (
+        {canSplit ? (
           <button
             type="button"
             className="secondary"
-            disabled={!picked.length}
+            disabled={!near || !picked.length}
             onClick={() => api.splitCluster(cluster.id, picked).then(onChange)}
             {...tip("Take the faces you clicked out of this group so you can name them separately.")}
           >
@@ -610,7 +877,18 @@ function ClusterCard({
         ) : null}
       </div>
 
-      <div className="cluster-actions">
+      <div
+        className={`cluster-actions${dropOver ? " drop-over" : ""}`}
+        onDragEnter={onPersonDragEnter}
+        onDragOver={acceptPersonDrop}
+        onDragLeave={onPersonDragLeave}
+        onDrop={onPersonDrop}
+      >
+        {saveError ? (
+          <p className="error save-error" role="alert">
+            {saveError}
+          </p>
+        ) : null}
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -624,7 +902,7 @@ function ClusterCard({
             <input
               id={`name-${cluster.id}`}
               className="grow"
-              placeholder="Type their name"
+              placeholder={dropOver ? "Drop a name here" : "Type their name"}
               autoComplete="off"
               value={name}
               disabled={saving}

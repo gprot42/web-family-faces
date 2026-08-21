@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,8 @@ from .db import connect, init_db
 from .originals import drop_preview_rows, preview_path_sql
 from .util import bytes_to_embedding, l2_normalize, now_iso
 
-_COVER_CANDIDATES = 16
+_COVER_CANDIDATES = 12
+_COVER_RECENT = 8
 
 
 def age_band(age: float | None) -> str:
@@ -67,7 +69,7 @@ def _person_has_distinct_box(claimed: dict[int, list[Any]], person_id: int, box:
     return not any(_box_iou(box, other) >= _SAME_FACE_IOU for other in existing)
 
 
-def _occlusion(face: Any, others: list[Any] | None) -> float:
+def _occlusion(face: Any, others: list[Any] | None, *, crowd: bool = True) -> float:
     """0 = clear view, 1 = another face covers this one."""
     others = others or []
     area = _face_area(face)
@@ -83,8 +85,10 @@ def _occlusion(face: Any, others: list[Any] | None) -> float:
         other_area = _face_area(other)
         if inter > 0:
             cover = inter / area
-            front = 1.25 if other_area > area else 1.0
-            penalty = max(penalty, min(1.0, cover * front))
+            # A smaller nested box is usually a duplicate detection, not someone in front.
+            if other_area >= area * 0.85:
+                front = 1.25 if other_area > area else 1.0
+                penalty = max(penalty, min(1.0, cover * front))
             continue
         ocx = (float(other["x1"] or 0) + float(other["x2"] or 0)) / 2.0
         ocy = (float(other["y1"] or 0) + float(other["y2"] or 0)) / 2.0
@@ -92,7 +96,7 @@ def _occlusion(face: Any, others: list[Any] | None) -> float:
         if fx1 < ocx < fx2 and ocy > fcy and float(other["y1"] or 0) < fy2:
             penalty = max(penalty, min(1.0, 0.55 * other_area / area))
     extras = max(0, len(others) - 1)
-    if extras:
+    if crowd and extras:
         penalty = min(1.0, penalty + min(0.22, 0.03 * extras))
     return penalty
 
@@ -116,40 +120,20 @@ def _faces_on_photos(conn, photo_ids: list[int]) -> dict[int, list[Any]]:
     return out
 
 
-def _crop_view_score(face_id: int) -> float:
-    """0-1: prefer mid-bright, contrasty crops over dark or washed-out ones."""
+_look_cache: dict[tuple[str, int], tuple[float, float]] = {}
+
+
+def _crop_look_scores(face_id: int) -> tuple[float, float]:
+    """(color 0-1, view 0-1) from one crop read. Missing crops stay neutral."""
     path = CROP_DIR / f"{int(face_id)}.jpg"
-    if not path.is_file():
-        return 0.45
     try:
-        from PIL import Image
-
-        img = Image.open(path)
-        img.load()
-        gray = img.convert("L").resize((32, 32), Image.Resampling.BILINEAR)
-        img.close()
-    except Exception:
-        return 0.45
-    pixels = list(gray.tobytes())
-    n = len(pixels) or 1
-    mean = sum(pixels) / n
-    var = sum((p - mean) ** 2 for p in pixels) / n
-    std = var ** 0.5
-    if mean < 42:
-        bright = 0.2 * (mean / 42.0)
-    elif mean > 215:
-        bright = max(0.15, 1.0 - (mean - 215) / 40.0)
-    else:
-        bright = 0.55 + 0.45 * (1.0 - abs(mean - 132) / 90.0)
-    contrast = min(1.0, std / 48.0)
-    return 0.5 * bright + 0.5 * contrast
-
-
-def _crop_color_score(face_id: int) -> float:
-    """1 = colour crop, 0 = black-and-white. Missing crops stay neutral."""
-    path = CROP_DIR / f"{int(face_id)}.jpg"
-    if not path.is_file():
-        return 0.5
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        return 0.5, 0.45
+    key = (str(path), mtime)
+    cached = _look_cache.get(key)
+    if cached:
+        return cached
     try:
         from PIL import Image
 
@@ -159,19 +143,47 @@ def _crop_color_score(face_id: int) -> float:
         img.close()
         raw = small.tobytes()
     except Exception:
-        return 0.5
+        return 0.5, 0.45
     n = max(1, len(raw) // 3)
     colorful = 0
+    luma = []
     for i in range(0, n * 3, 3):
         r, g, b = raw[i], raw[i + 1], raw[i + 2]
         if max(r, g, b) - min(r, g, b) >= 18:
             colorful += 1
+        luma.append(0.2126 * r + 0.7152 * g + 0.0722 * b)
     frac = colorful / n
     if frac >= 0.16:
-        return 1.0
-    if frac >= 0.06:
-        return 0.35
-    return 0.0
+        color = 1.0
+    elif frac >= 0.06:
+        color = 0.35
+    else:
+        color = 0.0
+    mean = sum(luma) / n
+    var = sum((p - mean) ** 2 for p in luma) / n
+    std = var ** 0.5
+    if mean < 42:
+        bright = 0.2 * (mean / 42.0)
+    elif mean > 215:
+        bright = max(0.15, 1.0 - (mean - 215) / 40.0)
+    else:
+        bright = 0.55 + 0.45 * (1.0 - abs(mean - 132) / 90.0)
+    view = 0.5 * bright + 0.5 * min(1.0, std / 48.0)
+    _look_cache[key] = (color, view)
+    if len(_look_cache) > 8000:
+        for old in list(_look_cache)[:2000]:
+            _look_cache.pop(old, None)
+    return color, view
+
+
+def _crop_view_score(face_id: int) -> float:
+    """0-1: prefer mid-bright, contrasty crops over dark or washed-out ones."""
+    return _crop_look_scores(face_id)[1]
+
+
+def _crop_color_score(face_id: int) -> float:
+    """1 = colour crop, 0 = black-and-white. Missing crops stay neutral."""
+    return _crop_look_scores(face_id)[0]
 
 
 _MALE_FIRST = frozenset(
@@ -310,12 +322,12 @@ def _cover_rank(
             sex_match = 0.4
     else:
         sex_match = 0.5
-    clear = 1.0 - _occlusion(row, neighbors)
+    blocked = _occlusion(row, neighbors, crowd=False)
+    unobscured = 1.0 if blocked < 0.28 else 0.0
     det = float(row["det_score"] or 0)
     size = min(1.0, (_face_area(row) ** 0.5) / 160.0)
-    view = _crop_view_score(int(row["id"]))
-    color = _crop_color_score(int(row["id"]))
-    return (sex_match, color, name_hit, clear, view, det, size)
+    color, view = _crop_look_scores(int(row["id"]))
+    return (unobscured, color, sex_match, name_hit, 1.0 - blocked, view, det, size)
 
 
 def _sex_centroids(conn, person_ids: list[int]) -> dict[int, dict[str, Any]]:
@@ -390,7 +402,9 @@ def _looks_sex(row: Any, means: dict[str, Any] | None, emb_by_id: dict[int, Any]
     return ""
 
 
-def _best_cover_ids(conn, person_ids: list[int] | None = None) -> dict[int, int]:
+def _best_cover_ids(
+    conn, person_ids: list[int] | None = None, *, scan_embeddings: bool = True
+) -> dict[int, int]:
     extra = ""
     params: list[Any] = []
     if person_ids:
@@ -424,7 +438,11 @@ def _best_cover_ids(conn, person_ids: list[int] | None = None) -> dict[int, int]
                        f.det_score DESC,
                        ((f.x2 - f.x1) * (f.y2 - f.y1)) DESC,
                        f.id
-                   ) AS rn
+                   ) AS det_rn,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY f.person_id
+                       ORDER BY ph.taken_at IS NULL, ph.taken_at DESC, f.det_score DESC, f.id
+                   ) AS recent_rn
             FROM faces f
             JOIN photos ph ON ph.id = f.photo_id
             JOIN votes v ON v.person_id = f.person_id
@@ -435,9 +453,9 @@ def _best_cover_ids(conn, person_ids: list[int] | None = None) -> dict[int, int]
               AND {preview_path_sql("ph.path")}
               {extra}
         ) ranked
-        WHERE rn <= ?
+        WHERE det_rn <= ? OR recent_rn <= ?
         """,
-        (*params, *params, _COVER_CANDIDATES),
+        (*params, *params, _COVER_CANDIDATES, _COVER_RECENT),
     ).fetchall()
     by_person: dict[int, list[Any]] = {}
     seen: set[int] = set()
@@ -476,9 +494,9 @@ def _best_cover_ids(conn, person_ids: list[int] | None = None) -> dict[int, int]
         marks = ",".join("?" * len(pids))
         for row in conn.execute(f"SELECT id, name FROM people WHERE id IN ({marks})", pids):
             names[int(row["id"])] = row["name"]
-    centroids = _sex_centroids(conn, pids)
+    centroids = _sex_centroids(conn, pids) if scan_embeddings else {}
     emb_by_id: dict[int, Any] = {}
-    if pids:
+    if scan_embeddings and pids:
         marks = ",".join("?" * len(pids))
         for row in conn.execute(
             f"""
@@ -494,13 +512,21 @@ def _best_cover_ids(conn, person_ids: list[int] | None = None) -> dict[int, int]
     for pid, cands in by_person.items():
         want = _name_sex(names.get(pid, "")) or _majority_sex(cands)
         means = centroids.get(pid)
+        pool = list(cands)
+        clear = [
+            row
+            for row in pool
+            if _occlusion(row, neighbors.get(int(row["photo_id"])), crowd=False) < 0.28
+        ]
+        if clear:
+            pool = clear
         best = max(
-            cands,
+            pool,
             key=lambda row, n=neighbors, w=want, m=means: _cover_rank(
                 row,
                 n.get(int(row["photo_id"])),
                 w,
-                _looks_sex(row, m, emb_by_id),
+                _looks_sex(row, m, emb_by_id) if means else "",
                 1.0 if int(row["id"]) in named_ids else 0.0,
             ),
         )
@@ -613,15 +639,39 @@ def nickname_keys(value: str | None) -> list[str]:
     return [part.casefold() for part in nick.split(", ")]
 
 
+def _edit_distance(left: str, right: str) -> int:
+    if left == right:
+        return 0
+    if abs(len(left) - len(right)) > 1:
+        return 2
+    prev = list(range(len(right) + 1))
+    for i, char in enumerate(left, 1):
+        cur = [i]
+        for j, other in enumerate(right, 1):
+            cur.append(min(cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + (char != other)))
+        prev = cur
+    return prev[-1]
+
+
+def _token_matches(word: str, token: str) -> bool:
+    if not token or not word:
+        return False
+    if token in word or word.startswith(token):
+        return True
+    return len(token) >= 3 and len(word) >= 3 and _edit_distance(token, word) <= 1
+
+
 def person_matches_query(person: dict[str, Any], query: str) -> bool:
     wanted = (query or "").strip().casefold()
     if not wanted:
         return False
     name = str(person.get("name") or "").casefold()
     nick = str(person.get("nickname") or "").casefold()
-    if wanted in name or wanted in nick:
+    hay = f"{name} {nick}".strip()
+    if wanted in hay:
         return True
-    return any(part.startswith(wanted) or wanted in part for part in nickname_keys(nick))
+    words = hay.split() + nickname_keys(nick)
+    return all(any(_token_matches(word, token) for word in words) for token in wanted.split())
 
 
 def find_person_by_name(name: str) -> dict[str, Any] | None:
@@ -711,7 +761,7 @@ def create_unknown_person() -> dict[str, Any]:
 
 def list_people(folder: str | None = None, *, lite: bool = False) -> list[dict[str, Any]]:
     wanted = (folder or "").strip() or None
-    people = _list_people_covers()
+    people = _list_people_covers_lite() if lite and not wanted else _list_people_covers()
     if not wanted:
         return people
     stats = _folder_people_stats(wanted)
@@ -728,6 +778,49 @@ def list_people(folder: str | None = None, *, lite: bool = False) -> list[dict[s
         person["age_max"] = info["age_max"]
         out.append(person)
     return out
+
+
+def _list_people_covers_lite() -> list[dict[str, Any]]:
+    """Picker lists: name, category, and a clear colour crop. No embedding scan."""
+    conn = connect()
+    init_db(conn)
+    try:
+        people = [dict(r) for r in conn.execute("SELECT * FROM people ORDER BY name COLLATE NOCASE").fetchall()]
+        covers = {
+            int(r["person_id"]): r
+            for r in conn.execute(
+                f"""
+                SELECT person_id, cnt FROM (
+                    SELECT f.person_id,
+                           COUNT(*) OVER (PARTITION BY f.person_id) AS cnt,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY f.person_id
+                               ORDER BY f.det_score DESC, f.id
+                           ) AS rn
+                    FROM faces f
+                    JOIN photos ph ON ph.id = f.photo_id
+                    WHERE f.person_id IS NOT NULL
+                      AND f.quality = 'ok'
+                      AND IFNULL(f.assigned_how, '') != 'junk'
+                      AND IFNULL(ph.hidden, 0) = 0
+                      AND {preview_path_sql("ph.path")}
+                ) ranked
+                WHERE rn = 1
+                """
+            ).fetchall()
+        }
+        best_cover = _best_cover_ids(conn, scan_embeddings=False)
+        out: list[dict[str, Any]] = []
+        for person in people:
+            info = covers.get(int(person["id"]))
+            if not info:
+                continue
+            person["face_count"] = int(info["cnt"] or 0)
+            person["cover_face_id"] = best_cover.get(int(person["id"]))
+            out.append(person)
+        return out
+    finally:
+        conn.close()
 
 
 def _list_people_covers() -> list[dict[str, Any]]:
@@ -974,7 +1067,9 @@ def assign_faces(
                     try:
                         match_mod.match_photo(pid)
                     except Exception:
-                        pass
+                        from . import log as log_mod
+
+                        log_mod.exception("follow-up match failed photo=%s", pid)
 
             threading.Thread(
                 target=follow_photos,
@@ -1026,6 +1121,33 @@ def unassign_face_and_copies(face_id: int, *, sync_sidecars: bool = True) -> int
     return unassign_faces(ids, sync_sidecars=sync_sidecars)
 
 
+def unassign_photo_names(photo_id: int, *, sync_sidecars: bool = True) -> int:
+    """Take every catalog name off this picture. Matcher will not put them back."""
+    conn = connect()
+    init_db(conn)
+    try:
+        ids = [
+            int(row["id"])
+            for row in conn.execute(
+                """
+                SELECT id FROM faces
+                WHERE photo_id = ?
+                  AND person_id IS NOT NULL
+                  AND IFNULL(assigned_how, '') != 'junk'
+                """,
+                (int(photo_id),),
+            )
+        ]
+    finally:
+        conn.close()
+    n = 0
+    for fid in ids:
+        n += unassign_face_and_copies(fid, sync_sidecars=False)
+    if ids and sync_sidecars:
+        threading.Thread(target=_sync_sidecars_for_faces, args=(ids,), daemon=True).start()
+    return n
+
+
 def unassign_faces(face_ids: list[int], *, sync_sidecars: bool = True) -> int:
     if not face_ids:
         return 0
@@ -1071,6 +1193,66 @@ def cluster_unnamed_count(cluster_id: int) -> int:
         conn.close()
 
 
+@dataclass(frozen=True)
+class ClusterAssignReport:
+    assigned: int
+    considered: int = 0
+    skipped_protected: int = 0
+    skipped_already: int = 0
+    skipped_lookalike: int = 0
+
+    @property
+    def reason(self) -> str | None:
+        if self.assigned:
+            return None
+        if self.considered <= 0:
+            return "no_faces"
+        parts: list[str] = []
+        if self.skipped_protected:
+            parts.append("protected")
+        if self.skipped_already:
+            parts.append("already_in_photo")
+        if self.skipped_lookalike:
+            parts.append("lookalike")
+        if len(parts) == 1:
+            return parts[0]
+        if parts:
+            return "skipped"
+        return "no_faces"
+
+    def message(self) -> str:
+        code = self.reason
+        if code == "protected":
+            return (
+                "Could not save — those faces already have a name you set by hand. "
+                "Open the photo to change it."
+            )
+        if code == "already_in_photo":
+            return "Could not save — that person is already named on those photos."
+        if code == "lookalike":
+            return (
+                "Could not save — these faces look more like someone else already in the catalog. "
+                "Click that person, or mark mixed faces Not this person."
+            )
+        if code == "skipped":
+            bits: list[str] = []
+            if self.skipped_protected:
+                bits.append(f"{self.skipped_protected} already named by hand")
+            if self.skipped_already:
+                bits.append(f"{self.skipped_already} already on those photos")
+            if self.skipped_lookalike:
+                bits.append(f"{self.skipped_lookalike} look like someone else")
+            detail = ", ".join(bits) if bits else "no faces could be named"
+            return (
+                f"Could not save — {detail}. Mark mixed faces Not this person, "
+                "or open a photo to change a name."
+            )
+        return (
+            "Could not save — those faces are no longer unnamed "
+            "(they may have been regrouped). Try again."
+        )
+
+
 def cluster_preview_face_ids(cluster_id: int, limit: int | None = None) -> list[int]:
     """Faces the To name page would have shown — never a mega-cluster."""
     if limit is None:
@@ -1104,8 +1286,25 @@ def assign_cluster(
     *,
     sync_sidecars: bool = True,
 ) -> int:
+    return assign_cluster_report(
+        cluster_id, person_id, face_ids=face_ids, sync_sidecars=sync_sidecars
+    ).assigned
+
+
+def assign_cluster_report(
+    cluster_id: int,
+    person_id: int,
+    face_ids: list[int] | None = None,
+    *,
+    sync_sidecars: bool = True,
+) -> ClusterAssignReport:
     conn = connect()
     init_db(conn)
+    keep: list[int] = []
+    considered = 0
+    skipped_protected = 0
+    skipped_already = 0
+    skipped_lookalike = 0
     try:
         wanted = [int(fid) for fid in (face_ids or []) if fid]
         if not wanted:
@@ -1143,22 +1342,20 @@ def assign_cluster(
                 (cluster_id,),
             ).fetchall()
         visible = drop_preview_rows([dict(r) for r in rows])
+        considered = len(visible)
         from . import match as match_mod
 
         gallery = match_mod.load_named_gallery(conn)
-        person_row = conn.execute("SELECT name FROM people WHERE id = ?", (int(person_id),)).fetchone()
-        person_name = str(person_row["name"] if person_row else "")
+        gallery_pids = gallery.get("person_ids")
+        if gallery_pids is None or getattr(gallery_pids, "size", 0) == 0:
+            known_ids: set[int] = set()
+        else:
+            known_ids = {int(x) for x in gallery_pids}
         claimed_by_photo: dict[int, dict[int, list[Any]]] = {}
-        keep: list[int] = []
         for face in visible:
             how = str(face.get("assigned_how") or "")
             if how in _PROTECTED_HOW:
-                continue
-            if not match_mod._sex_ok(
-                face.get("sex_est"),
-                person_name,
-                age=face.get("age_est"),
-            ):
+                skipped_protected += 1
                 continue
             photo_id = int(face["photo_id"])
             claimed = claimed_by_photo.get(photo_id)
@@ -1177,19 +1374,31 @@ def assign_cluster(
                     claimed.setdefault(int(named["person_id"]), []).append(named)
                 claimed_by_photo[photo_id] = claimed
             if _person_has_distinct_box(claimed, int(person_id), face):
+                skipped_already += 1
                 continue
             vec = bytes_to_embedding(face.get("embedding"))
-            if vec is not None and match_mod.nn_disagrees_with_person(
-                vec,
-                int(person_id),
-                gallery,
-                exclude_face_ids={int(face["id"])},
+            if (
+                vec is not None
+                and int(person_id) in known_ids
+                and match_mod.nn_disagrees_with_person(
+                    vec,
+                    int(person_id),
+                    gallery,
+                    exclude_face_ids={int(face["id"])},
+                )
             ):
+                skipped_lookalike += 1
                 continue
             keep.append(int(face["id"]))
             claimed.setdefault(int(person_id), []).append(face)
         if not keep:
-            return 0
+            return ClusterAssignReport(
+                assigned=0,
+                considered=considered,
+                skipped_protected=skipped_protected,
+                skipped_already=skipped_already,
+                skipped_lookalike=skipped_lookalike,
+            )
         cur = conn.execute(
             f"UPDATE faces SET person_id = ?, assigned_how = 'cluster' WHERE id IN ({','.join('?' * len(keep))})",
             (person_id, *keep),
@@ -1221,7 +1430,13 @@ def assign_cluster(
     else:
         ids = list(keep)
         threading.Thread(target=_sync_sidecars_for_faces, args=(ids,), daemon=True).start()
-    return n
+    return ClusterAssignReport(
+        assigned=n,
+        considered=considered,
+        skipped_protected=skipped_protected,
+        skipped_already=skipped_already,
+        skipped_lookalike=skipped_lookalike,
+    )
 
 
 def revoke_cluster_names(person_id: int, *, sync_sidecars: bool = True) -> int:
@@ -1263,7 +1478,7 @@ def path_in_folder(path: str, wanted: str) -> bool:
     """True if this photo lives in `wanted`, including nested albums inside it.
 
     `wanted` may be a full path or a folder name. Name match looks at every
-    path segment so Scanned_Photos_2016 includes Set 79, not only files
+    path segment so Scanned_Album_1994 includes Set 3, not only files
     sitting in the container root.
     """
     text = str(wanted or "").strip()
@@ -1686,19 +1901,33 @@ def search_photos(query: str, limit: int = 48) -> dict[str, Any]:
 
 
 REVIEW_PAGE = 24
+REVIEW_MORE_CAP = 2000
+
+# One Check names card per person+photo (or byte-identical SHA copy).
+_REVIEW_PHOTO_KEY = """
+    CASE
+      WHEN IFNULL(ph.sha256, '') != '' AND ph.sha256 NOT LIKE 'pending:%'
+      THEN ph.sha256
+      ELSE 'p:' || f.photo_id
+    END
+"""
 
 
 def list_auto_faces(
     person_id: int | None = None,
     offset: int = 0,
     limit: int | None = None,
+    after_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """Faces the matcher named, still waiting for a keep/reject.
 
-    `limit` caps how many faces are returned per person (Check names first paint).
+    `limit` caps how many photos are returned per person (Check names first paint).
+    `after_id` returns later photos for that person (Show more), ignoring `offset`.
+    Duplicate detections on the same picture are one card.
     """
     hows = ",".join("?" * len(AUTO_ASSIGN_HOWS))
     preview = preview_path_sql("ph.path")
+    photo_key = _REVIEW_PHOTO_KEY
     conn = connect()
     init_db(conn)
     try:
@@ -1714,7 +1943,7 @@ def list_auto_faces(
             params.append(int(person_id))
         counts = conn.execute(
             f"""
-            SELECT f.person_id, COUNT(*) AS n
+            SELECT f.person_id, COUNT(DISTINCT {photo_key}) AS n
             FROM faces f
             JOIN people p ON p.id = f.person_id
             JOIN photos ph ON ph.id = f.photo_id
@@ -1728,35 +1957,74 @@ def list_auto_faces(
         totals = {int(row["person_id"]): int(row["n"]) for row in counts}
         if not order:
             return []
+        ranked = f"""
+            SELECT f.id, f.photo_id, f.person_id, ph.path, ph.taken_at,
+                   {photo_key} AS photo_key,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY f.person_id, {photo_key}
+                     ORDER BY IFNULL(f.det_score, 0) DESC,
+                              (IFNULL(f.x2, 0) - IFNULL(f.x1, 0))
+                              * (IFNULL(f.y2, 0) - IFNULL(f.y1, 0)) DESC,
+                              f.id
+                   ) AS photo_rn
+            FROM faces f
+            JOIN photos ph ON ph.id = f.photo_id
+            JOIN people p ON p.id = f.person_id
+            WHERE {where}
+        """
         if limit is None:
             face_sql = f"""
-                SELECT f.id, f.photo_id, f.person_id, ph.path, ph.taken_at
-                FROM faces f
-                JOIN photos ph ON ph.id = f.photo_id
-                JOIN people p ON p.id = f.person_id
-                WHERE {where}
-                ORDER BY p.name COLLATE NOCASE, f.id
+                SELECT id, photo_id, person_id, path, taken_at, photo_key
+                FROM ({ranked}) t
+                WHERE t.photo_rn = 1
+                ORDER BY t.person_id, t.id
             """
             face_params: list[Any] = params
+        elif after_id is not None:
+            lim = max(1, int(limit))
+            face_sql = f"""
+                SELECT id, photo_id, person_id, path, taken_at, photo_key
+                FROM ({ranked}) t
+                WHERE t.photo_rn = 1 AND t.id > ?
+                ORDER BY t.person_id, t.id
+                LIMIT ?
+            """
+            face_params = [*params, int(after_id), lim]
         else:
             off = max(0, int(offset or 0))
             lim = max(1, int(limit))
             face_sql = f"""
-                SELECT id, photo_id, person_id, path, taken_at FROM (
-                    SELECT f.id, f.photo_id, f.person_id, ph.path, ph.taken_at,
-                           ROW_NUMBER() OVER (PARTITION BY f.person_id ORDER BY f.id) AS rn
-                    FROM faces f
-                    JOIN photos ph ON ph.id = f.photo_id
-                    JOIN people p ON p.id = f.person_id
-                    WHERE {where}
+                SELECT id, photo_id, person_id, path, taken_at, photo_key FROM (
+                    SELECT id, photo_id, person_id, path, taken_at, photo_key,
+                           ROW_NUMBER() OVER (PARTITION BY person_id ORDER BY id) AS rn
+                    FROM ({ranked}) u
+                    WHERE u.photo_rn = 1
                 ) t
                 WHERE t.rn > ? AND t.rn <= ?
                 ORDER BY t.person_id, t.id
             """
             face_params = [*params, off, off + lim]
         rows = [dict(r) for r in conn.execute(face_sql, face_params)]
+        siblings: dict[tuple[int, str], list[int]] = {}
+        if rows:
+            sibs = conn.execute(
+                f"""
+                SELECT f.id, f.person_id, {photo_key} AS photo_key
+                FROM faces f
+                JOIN photos ph ON ph.id = f.photo_id
+                JOIN people p ON p.id = f.person_id
+                WHERE {where}
+                """,
+                params,
+            )
+            for sib in sibs:
+                key = (int(sib["person_id"]), str(sib["photo_key"]))
+                siblings.setdefault(key, []).append(int(sib["id"]))
         by_person: dict[int, list[dict[str, Any]]] = {pid: [] for pid in order}
         for face in rows:
+            key = (int(face["person_id"]), str(face["photo_key"]))
+            ids = sorted(set(siblings.get(key) or [int(face["id"])]))
+            face["face_ids"] = ids
             by_person.setdefault(int(face["person_id"]), []).append(face)
         people_rows: dict[int, dict[str, Any]] = {}
         marks = ",".join("?" * len(order))
@@ -1779,6 +2047,48 @@ def list_auto_faces(
     return groups
 
 
+def _expand_auto_ids_on_same_photos(conn, ids: list[int]) -> list[int]:
+    """Keep/reject one Check names card applies to every auto face on that picture."""
+    if not ids:
+        return []
+    hows = ",".join("?" * len(AUTO_ASSIGN_HOWS))
+    marks = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"""
+        SELECT f.id, f.person_id, f.photo_id, ph.sha256
+        FROM faces f
+        JOIN photos ph ON ph.id = f.photo_id
+        WHERE f.id IN ({marks})
+        """,
+        ids,
+    ).fetchall()
+    extra: set[int] = {int(x) for x in ids}
+    for row in rows:
+        if row["person_id"] is None:
+            continue
+        sha = str(row["sha256"] or "")
+        found = conn.execute(
+            f"""
+            SELECT f.id
+            FROM faces f
+            JOIN photos ph ON ph.id = f.photo_id
+            WHERE f.person_id = ?
+              AND f.assigned_how IN ({hows})
+              AND (
+                f.photo_id = ?
+                OR (
+                  ? != ''
+                  AND ph.sha256 = ?
+                  AND ph.sha256 NOT LIKE 'pending:%'
+                )
+              )
+            """,
+            (int(row["person_id"]), *AUTO_ASSIGN_HOWS, int(row["photo_id"]), sha, sha),
+        ).fetchall()
+        extra.update(int(item["id"]) for item in found)
+    return sorted(extra)
+
+
 def confirm_faces(face_ids: list[int] | None = None, person_id: int | None = None) -> int:
     """Mark auto/sidecar names as checked. Does not rematch."""
     from .originals import is_preview_path
@@ -1789,7 +2099,7 @@ def confirm_faces(face_ids: list[int] | None = None, person_id: int | None = Non
     try:
         ids: list[int] = []
         if face_ids:
-            ids = [int(x) for x in face_ids]
+            ids = _expand_auto_ids_on_same_photos(conn, [int(x) for x in face_ids])
         elif person_id:
             rows = conn.execute(
                 f"""
@@ -1822,22 +2132,26 @@ def confirm_faces(face_ids: list[int] | None = None, person_id: int | None = Non
 
 
 def auto_face_count() -> int:
-    """How many auto-named faces still need a keep/reject. Same filter as list_auto_faces()."""
+    """How many auto-named photos still need a keep/reject. Same filter as list_auto_faces()."""
     hows = ",".join("?" * len(AUTO_ASSIGN_HOWS))
     preview = preview_path_sql("ph.path")
+    photo_key = _REVIEW_PHOTO_KEY
     conn = connect()
     init_db(conn)
     try:
         row = conn.execute(
             f"""
-            SELECT COUNT(*) AS n
-            FROM faces f
-            JOIN people p ON p.id = f.person_id
-            JOIN photos ph ON ph.id = f.photo_id
-            WHERE f.person_id IS NOT NULL
-              AND f.assigned_how IN ({hows})
-              AND IFNULL(ph.hidden, 0) = 0
-              AND {preview}
+            SELECT COUNT(*) AS n FROM (
+                SELECT 1
+                FROM faces f
+                JOIN people p ON p.id = f.person_id
+                JOIN photos ph ON ph.id = f.photo_id
+                WHERE f.person_id IS NOT NULL
+                  AND f.assigned_how IN ({hows})
+                  AND IFNULL(ph.hidden, 0) = 0
+                  AND {preview}
+                GROUP BY f.person_id, {photo_key}
+            )
             """,
             AUTO_ASSIGN_HOWS,
         ).fetchone()

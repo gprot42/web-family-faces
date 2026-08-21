@@ -659,7 +659,16 @@ def _sex_ok(
     votes: int | None = None,
     age: float | None = None,
 ) -> bool:
-    """Block weak man-as-woman (and reverse) autos. Strong matches and kids still name."""
+    """Block weak man-as-woman (and reverse) autos. Strong matches and kids still name.
+
+    InsightFace sex_est is often wrong (long hair, hats, lighting). A name like
+    James is male; if that person already has a real gallery, trust the name.
+    Settings can turn this check off.
+    """
+    from . import settings as settings_mod
+
+    if not settings_mod.name_sex_check_enabled():
+        return True
     got = _norm_sex(face_sex)
     want = _name_sex(person_name or "")
     if not got or not want or got == want:
@@ -672,6 +681,8 @@ def _sex_ok(
         return True
     sim_n = float(sim) if sim is not None else -1.0
     votes_n = int(votes or 0)
+    if votes_n >= 16:
+        return True
     if sim_n >= 0.52 and votes_n >= 24:
         return True
     if sim_n >= MATCH_HIGH and votes_n >= 12:
@@ -1322,7 +1333,7 @@ def match_photo(photo_id: int) -> dict:
     crowd = n_faces >= CROWD_PHOTO_FACES
     result = match_unknown(
         photo_id=int(photo_id),
-        include_cleared=True,
+        include_cleared=False,
         aggressive=not crowd,
         high=MATCH_HIGH if crowd else MATCH_REMATCH_HIGH,
         medium=MATCH_MEDIUM if crowd else MATCH_REMATCH_MEDIUM,
@@ -1372,7 +1383,16 @@ def _inherit_named_clusters(
             """,
             (row["cluster_id"],),
         ).fetchone()["n"]
-        if int(unnamed_n or 0) > CLUSTER_PREVIEW_LIMIT:
+        pid = int(people[0]["person_id"])
+        leftover = int(unnamed_n or 0)
+        if leftover > CLUSTER_PREVIEW_LIMIT:
+            extra += _assign_matching_cluster_leftovers(
+                conn,
+                int(row["cluster_id"]),
+                pid,
+                blocked=blocked,
+                photo_id=photo_id,
+            )
             continue
         inherit_sql = f"""
             UPDATE faces
@@ -1382,13 +1402,104 @@ def _inherit_named_clusters(
               AND IFNULL(assigned_how, '') NOT IN {blocked}
               AND embedding IS NOT NULL
         """
-        inherit_params: list[Any] = [people[0]["person_id"], row["cluster_id"]]
+        inherit_params: list[Any] = [pid, row["cluster_id"]]
         if photo_id is not None:
             inherit_sql += " AND photo_id = ?"
             inherit_params.append(int(photo_id))
         cur = conn.execute(inherit_sql, inherit_params)
         extra += int(cur.rowcount or 0)
     return extra
+
+
+def _assign_matching_cluster_leftovers(
+    conn,
+    cluster_id: int,
+    person_id: int,
+    *,
+    blocked: str,
+    photo_id: int | None = None,
+) -> int:
+    """Name leftover faces in a huge group only when they independently match that person."""
+    if not _person_has_manual_seed(conn, person_id):
+        return 0
+    gallery = load_named_gallery(conn)
+    sql = f"""
+        SELECT f.id, f.embedding, f.sex_est, f.age_est, f.photo_id
+        FROM faces f
+        JOIN photos ph ON ph.id = f.photo_id
+        WHERE f.cluster_id = ?
+          AND f.person_id IS NULL
+          AND f.quality = 'ok'
+          AND IFNULL(f.assigned_how, '') NOT IN {blocked}
+          AND f.embedding IS NOT NULL
+    """
+    params: list[Any] = [int(cluster_id)]
+    if photo_id is not None:
+        sql += " AND f.photo_id = ?"
+        params.append(int(photo_id))
+    rows = conn.execute(sql, params).fetchall()
+    n = 0
+    pid = int(person_id)
+    for row in rows:
+        vec = bytes_to_embedding(row["embedding"])
+        if vec is None:
+            continue
+        ranked = rank_people_nn(vec, gallery, limit=3, exclude_face_ids={int(row["id"])})
+        ranked = _drop_sex_mismatch(ranked, row["sex_est"], row["age_est"])
+        if not ranked or int(ranked[0]["person_id"]) != pid:
+            continue
+        if not _should_auto_assign(
+            ranked,
+            MATCH_REMATCH_HIGH,
+            MATCH_REMATCH_MARGIN,
+            aggressive=True,
+        ):
+            continue
+        conn.execute(
+            "UPDATE faces SET person_id = ?, assigned_how = 'auto' WHERE id = ?",
+            (pid, int(row["id"])),
+        )
+        n += 1
+    return n
+
+
+def inherit_named_cluster_leftovers(cluster_id: int | None = None) -> int:
+    """Attach leftover faces in already-named groups that independently match that person."""
+    conn = connect()
+    init_db(conn)
+    try:
+        photo_id = None
+        if cluster_id is not None:
+            pid = _cluster_lone_person_id(conn, int(cluster_id))
+            if not pid:
+                return 0
+            n = _assign_matching_cluster_leftovers(
+                conn,
+                int(cluster_id),
+                pid,
+                blocked="('junk', 'cleared')",
+            )
+            if n:
+                conn.commit()
+                _invalidate_galleries()
+            return n
+        n = _inherit_named_clusters(conn)
+        if n:
+            conn.commit()
+            _invalidate_galleries()
+        return n
+    finally:
+        conn.close()
+
+
+def _cluster_lone_person_id(conn, cluster_id: int) -> int | None:
+    rows = conn.execute(
+        "SELECT DISTINCT person_id FROM faces WHERE cluster_id = ? AND person_id IS NOT NULL",
+        (int(cluster_id),),
+    ).fetchall()
+    if len(rows) != 1:
+        return None
+    return int(rows[0]["person_id"])
 
 
 def suppress_like_junk(threshold: float = 0.46) -> int:

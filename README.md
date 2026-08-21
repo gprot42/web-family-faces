@@ -34,7 +34,8 @@ Open http://127.0.0.1:5174
 ./scripts/app.sh status
 ./scripts/app.sh debug                      # foreground, API reload, debug logs
 ./scripts/app.sh start --port 8750 --ui-port 5180
-./scripts/app.sh logs --follow
+./scripts/app.sh logs --follow              # api.log, ui.log, and save errors in app.log
+./scripts/app.sh logs app                   # data/logs/app.log (name/save failures)
 ```
 
 `./scripts/dev.sh` is a foreground alias for `./scripts/app.sh start --foreground`.

@@ -4,9 +4,9 @@ import { api } from "../api";
 import { tip } from "../tip.js";
 import ViewSwitch from "../components/ViewSwitch.jsx";
 import PeopleSearch from "../components/PeopleSearch.jsx";
+import { loadCachedPeople, patchCachedPerson, saveCachedPeople } from "../peopleCache.js";
 
 const IGNORE_KEY = "photosort-merge-ignore";
-const PEOPLE_CACHE_KEY = "photosort-people-lite";
 const CATEGORIES = [
   { id: "family", label: "Family" },
   { id: "work", label: "Work" },
@@ -37,24 +37,6 @@ function coverOf(people, id) {
 function keepName(person) {
   if (!person?.unknown_name) return person?.name;
   return null;
-}
-
-function loadCachedPeople(folder) {
-  try {
-    const raw = JSON.parse(sessionStorage.getItem(PEOPLE_CACHE_KEY) || "null");
-    if (!raw || raw.folder !== (folder || "") || !Array.isArray(raw.items)) return [];
-    return raw.items;
-  } catch {
-    return [];
-  }
-}
-
-function saveCachedPeople(folder, items) {
-  try {
-    sessionStorage.setItem(PEOPLE_CACHE_KEY, JSON.stringify({ folder: folder || "", items }));
-  } catch {
-    /* ignore quota */
-  }
 }
 
 function ChipCount({ n, known }) {
@@ -151,8 +133,13 @@ export default function People() {
   function setCategory(id, category) {
     const value = category || "";
     setPeople((cur) => cur.map((p) => (p.id === id ? { ...p, category: value } : p)));
+    patchCachedPerson(id, { category: value }, folder);
     api.patchPerson(id, { category: value }).catch(() => {
-      api.people(folder || undefined).then((listed) => setPeople(listed.items || []));
+      api.people(folder || undefined, { lite: 1 }).then((listed) => {
+        const items = listed.items || [];
+        setPeople(items);
+        saveCachedPeople(folder, items);
+      });
     });
   }
 

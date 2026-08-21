@@ -61,7 +61,7 @@ SKIP_DIR_NAMES = {
     "thumbnails",
 }
 
-# Folders that are themselves a resized album, e.g. "2003 - Bern 1024 x 768".
+# Folders that are themselves a resized album, e.g. "1994 - Trip 1024 x 768".
 _PREVIEW_NAME_MARKERS = ("1024x768", "640x480", "800x600")
 
 

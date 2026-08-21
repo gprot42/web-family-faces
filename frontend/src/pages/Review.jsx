@@ -5,6 +5,7 @@ import { tip } from "../tip.js";
 import { faceWhen } from "../ages.js";
 
 const REVIEW_PAGE = 24;
+const REVIEW_MORE = 500;
 let sharedIO = null;
 const nearSetters = new WeakMap();
 
@@ -57,10 +58,31 @@ function readReviewPos() {
 
 function writeReviewPos(pos) {
   try {
-    sessionStorage.setItem(POS_KEY, JSON.stringify(pos));
+    const prev = readReviewPos() || {};
+    const next = { ...prev, ...pos };
+    if (!(Number(next.scrollTop) > 0) && Number(prev.scrollTop) > 0 && (next.faceId || next.photoId)) {
+      next.scrollTop = prev.scrollTop;
+    }
+    sessionStorage.setItem(POS_KEY, JSON.stringify(next));
   } catch {
     /* ignore quota */
   }
+}
+
+function reviewCardEl(pos) {
+  if (!pos) return null;
+  if (pos.faceId) {
+    const byFace = document.querySelector(`[data-review-face="${pos.faceId}"]`);
+    if (byFace) return byFace;
+  }
+  if (pos.photoId) {
+    const byPhoto = pos.personId
+      ? document.querySelector(`[data-review-person="${pos.personId}"] [data-review-photo="${pos.photoId}"]`)
+      : document.querySelector(`[data-review-photo="${pos.photoId}"]`);
+    if (byPhoto) return byPhoto;
+  }
+  if (pos.personId) return document.querySelector(`[data-review-person="${pos.personId}"]`);
+  return null;
 }
 
 export default function Review({ onChange }) {
@@ -69,14 +91,18 @@ export default function Review({ onChange }) {
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
   const [moreBusy, setMoreBusy] = useState(null);
+  const moreBusyRef = useRef(new Set());
+  const groupsRef = useRef([]);
   const restoredPos = useRef(false);
+  groupsRef.current = groups;
 
   async function load() {
     setLoading(true);
     try {
       const data = await api.reviewAuto({ limit: REVIEW_PAGE });
       const n = data.face_count || 0;
-      setGroups(data.items || []);
+      const groups = await ensurePosFaces(data.items || []);
+      setGroups(groups);
       setCount(n);
       onChange?.({ faces_auto: n }, "set");
     } finally {
@@ -84,30 +110,81 @@ export default function Review({ onChange }) {
     }
   }
 
+  async function ensurePosFaces(groups) {
+    const pos = readReviewPos();
+    if (!pos?.personId) return groups;
+    const pid = Number(pos.personId);
+    const group = groups.find((g) => Number(g.person.id) === pid);
+    if (!group) return groups;
+    const has =
+      group.faces.some((f) => Number(f.id) === Number(pos.faceId)) ||
+      group.faces.some((f) => Number(f.photo_id) === Number(pos.photoId));
+    if (has || !(group.face_count > group.faces.length)) return groups;
+    const have = new Set(group.faces.map((f) => f.id));
+    const afterId = group.faces.reduce((m, f) => (Number(f.id) > m ? Number(f.id) : m), 0);
+    const remaining = Math.max(0, (group.face_count || 0) - group.faces.length);
+    try {
+      const extraData = await api.reviewAuto({
+        person_id: pid,
+        after_id: afterId || undefined,
+        offset: afterId ? 0 : group.faces.length,
+        limit: Math.min(REVIEW_MORE, Math.max(REVIEW_PAGE, remaining)),
+      });
+      const payload =
+        (extraData.items || []).find((item) => Number(item.person.id) === pid) || extraData.items?.[0];
+      const extra = (payload?.faces || []).filter((f) => !have.has(f.id));
+      if (!extra.length) return groups;
+      const total = payload?.face_count ?? group.face_count;
+      return groups.map((g) =>
+        Number(g.person.id) === pid ? { ...g, faces: g.faces.concat(extra), face_count: total } : g,
+      );
+    } catch {
+      return groups;
+    }
+  }
+
   async function showMore(personId) {
-    const group = groups.find((g) => g.person.id === personId);
-    if (!group || moreBusy) return;
+    const group = groupsRef.current.find((g) => g.person.id === personId);
+    if (!group || moreBusyRef.current.has(personId)) return;
+    moreBusyRef.current.add(personId);
     setMoreBusy(personId);
     setErr("");
+    const have = new Set(group.faces.map((f) => f.id));
+    const afterId = group.faces.reduce((m, f) => (Number(f.id) > m ? Number(f.id) : m), 0);
+    const remaining = Math.max(0, (group.face_count || 0) - group.faces.length);
     try {
       const data = await api.reviewAuto({
         person_id: personId,
-        offset: group.faces.length,
-        limit: REVIEW_PAGE,
+        after_id: afterId || undefined,
+        offset: afterId ? 0 : group.faces.length,
+        limit: Math.min(REVIEW_MORE, Math.max(REVIEW_PAGE, remaining)),
       });
-      const extra = data.items?.[0]?.faces || [];
-      const total = data.items?.[0]?.face_count ?? group.face_count;
+      const payload =
+        (data.items || []).find((item) => item.person.id === personId) || data.items?.[0];
+      const extra = (payload?.faces || []).filter((f) => !have.has(f.id));
+      const total = payload?.face_count ?? group.face_count;
       setGroups((cur) =>
         cur.map((g) =>
           g.person.id === personId
-            ? { ...g, faces: g.faces.concat(extra), face_count: total }
+            ? { ...g, faces: extra.length ? g.faces.concat(extra) : g.faces, face_count: total }
             : g,
         ),
       );
+      const firstNew = extra[0]?.id;
+      if (firstNew) {
+        requestAnimationFrame(() => {
+          document
+            .querySelector(`[data-review-face="${firstNew}"]`)
+            ?.scrollIntoView({ block: "start", behavior: "smooth" });
+        });
+      } else if (remaining > 0) {
+        setErr("Could not load more faces.");
+      }
     } catch (ex) {
       setErr(ex.message || "Could not load more faces.");
     } finally {
-      setMoreBusy(null);
+      moreBusyRef.current.delete(personId);
+      setMoreBusy((cur) => (cur === personId ? null : cur));
     }
   }
 
@@ -126,35 +203,59 @@ export default function Review({ onChange }) {
   }
 
   useEffect(() => {
+    const prev = window.history.scrollRestoration;
+    try {
+      window.history.scrollRestoration = "manual";
+    } catch {
+      /* ignore */
+    }
     function onScroll() {
-      writeReviewPos({
-        ...(readReviewPos() || {}),
-        scrollTop: window.scrollY,
-      });
+      const y = window.scrollY;
+      if (y > 0) writeReviewPos({ scrollTop: y });
     }
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => {
-      onScroll();
+      const y = window.scrollY;
+      if (y > 0) writeReviewPos({ scrollTop: y });
       window.removeEventListener("scroll", onScroll);
+      try {
+        window.history.scrollRestoration = prev || "auto";
+      } catch {
+        /* ignore */
+      }
     };
   }, []);
 
   useEffect(() => {
-    if (!groups.length || restoredPos.current) return;
+    if (loading || !groups.length || restoredPos.current) return;
     const pos = readReviewPos();
-    if (!pos) return;
-    restoredPos.current = true;
-    const apply = () => {
-      const card = pos.faceId
-        ? document.querySelector(`[data-review-face="${pos.faceId}"]`)
-        : pos.photoId
-          ? document.querySelector(`[data-review-photo="${pos.photoId}"]`)
-          : null;
-      if (card) card.scrollIntoView({ block: "center" });
-      else window.scrollTo(0, Number(pos.scrollTop) || 0);
+    if (!pos) {
+      restoredPos.current = true;
+      return undefined;
+    }
+    let tries = 0;
+    let timer = 0;
+    const tryApply = () => {
+      const card = reviewCardEl(pos);
+      if (card) {
+        card.scrollIntoView({ block: "center", inline: "nearest" });
+        restoredPos.current = true;
+        return;
+      }
+      if (tries >= 16) {
+        if (Number(pos.scrollTop) > 0) window.scrollTo(0, Number(pos.scrollTop));
+        restoredPos.current = true;
+        return;
+      }
+      tries += 1;
+      timer = window.setTimeout(tryApply, 50);
     };
-    requestAnimationFrame(() => requestAnimationFrame(apply));
-  }, [groups]);
+    const raf = requestAnimationFrame(() => requestAnimationFrame(tryApply));
+    return () => {
+      cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
+    };
+  }, [loading, groups]);
 
   function dropCount(faceIds, personId) {
     const drop = faceIds ? new Set(faceIds) : null;
@@ -197,12 +298,13 @@ export default function Review({ onChange }) {
     }
   }
 
-  async function reject(faceId) {
+  async function reject(face) {
     setErr("");
-    const removed = dropFaces([faceId]);
+    const ids = face.face_ids?.length ? face.face_ids : [face.id];
+    const removed = dropFaces(ids, undefined);
     onChange?.({ faces_auto: -removed });
     try {
-      await api.unassignFace(faceId);
+      await api.unassignFace(face.id);
     } catch (ex) {
       setErr(ex.message);
       await load();
@@ -243,7 +345,7 @@ export default function Review({ onChange }) {
         </p>
       )}
       {groups.map((g) => (
-        <section key={g.person.id} className="folder-block">
+        <section key={g.person.id} className="folder-block" data-review-person={g.person.id}>
           <h2 className="folder-head">
             <span>
               <Link to={`/people/${g.person.id}`}>{g.person.unknown_name ? "Name unknown" : g.person.name}</Link>
@@ -270,8 +372,8 @@ export default function Review({ onChange }) {
                 person={g.person}
                 eager={eagerIds.has(f.id)}
                 onOpen={() => rememberPos({ faceId: f.id, photoId: f.photo_id, personId: g.person.id })}
-                onKeep={() => keep([f.id])}
-                onReject={() => reject(f.id)}
+                onKeep={() => keep(f.face_ids?.length ? f.face_ids : [f.id], g.person.id)}
+                onReject={() => reject(f)}
               />
             ))}
           </div>
@@ -282,11 +384,11 @@ export default function Review({ onChange }) {
               style={{ marginTop: 12 }}
               disabled={moreBusy === g.person.id}
               onClick={() => showMore(g.person.id)}
-              {...tip("Load the next set of auto-named faces for this person.")}
+              {...tip("Load the rest of this person's auto-named faces.")}
             >
               {moreBusy === g.person.id
                 ? "Loading…"
-                : `Show more · ${g.face_count - g.faces.length} left`}
+                : `Show ${g.face_count - g.faces.length} more`}
             </button>
           ) : null}
         </section>

@@ -475,6 +475,14 @@ a.app-brand.active {
 .person-sticky-name + .person-sticky-name {
   margin-top: 8px;
 }
+.person-sticky .person-chips {
+  position: relative;
+  z-index: 1;
+  margin: 12px 0 0;
+}
+.person-sticky .error {
+  margin: 12px 0 0;
+}
 .page-head {
   display: flex;
   justify-content: space-between;
@@ -1197,6 +1205,8 @@ button.person-chip[aria-pressed="true"] .hint {
 }
 .nametag {
   position: absolute;
+  display: inline-flex;
+  align-items: center;
   transform: translate(-50%, 6px);
   background: color-mix(in srgb, var(--face-tone, var(--chip-bg)) 78%, #1a1612);
   color: var(--on-photo);
@@ -1224,21 +1234,33 @@ button.person-chip[aria-pressed="true"] .hint {
 }
 .nametag.place-on, .nametag.place-on:hover { transform: translate(-50%, -50%); }
 .nametag.place-manual, .nametag.place-manual:hover { transform: translate(-50%, -50%); }
-.nametag.place-above, .nametag.place-above:hover { transform: translate(-50%, calc(-100% - 10px)); }
-.nametag.place-below, .nametag.place-below:hover { transform: translate(-50%, 10px); }
-.nametag.place-left, .nametag.place-left:hover { transform: translate(calc(-100% - 10px), -50%); }
-.nametag.place-right, .nametag.place-right:hover { transform: translate(10px, -50%); }
+.nametag.place-above, .nametag.place-above:hover { transform: translate(-50%, calc(-100% - 3px)); }
+.nametag.place-below, .nametag.place-below:hover { transform: translate(-50%, 3px); }
+.nametag.place-left, .nametag.place-left:hover { transform: translate(calc(-100% - 4px), -50%); }
+.nametag.place-right, .nametag.place-right:hover { transform: translate(4px, -50%); }
 .nametag.movable { cursor: grab; touch-action: none; }
 .nametag.movable:active, .nametag.dragging { cursor: grabbing; }
 .nametag.dragging { z-index: 8; }
 .nametag.compact {
-  padding: 2px 6px;
+  padding: 1px 4px;
+  min-width: 18px;
+  min-height: 18px;
   gap: 0;
+  justify-content: center;
 }
-.nametag.compact .nametag-n { margin-right: 0; }
+.nametag.compact .nametag-n {
+  margin-right: 0;
+  min-width: 1.05em;
+  height: 1.05em;
+  background: transparent;
+  color: var(--on-photo);
+}
 .nametag.unnamed {
-  background: color-mix(in srgb, var(--face-tone, var(--accent)) 70%, #1a1612);
+  background: color-mix(in srgb, var(--face-tone, var(--accent)) 62%, #1a1612);
+  opacity: 0.92;
 }
+.nametag.named { z-index: 3; }
+.nametag.unnamed { z-index: 2; }
 .nametag.active {
   outline: none;
   border-color: color-mix(in srgb, var(--face-tone, var(--gold)) 90%, white);
@@ -1620,8 +1642,10 @@ button.saved {
   padding: 4px 10px;
 }
 .photo-full .nametag.compact {
-  font-size: 12px;
-  padding: 3px 7px;
+  font-size: 11px;
+  padding: 1px 5px;
+  min-width: 18px;
+  min-height: 18px;
 }
 .photo-full-nav {
   position: absolute;
@@ -2106,11 +2130,19 @@ button.photo-sharpen-badge {
 
 .to-name-layout.has-named {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  grid-template-columns: minmax(0, 1fr) minmax(280px, var(--named-panel-w, 340px));
   gap: 20px 10px;
   align-items: stretch;
   flex: 1;
   min-height: 0;
+}
+html.to-name-resizing,
+html.to-name-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+.to-name-layout.resizing .to-name-named .person-tiles-scroll {
+  pointer-events: none;
 }
 .ged-meta { margin: 0 0 16px; }
 .ged-search {
@@ -2395,17 +2427,61 @@ button.photo-sharpen-badge {
   background: transparent;
 }
 .to-name-named {
+  position: relative;
   align-self: stretch;
   min-height: 0;
   max-height: 100%;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  padding: 16px 16px 8px;
+  padding: 16px 16px 8px 20px;
   border: 1px solid var(--line);
   border-radius: 16px;
   background: var(--paper);
   box-shadow: var(--shadow);
+}
+.to-name-named-resize {
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 14px;
+  z-index: 2;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  cursor: col-resize;
+  touch-action: none;
+}
+.to-name-named-resize::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 16%;
+  bottom: 16%;
+  width: 4px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--ink) 16%, transparent);
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.to-name-named-resize:hover::before,
+.to-name-named-resize:focus-visible::before,
+.to-name-layout.resizing .to-name-named-resize::before {
+  background: var(--accent);
+  transform: scaleX(1.25);
+}
+.to-name-named-resize:focus-visible {
+  outline: none;
+}
+.to-name-named-resize:hover,
+.to-name-named-resize:active,
+.to-name-named-resize:focus-visible {
+  background: transparent;
+  transform: none;
+  box-shadow: none;
 }
 .to-name-named .cluster-or { margin-top: 0; flex: 0 0 auto; }
 .to-name-named .hint { margin: 0 0 10px; flex: 0 0 auto; }
@@ -2427,11 +2503,18 @@ button.photo-sharpen-badge {
   gap: 18px 16px;
   align-items: start;
   overflow: hidden;
+  scroll-margin: 72px 0;
 }
 .cluster-faces { min-width: 0; }
 .cluster-actions {
   min-width: 0;
   max-width: 100%;
+  border-radius: 12px;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+.cluster-actions.drop-over {
+  background: color-mix(in srgb, var(--accent) 12%, var(--paper));
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 .cluster-actions .row {
   flex-direction: column;
@@ -2630,8 +2713,13 @@ button.photo-sharpen-badge {
 .cluster-actions .person-tiles,
 .to-name-named .person-tiles {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px 8px;
+}
+.cluster-actions .person-tiles {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.to-name-named .person-tiles {
+  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
 }
 .cluster-actions .person-tiles {
   max-height: calc(6 * 108px + 5 * 6px);
@@ -2689,7 +2777,10 @@ button.photo-sharpen-badge {
   background: transparent;
   color: var(--ink);
   box-shadow: none;
-  cursor: pointer;
+  cursor: grab;
+}
+.person-tile:active {
+  cursor: grabbing;
 }
 .person-tile:hover, .person-tile.secondary:hover {
   background: var(--accent-soft);
@@ -2702,6 +2793,7 @@ button.photo-sharpen-badge {
   object-fit: cover;
   background: var(--bg-deep);
   display: block;
+  pointer-events: none;
 }
 .person-tile-name {
   font-size: 0.72rem;
@@ -2723,6 +2815,7 @@ button.photo-sharpen-badge {
 .crop {
   position: relative;
   padding: 0;
+  scroll-margin: 96px 0;
   border: 3px solid transparent;
   border-radius: 12px;
   background: transparent;
@@ -2850,8 +2943,7 @@ button.photo-sharpen-badge {
   padding: 10px;
   min-width: 0;
   overflow: hidden;
-  content-visibility: auto;
-  contain-intrinsic-size: 260px;
+  scroll-margin-top: 16px;
 }
 .review-card img,
 .review-card .review-ph {
@@ -2976,7 +3068,21 @@ button.photo-sharpen-badge {
 
 .merge { padding: 14px 16px; margin-bottom: 12px; }
 .hint { color: var(--muted); font-size: 0.9rem; }
-.error { color: var(--accent); }
+.error {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 14px;
+  padding: 12px 16px;
+  margin: 0 0 16px;
+  font-weight: 600;
+}
+.save-error { font-weight: 700; }
+.cluster-actions .error { margin: 0 0 12px; }
+.cluster.has-save-error {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
 .empty { padding: 28px 22px; text-align: left; color: var(--muted); }
 .next-step {
   display: flex;
@@ -3561,7 +3667,8 @@ kbd {
   }
   .to-name-layout.has-named { grid-template-columns: 1fr; }
   .to-name-groups { overflow: visible; }
-  .to-name-named { position: static; max-height: none; }
+  .to-name-named { position: static; max-height: none; padding-left: 16px; }
+  .to-name-named-resize { display: none; }
 }
 
 .people-search-fab {

@@ -6,6 +6,38 @@ function tokens(value) {
     .filter(Boolean);
 }
 
+function editDistance(left, right) {
+  if (left === right) return 0;
+  if (Math.abs(left.length - right.length) > 1) return 2;
+  const prev = Array.from({ length: right.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= left.length; i += 1) {
+    let diag = prev[0];
+    prev[0] = i;
+    for (let j = 1; j <= right.length; j += 1) {
+      const next = left[i - 1] === right[j - 1] ? diag : Math.min(diag, prev[j], prev[j - 1]) + 1;
+      diag = prev[j];
+      prev[j] = next;
+    }
+  }
+  return prev[right.length];
+}
+
+function tokenMatches(word, token) {
+  if (!token || !word) return false;
+  if (word.includes(token) || word.startsWith(token)) return true;
+  return token.length >= 3 && word.length >= 3 && editDistance(token, word) <= 1;
+}
+
+export function queryMatchesName(query, name) {
+  const q = String(query || "").trim().toLowerCase();
+  const n = String(name || "").trim().toLowerCase();
+  if (!q || !n) return false;
+  if (n.includes(q)) return true;
+  const qParts = tokens(q);
+  const nParts = tokens(n);
+  return qParts.every((qp) => nParts.some((np) => tokenMatches(np, qp)));
+}
+
 export function scoreName(query, name) {
   const q = String(query || "").trim().toLowerCase();
   const n = String(name || "").trim().toLowerCase();
@@ -14,12 +46,14 @@ export function scoreName(query, name) {
   const nParts = tokens(n);
   if (!qParts.length || !nParts.length) return 0;
   const prefixEvery = qParts.every((qp) => nParts.some((np) => np.startsWith(qp)));
+  const fuzzyEvery = qParts.every((qp) => nParts.some((np) => tokenMatches(np, qp)));
   const contains = n.includes(q);
-  if (!prefixEvery && !contains) return 0;
+  if (!prefixEvery && !contains && !fuzzyEvery) return 0;
   let score = 0;
   if (n.startsWith(q)) score += 100;
   if (nParts[0].startsWith(qParts[0])) score += 40;
   if (prefixEvery) score += 30;
+  else if (fuzzyEvery) score += 22;
   else if (contains) score += 8;
   if (nParts.some((np) => np === qParts[0])) score += 12;
   score -= Math.min(12, Math.max(0, nParts.length - qParts.length));

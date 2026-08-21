@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { CARD_H, CARD_W, clampZoom, layoutFamilyTree, wheelZoomFactor } from "../familyChart.js";
+import { queryMatchesName } from "../nameSuggest.js";
 import { enterBrowserFullscreen, exitBrowserFullscreen } from "../play.js";
 import { tip } from "../tip.js";
 
@@ -13,16 +14,26 @@ function shortName(name) {
 function scorePerson(person, needle) {
   const name = String(person?.name || "").toLowerCase();
   const surname = String(person?.surname || "").toLowerCase();
-  const hay = `${name} ${surname}`.trim();
+  const nick = String(person?.nickname || "").toLowerCase();
+  const hay = `${name} ${surname} ${nick}`.replace(/\s+/g, " ").trim();
+  if (!queryMatchesName(needle, hay)) return 0;
   const tokens = needle.split(/\s+/).filter(Boolean);
-  if (!tokens.length || !tokens.every((token) => hay.includes(token))) return 0;
-  if (name === needle) return 100;
-  if (name.startsWith(needle)) return 90;
+  const words = `${name} ${nick}`.split(/\s+/).filter(Boolean);
+  if (name === needle || nick === needle) return 100;
+  if (name.startsWith(needle) || nick.startsWith(needle)) return 90;
   if (surname.startsWith(needle)) return 85;
-  const words = name.split(/\s+/);
   if (tokens.every((token) => words.some((word) => word.startsWith(token)))) return 80;
   if (words.some((word) => word.startsWith(needle))) return 70;
-  return 40;
+  return 55;
+}
+
+function catalogHitId(id) {
+  return `catalog:${id}`;
+}
+
+function catalogPersonId(id) {
+  const text = String(id || "");
+  return text.startsWith("catalog:") ? Number(text.slice(8)) : 0;
 }
 
 function NameSearch({
@@ -49,8 +60,8 @@ function NameSearch({
         ref={searchRef}
         type="search"
         value={q}
-        placeholder="Search this tree by name"
-        aria-label="Search this tree by name"
+        placeholder="Search by name"
+        aria-label="Search this tree or named people"
         autoComplete="off"
         onChange={(e) => {
           setQ(e.target.value);
@@ -74,7 +85,7 @@ function NameSearch({
             }
           }
         }}
-        {...tip("Type a name, then Enter. The tree opens on that person.")}
+        {...tip("Type a name, then Enter. People in this tree open here. Named people who are only in photos open in Faces in DB View.")}
       />
       {suggest && suggestions.length ? (
         <ul className="ged-suggest" role="listbox">
@@ -87,7 +98,9 @@ function NameSearch({
                 onClick={() => onJump(item.id)}
               >
                 <span>{item.name}</span>
-                {item.lifespan ? <span className="hint">{item.lifespan}</span> : null}
+                {item.lifespan || item.source === "catalog" ? (
+                  <span className="hint">{item.lifespan || "In photos"}</span>
+                ) : null}
               </button>
             </li>
           ))}
@@ -298,9 +311,11 @@ function FamilyChart({ chart, onOpen, full, onToggleFull }) {
 
 export default function Tree() {
   const [params, setParams] = useSearchParams();
+  const nav = useNavigate();
   const selected = (params.get("p") || "").trim();
   const fileRef = useRef(null);
   const [data, setData] = useState(null);
+  const [catalogPeople, setCatalogPeople] = useState([]);
   const [person, setPerson] = useState(null);
   const [q, setQ] = useState("");
   const [pick, setPick] = useState(0);
@@ -336,12 +351,23 @@ export default function Tree() {
       .catch((ex) => {
         if (!cancel) setErr(ex.message);
       });
+    api
+      .people(undefined, { lite: true })
+      .then((found) => {
+        if (!cancel) setCatalogPeople((found.items || []).filter((p) => !p.unknown_name && p.name));
+      })
+      .catch(() => {});
     return () => {
       cancel = true;
     };
   }, []);
 
   useEffect(() => {
+    const catalogId = catalogPersonId(selected);
+    if (catalogId) {
+      nav(`/people/${catalogId}`, { replace: true });
+      return undefined;
+    }
     if (!selected || !data?.loaded) {
       setPerson(null);
       return undefined;
@@ -360,24 +386,54 @@ export default function Tree() {
     };
   }, [selected, data?.loaded, data?.filename]);
 
+  const catalogIdsInTree = useMemo(() => {
+    const ids = new Set();
+    for (const item of data?.people || []) {
+      if (item.catalog_id) ids.add(item.catalog_id);
+    }
+    return ids;
+  }, [data]);
+
   const matches = useMemo(() => {
     const items = data?.people || [];
     const needle = q.trim().toLowerCase();
     if (!needle) return items;
-    return items
+    const treeHits = items
       .map((item) => ({ item, score: scorePerson(item, needle) }))
-      .filter((row) => row.score > 0)
+      .filter((row) => row.score > 0);
+    const linked = new Set(treeHits.map((row) => row.item.catalog_id).filter(Boolean));
+    const catalogHits = catalogPeople
+      .filter((person) => !catalogIdsInTree.has(person.id) && !linked.has(person.id))
+      .map((person) => ({
+        item: {
+          id: catalogHitId(person.id),
+          name: person.name,
+          nickname: person.nickname || "",
+          surname: "",
+          lifespan: "",
+          source: "catalog",
+          catalog_id: person.id,
+        },
+        score: scorePerson(person, needle),
+      }))
+      .filter((row) => row.score > 0);
+    return [...treeHits, ...catalogHits]
       .sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
       .map((row) => row.item);
-  }, [data, q]);
+  }, [data, q, catalogPeople, catalogIdsInTree]);
   const filtered = q.trim() ? matches : data?.people || [];
   const suggestions = q.trim() ? matches.slice(0, 12) : [];
 
   function jumpTo(id) {
     if (!id) return;
-    openPerson(id);
+    const catalogId = catalogPersonId(id);
     setSuggest(false);
     setPick(0);
+    if (catalogId) {
+      nav(`/people/${catalogId}`);
+      return;
+    }
+    openPerson(id);
   }
 
   async function onFile(file) {
@@ -533,11 +589,15 @@ export default function Tree() {
                     <button
                       type="button"
                       className={`ged-person${item.id === selected ? " active" : ""}`}
-                      onClick={() => openPerson(item.id)}
+                      onClick={() => jumpTo(item.id)}
                     >
                       <span className="ged-person-name">{item.name}</span>
                       {item.lifespan ? <span className="hint">{item.lifespan}</span> : null}
-                      {item.catalog_id ? <span className="ged-in-catalog">In catalog</span> : null}
+                      {item.source === "catalog" ? (
+                        <span className="ged-in-catalog">In photos</span>
+                      ) : item.catalog_id ? (
+                        <span className="ged-in-catalog">In catalog</span>
+                      ) : null}
                     </button>
                   </li>
                 ))}

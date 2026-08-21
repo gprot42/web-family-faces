@@ -28,7 +28,9 @@ export default function Help() {
             <Link to="/settings">Settings</Link> you can turn on <strong>Auto-update listed
             folders</strong> so new files on those albums or the NAS are picked up in the
             background. Uncheck <strong>Find faces on new photos</strong> if you want them listed
-            without AI tagging or face scanning.
+            without AI tagging or face scanning.{" "}
+            <strong>Check first names against male / female face guesses</strong> can be turned off
+            if a man is skipped because the detector guessed female.
           </p>
         </section>
 
@@ -131,7 +133,8 @@ export default function Help() {
             <strong>Re-identify faces</strong> matches unnamed people against the catalog: closest
             named photos, several examples of each person, and people already named in that album.
             On a group or class photo it stays strict and will not copy one name onto every face.
-            If everyone on the photo is already named, it returns immediately. Use{" "}
+            Names you removed with <strong>Remove name</strong> stay off. If everyone on the photo
+            is already named, it returns immediately. Use{" "}
             <strong>Add a face</strong> if someone was missed. <strong>Undo names</strong> takes
             those auto-matches back if too many are wrong. Names you typed stay. Hidden “not a
             person” faces are left alone.

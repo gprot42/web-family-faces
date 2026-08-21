@@ -190,7 +190,7 @@ def test_lookup_hints_include_folder_year_and_named_companions(tmp_path, monkeyp
     person = create_person("Emperor Akihito")
     conn.execute(
         "INSERT INTO photos (path, sha256, taken_at, width, height, created_at) VALUES (?,?,?,?,?,?)",
-        ("/album/2003 - Tokyo/DSC00260.JPG", "h", "2003-12-02T03:58:08", 100, 100, now_iso()),
+        ("/album/1994 - Harbor/DSC00260.JPG", "h", "2003-12-02T03:58:08", 100, 100, now_iso()),
     )
     photo_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
     conn.execute("INSERT INTO clusters (id, status, created_at) VALUES (1, 'unknown', ?)", (now_iso(),))
@@ -208,12 +208,12 @@ def test_lookup_hints_include_folder_year_and_named_companions(tmp_path, monkeyp
     conn.commit()
     conn.close()
     hints = lookup._lookup_hints([1])
-    assert "2003 - Tokyo" in hints
+    assert "1994 - Harbor" in hints
     assert "2003" in hints
     assert "Emperor Akihito" in hints
     assert "same photo" in hints
     assert "DSC00260.JPG" in hints
-    assert "/album/2003 - Tokyo/DSC00260.JPG" not in hints
+    assert "/album/1994 - Harbor/DSC00260.JPG" not in hints
 
 
 def test_lookup_hints_include_other_catalog_names(tmp_path, monkeypatch):
@@ -246,7 +246,7 @@ def test_lookup_hints_survive_bad_file_dates(tmp_path, monkeypatch):
 
 def test_lookup_hints_include_filename_exif_and_file_dates(tmp_path, monkeypatch):
     conn, crops = _setup(tmp_path, monkeypatch)
-    photo = tmp_path / "2003 - Tokyo" / "DSC00260.JPG"
+    photo = tmp_path / "1994 - Harbor" / "DSC00260.JPG"
     photo.parent.mkdir()
     img = Image.new("RGB", (40, 40), (180, 140, 110))
     exif = Image.Exif()

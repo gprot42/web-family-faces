@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import { beginPlay } from "../play.js";
@@ -9,6 +9,14 @@ import PersonPicker from "../components/PersonPicker.jsx";
 import FamousLookup from "../components/FamousLookup.jsx";
 import { PhotoTagRow } from "../components/PhotoTags.jsx";
 import { PHOTO_CHANGE_EVENT, showPhotoMenu } from "../photoMenu.js";
+import { patchCachedPerson } from "../peopleCache.js";
+
+const PERSON_CATEGORIES = [
+  { id: "", label: "Not set" },
+  { id: "family", label: "Family" },
+  { id: "work", label: "Work" },
+  { id: "other", label: "Other" },
+];
 
 export default function PersonDetail() {
   const { id } = useParams();
@@ -22,9 +30,12 @@ export default function PersonDetail() {
   const [nickState, setNickState] = useState("idle");
   const [saveState, setSaveState] = useState("idle");
   const [err, setErr] = useState("");
+  const loadGen = useRef(0);
 
   async function load() {
+    const gen = ++loadGen.current;
     const p = await api.person(id);
+    if (gen !== loadGen.current) return p;
     setPerson(p);
     setName(p.name);
     setNickname(p.nickname || "");
@@ -33,7 +44,10 @@ export default function PersonDetail() {
     setNickState("idle");
     api
       .people(undefined, { lite: 1 })
-      .then((all) => setPeople((all.items || []).filter((x) => String(x.id) !== String(id))))
+      .then((all) => {
+        if (gen !== loadGen.current) return;
+        setPeople((all.items || []).filter((x) => String(x.id) !== String(id)));
+      })
       .catch(() => {});
     return p;
   }
@@ -126,6 +140,22 @@ export default function PersonDetail() {
     } catch (ex) {
       setErr(ex.message || "Could not remove this photo.");
       await load();
+    }
+  }
+
+  async function setCategory(category) {
+    const prev = person?.category || "";
+    if (prev === category) return;
+    setErr("");
+    loadGen.current += 1;
+    setPerson((cur) => (cur ? { ...cur, category } : cur));
+    try {
+      const updated = await api.patchPerson(id, { category });
+      applyPerson(updated);
+      patchCachedPerson(id, { category: updated.category || category || "" });
+    } catch (ex) {
+      setPerson((cur) => (cur ? { ...cur, category: prev } : cur));
+      setErr(ex.message || "Could not save Family, Work, or Other.");
     }
   }
 
@@ -248,28 +278,25 @@ export default function PersonDetail() {
             {nickState === "saving" ? "Saving…" : nickState === "saved" ? "Saved" : "Save nickname"}
           </button>
         </form>
+        <div className="person-chips" role="group" aria-label="Category">
+          {PERSON_CATEGORIES.map((c) => {
+            const on = (person.category || "") === c.id;
+            return (
+              <button
+                type="button"
+                key={c.id || "unset"}
+                className={`person-chip ${on ? "active" : ""}`}
+                aria-pressed={on}
+                onClick={() => setCategory(c.id)}
+                {...tip("Sort this person as family, work, or other in Faces in DB View.")}
+              >
+                {c.label}
+              </button>
+            );
+          })}
+        </div>
         {err ? <p className="error">{err}</p> : null}
       </header>
-      <div className="person-chips" style={{ marginBottom: 16 }} role="group" aria-label="Category">
-        {[
-          { id: "", label: "Not set" },
-          { id: "family", label: "Family" },
-          { id: "work", label: "Work" },
-          { id: "other", label: "Other" },
-        ].map((c) => (
-          <button
-            type="button"
-            key={c.id || "unset"}
-            className={`person-chip ${(person.category || "") === c.id ? "active" : ""}`}
-            onClick={() => {
-              api.patchPerson(id, { category: c.id }).then(() => load());
-            }}
-            {...tip("Sort this person as family, work, or other in Faces in DB View.")}
-          >
-            {c.label}
-          </button>
-        ))}
-      </div>
       <form className="person-notes" onSubmit={saveNotes}>
         <label className="cluster-label" htmlFor="person-notes">
           Notes

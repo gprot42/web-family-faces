@@ -76,10 +76,15 @@ export default function Settings() {
       const saved = await api.saveSettings({
         auto_update: next.auto_update ?? info?.auto_update !== false,
         auto_scan_new: next.auto_scan_new ?? info?.auto_scan_new !== false,
+        name_sex_check: next.name_sex_check ?? info?.name_sex_check !== false,
         folders: readImportFolders(),
       });
       setInfo(saved);
-      if (!saved.auto_update) {
+      if (next.name_sex_check === false) {
+        setOk("Male / female name checking is off. Auto-names ignore those face guesses.");
+      } else if (next.name_sex_check === true) {
+        setOk("Male / female name checking is on.");
+      } else if (!saved.auto_update) {
         setOk("Auto-update is off. New photos wait until you run Find Known Faces.");
       } else if (saved.auto_scan_new) {
         setOk("Auto-update is on. New photos will be scanned for faces.");
@@ -356,6 +361,31 @@ export default function Settings() {
         <p className="hint nested">
           Turn this off to add new files without AI tagging or face scanning. Names already in the
           catalog are not applied until you run Find Known Faces.
+        </p>
+      </section>
+
+      <section className="card help-block settings-card">
+        <h2>Male / female name check</h2>
+        <p>
+          Find Known Faces can skip a name when the first name is usually male or female and the
+          face was guessed the other way. The guess is often wrong. Names you type yourself are
+          never blocked.
+        </p>
+        <label
+          className="settings-check"
+          {...tip(
+            "When on, a face guessed female is not auto-named James, and the reverse. Turn off to ignore those guesses.",
+          )}
+        >
+          <input
+            type="checkbox"
+            checked={info?.name_sex_check !== false}
+            onChange={(e) => saveLibraryOptions({ name_sex_check: e.target.checked })}
+          />
+          <span>Check first names against male / female face guesses</span>
+        </label>
+        <p className="hint">
+          Turn this off if someone is skipped because the detector guessed the wrong sex.
         </p>
       </section>
 

@@ -21,6 +21,7 @@ from . import cluster as cluster_mod
 from . import faces as faces_mod
 from . import gedcom as gedcom_mod
 from . import importer
+from . import log as log_mod
 from . import lookup as lookup_mod
 from . import match as match_mod
 from . import sharpen as sharpen_mod
@@ -63,6 +64,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _log_http(request: Request, call_next):
+    try:
+        response = await call_next(request)
+    except Exception:
+        log_mod.exception("%s %s crashed", request.method, request.url.path)
+        return JSONResponse(
+            {"detail": "Something went wrong. The error is in data/logs/app.log."},
+            status_code=500,
+        )
+    if (
+        request.method in {"POST", "PATCH", "PUT", "DELETE"}
+        and response.status_code >= 400
+        and str(request.url.path).startswith("/api/")
+    ):
+        log_mod.warning("%s %s -> %s", request.method, request.url.path, response.status_code)
+    return response
 
 
 class ImportBody(BaseModel):
@@ -123,6 +143,14 @@ class AssignBody(BaseModel):
     category: str | None = None
 
 
+class ClientLogBody(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    page: str | None = None
+    action: str | None = None
+    cluster_id: int | None = None
+    photo_id: int | None = None
+
+
 class SplitBody(BaseModel):
     face_ids: list[int]
 
@@ -155,6 +183,7 @@ class SettingsBody(BaseModel):
     clear_xai_key: bool = False
     auto_update: bool | None = None
     auto_scan_new: bool | None = None
+    name_sex_check: bool | None = None
     folders: list[str] | None = None
 
 
@@ -224,6 +253,9 @@ def put_settings(body: SettingsBody) -> dict[str, Any]:
                     daemon=True,
                     name="photosort-auto-update-now",
                 ).start()
+        if body.name_sex_check is not None:
+            settings_mod.save_name_sex_check(body.name_sex_check)
+            changed = True
         if body.clear_xai_key:
             return settings_mod.clear_xai_key()
         if body.xai_api_key is not None and str(body.xai_api_key).strip() != "":
@@ -496,7 +528,7 @@ def _folder_prefixes(folders: list[str] | None) -> list[str]:
 
 
 def _sql_like_literal(text: str) -> str:
-    """Escape LIKE wildcards so folder names with _ (Scanned_Photos_...) stay exact."""
+    """Escape LIKE wildcards so folder names with _ (Scanned_Album_...) stay exact."""
     return text.replace("#", "##").replace("%", "#%").replace("_", "#_")
 
 
@@ -895,6 +927,19 @@ def undo_rematch_photo(photo_id: int, body: UndoMatchBody) -> dict[str, Any]:
     return match_mod.undo_match_photo(photo_id, body.face_ids)
 
 
+@app.post("/api/photos/{photo_id}/unassign")
+def unassign_photo(photo_id: int) -> dict[str, Any]:
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()
+        if not row or photos_mod.photo_hidden(row):
+            raise HTTPException(404, "Photo not found")
+    finally:
+        conn.close()
+    n = people_mod.unassign_photo_names(photo_id, sync_sidecars=False)
+    return {"ok": True, "cleared": n}
+
+
 @app.post("/api/faces/warmup")
 def warmup_faces() -> dict[str, Any]:
     status = faces_mod.analyzer_status()
@@ -1109,7 +1154,7 @@ def patch_face(face_id: int, body: FacePatch) -> dict[str, Any]:
         try:
             people_mod._sync_sidecars_for_faces([face_id])
         except Exception:
-            pass
+            log_mod.exception("sidecar follow-up failed face=%s", face_id)
 
     threading.Thread(target=follow_up, daemon=True).start()
     return face_public(row)
@@ -1139,7 +1184,11 @@ def assign_face(face_id: int, body: AssignBody) -> dict[str, Any]:
             person_id = people_mod.create_person(body.name, category=category)["id"]
     else:
         raise HTTPException(400, "person_id or name required")
-    people_mod.assign_faces([face_id], person_id, "manual", rematch=False, sync_sidecars=False)
+    try:
+        people_mod.assign_faces([face_id], person_id, "manual", rematch=False, sync_sidecars=False)
+    except Exception:
+        log_mod.exception("save face assign crashed face=%s person=%s", face_id, person_id)
+        raise HTTPException(500, "Could not save that name. The error is in data/logs/app.log.") from None
 
     photo_id = int(face["photo_id"]) if face and face["photo_id"] else None
     if photo_id and not active_job():
@@ -1175,11 +1224,11 @@ def junk_face(face_id: int) -> dict[str, Any]:
         try:
             people_mod._sync_sidecars_for_faces([face_id])
         except Exception:
-            pass
+            log_mod.exception("sidecar follow-up failed face=%s", face_id)
         try:
             match_mod.suppress_like_junk()
         except Exception:
-            pass
+            log_mod.exception("junk follow-up failed face=%s", face_id)
 
     threading.Thread(target=follow_up, daemon=True).start()
     return {"ok": True, "junked": n, "also_ignored": 0}
@@ -1212,8 +1261,10 @@ def _lookup_or_raise(fn, *args):
     try:
         return fn(*args)
     except lookup_mod.LookupError as exc:
+        log_mod.warning("lookup failed status=%s %s", exc.status, exc.message)
         raise HTTPException(exc.status, exc.message) from exc
     except Exception as exc:
+        log_mod.exception("lookup crashed")
         raise HTTPException(502, "Lookup failed. Try again, or type the name yourself.") from exc
 
 
@@ -1242,7 +1293,7 @@ def list_clusters() -> dict[str, Any]:
                 FROM clusters c
                 JOIN faces f ON f.cluster_id = c.id
                 JOIN photos ph ON ph.id = f.photo_id
-                WHERE c.status = 'unknown'
+                WHERE c.status != 'junk'
                   AND f.person_id IS NULL
                   AND f.quality = 'ok'
                   AND IFNULL(f.assigned_how, '') != 'junk'
@@ -1277,7 +1328,7 @@ def list_clusters() -> dict[str, Any]:
                   FROM clusters c
                   JOIN faces f ON f.cluster_id = c.id
                   JOIN photos ph ON ph.id = f.photo_id
-                  WHERE c.status = 'unknown'
+                  WHERE c.status != 'junk'
                     AND f.person_id IS NULL
                     AND f.quality = 'ok'
                     AND IFNULL(f.assigned_how, '') != 'junk'
@@ -1355,95 +1406,220 @@ def _after_cluster_edit(*, match: bool = True, person_id: int | None = None) -> 
     if active_job():
         return {"auto_assigned": 0}
 
+    extra = 0
+
     def follow_up() -> None:
+        nonlocal extra
         try:
             if person_id:
                 people_mod._sync_sidecars_for_people([int(person_id)])
+            if match:
+                from . import match as match_mod
+
+                extra = match_mod.inherit_named_cluster_leftovers()
             cluster_mod.try_run_clustering(only_unclustered=True)
             catalog_mod.maybe_backup()
         except Exception:
-            pass
+            log_mod.exception("after cluster edit failed person_id=%s", person_id)
 
     if os.environ.get("PYTEST_CURRENT_TEST"):
         follow_up()
     else:
         threading.Thread(target=follow_up, daemon=True).start()
-    return {"auto_assigned": 0}
+    return {"auto_assigned": extra}
+
+
+def _cluster_save_payload(report: people_mod.ClusterAssignReport, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "assigned": report.assigned,
+        "reason": report.reason,
+        "message": None if report.assigned else report.message(),
+        "skipped": {
+            "considered": report.considered,
+            "protected": report.skipped_protected,
+            "already_in_photo": report.skipped_already,
+            "lookalike": report.skipped_lookalike,
+        },
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _save_cluster(
+    cluster_id: int,
+    person_id: int,
+    face_ids: list[int],
+    *,
+    action: str,
+    person_name: str | None = None,
+) -> people_mod.ClusterAssignReport:
+    try:
+        report = people_mod.assign_cluster_report(
+            cluster_id, person_id, face_ids=face_ids, sync_sidecars=False
+        )
+    except Exception:
+        log_mod.exception(
+            "save %s crashed cluster=%s person=%s",
+            action,
+            cluster_id,
+            person_name or person_id,
+        )
+        raise HTTPException(500, "Could not save. The error is in data/logs/app.log.") from None
+    if not report.assigned:
+        log_mod.save_failed(
+            action,
+            cluster_id=cluster_id,
+            person=person_name,
+            person_id=person_id,
+            reason=report.reason,
+            considered=report.considered,
+            skipped_protected=report.skipped_protected,
+            skipped_already=report.skipped_already,
+            skipped_lookalike=report.skipped_lookalike,
+            message=report.message(),
+        )
+    return report
+
+
+@app.post("/api/log")
+def client_log(body: ClientLogBody) -> dict[str, Any]:
+    log_mod.warning(
+        "ui %s page=%s action=%s cluster=%s photo=%s",
+        body.message.strip(),
+        body.page or "",
+        body.action or "",
+        body.cluster_id if body.cluster_id is not None else "",
+        body.photo_id if body.photo_id is not None else "",
+    )
+    return {"ok": True}
 
 
 @app.post("/api/clusters/{cluster_id}/name")
 def name_cluster(cluster_id: int, body: NameBody) -> dict[str, Any]:
-    person = people_mod.find_person_by_name(body.name)
-    category = people_mod.normalize_category(body.category)
-    if person is None or people_mod.is_unknown_name(person.get("name") or ""):
-        person = people_mod.create_person(body.name, body.notes, body.birth_year, category=category)
-    elif category:
-        person = people_mod.update_person(person["id"], category=category) or person
-    face_ids = [int(fid) for fid in (body.face_ids or []) if fid] or people_mod.cluster_preview_face_ids(
-        cluster_id
-    )
-    assigned = people_mod.assign_cluster(
-        cluster_id, person["id"], face_ids=face_ids, sync_sidecars=False
-    )
-    leftover = people_mod.cluster_unnamed_count(cluster_id)
-    matched = _after_cluster_edit(
-        person_id=person["id"], match=leftover <= CLUSTER_PREVIEW_LIMIT
-    )
+    try:
+        person = people_mod.find_person_by_name(body.name)
+        category = people_mod.normalize_category(body.category)
+        if person is None or people_mod.is_unknown_name(person.get("name") or ""):
+            person = people_mod.create_person(body.name, body.notes, body.birth_year, category=category)
+        elif category:
+            person = people_mod.update_person(person["id"], category=category) or person
+        face_ids = [int(fid) for fid in (body.face_ids or []) if fid] or people_mod.cluster_preview_face_ids(
+            cluster_id
+        )
+        report = _save_cluster(
+            cluster_id,
+            person["id"],
+            face_ids,
+            action="name",
+            person_name=person.get("name") or body.name,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        log_mod.exception("save name crashed cluster=%s person=%s", cluster_id, body.name)
+        raise HTTPException(500, "Could not save that name. The error is in data/logs/app.log.") from None
+    matched = _after_cluster_edit(person_id=person["id"], match=True)
     state_mod.set_state("last_activity", "clusters")
-    return {"person": person_public(person), "assigned": assigned, "also_matched": matched.get("auto_assigned", 0)}
+    remaining = people_mod.cluster_unnamed_count(cluster_id)
+    return _cluster_save_payload(
+        report,
+        {
+            "person": person_public(person),
+            "also_matched": matched.get("auto_assigned", 0),
+            "remaining": remaining,
+        },
+    )
 
 
 @app.post("/api/clusters/{cluster_id}/unknown")
 def unknown_cluster(cluster_id: int, body: AssignBody | None = None) -> dict[str, Any]:
-    person = people_mod.create_unknown_person()
-    category = people_mod.normalize_category(body.category if body else None)
-    if category:
-        person = people_mod.update_person(person["id"], category=category) or person
-    face_ids = [int(fid) for fid in ((body.face_ids if body else None) or []) if fid]
-    if not face_ids:
-        face_ids = people_mod.cluster_preview_face_ids(cluster_id)
-    assigned = people_mod.assign_cluster(
-        cluster_id,
-        person["id"],
-        face_ids=face_ids,
-        sync_sidecars=False,
-    )
-    return {"person": person_public(person), "assigned": assigned}
+    try:
+        person = people_mod.create_unknown_person()
+        category = people_mod.normalize_category(body.category if body else None)
+        if category:
+            person = people_mod.update_person(person["id"], category=category) or person
+        face_ids = [int(fid) for fid in ((body.face_ids if body else None) or []) if fid]
+        if not face_ids:
+            face_ids = people_mod.cluster_preview_face_ids(cluster_id)
+        report = _save_cluster(
+            cluster_id,
+            person["id"],
+            face_ids,
+            action="unknown",
+            person_name=person.get("name"),
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        log_mod.exception("save unknown crashed cluster=%s", cluster_id)
+        raise HTTPException(500, "Could not save. The error is in data/logs/app.log.") from None
+    return _cluster_save_payload(report, {"person": person_public(person)})
 
 
 @app.post("/api/clusters/{cluster_id}/assign")
 def assign_cluster(cluster_id: int, body: AssignBody) -> dict[str, Any]:
     if not body.person_id:
         raise HTTPException(400, "person_id required")
-    category = people_mod.normalize_category(body.category)
-    if category:
-        people_mod.update_person(body.person_id, category=category)
-    face_ids = [int(fid) for fid in (body.face_ids or []) if fid] or people_mod.cluster_preview_face_ids(
-        cluster_id
+    person = people_mod.get_person(body.person_id)
+    person_name = (person or {}).get("name")
+    try:
+        category = people_mod.normalize_category(body.category)
+        if category:
+            people_mod.update_person(body.person_id, category=category)
+        face_ids = [int(fid) for fid in (body.face_ids or []) if fid] or people_mod.cluster_preview_face_ids(
+            cluster_id
+        )
+        report = _save_cluster(
+            cluster_id,
+            body.person_id,
+            face_ids,
+            action="assign",
+            person_name=person_name,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        log_mod.exception(
+            "save assign crashed cluster=%s person=%s", cluster_id, person_name or body.person_id
+        )
+        raise HTTPException(500, "Could not save that name. The error is in data/logs/app.log.") from None
+    matched = _after_cluster_edit(person_id=body.person_id, match=True)
+    remaining = people_mod.cluster_unnamed_count(cluster_id)
+    return _cluster_save_payload(
+        report,
+        {
+            "person_id": body.person_id,
+            "also_matched": matched.get("auto_assigned", 0),
+            "remaining": remaining,
+        },
     )
-    assigned = people_mod.assign_cluster(
-        cluster_id, body.person_id, face_ids=face_ids, sync_sidecars=False
-    )
-    leftover = people_mod.cluster_unnamed_count(cluster_id)
-    matched = _after_cluster_edit(
-        person_id=body.person_id, match=leftover <= CLUSTER_PREVIEW_LIMIT
-    )
-    return {"assigned": assigned, "person_id": body.person_id, "also_matched": matched.get("auto_assigned", 0)}
 
 
 @app.post("/api/clusters/{cluster_id}/junk")
 def junk_cluster(cluster_id: int, body: SplitBody | None = None) -> dict[str, Any]:
     face_ids = body.face_ids if body else None
-    cleared = people_mod.junk_cluster(cluster_id, face_ids, sync_sidecars=False)
+    try:
+        cleared = people_mod.junk_cluster(cluster_id, face_ids, sync_sidecars=False)
+    except Exception:
+        log_mod.exception("save junk crashed cluster=%s", cluster_id)
+        raise HTTPException(500, "Could not save. The error is in data/logs/app.log.") from None
+    if not cleared:
+        log_mod.save_failed("junk", cluster_id=cluster_id, reason="no_faces", message="That group was regrouped.")
 
     def follow_up() -> None:
         try:
             match_mod.suppress_like_junk()
         except Exception:
-            pass
+            log_mod.exception("junk follow-up failed cluster=%s", cluster_id)
 
     threading.Thread(target=follow_up, daemon=True).start()
-    return {"cleared": cleared, "also_ignored": 0}
+    return {
+        "cleared": cleared,
+        "also_ignored": 0,
+        "reason": None if cleared else "no_faces",
+        "message": None if cleared else "That group was regrouped. Click Not a person again.",
+    }
 
 
 @app.post("/api/clusters/{cluster_id}/split")
@@ -1473,6 +1649,7 @@ async def search_uploaded_face(file: UploadFile = File(...)) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
+        log_mod.exception("search uploaded face crashed")
         raise HTTPException(503, "Could not read a face in that photo yet. Try again in a moment.") from exc
 
 
@@ -1509,11 +1686,15 @@ def list_auto_review(
     person_id: int | None = Query(default=None),
     offset: int = 0,
     limit: int = people_mod.REVIEW_PAGE,
+    after_id: int | None = Query(default=None),
 ) -> dict[str, Any]:
-    cap = None if limit <= 0 else max(1, min(int(limit), 120))
+    max_cap = people_mod.REVIEW_MORE_CAP if person_id is not None else 120
+    cap = None if limit <= 0 else max(1, min(int(limit), max_cap))
     groups = []
     total = 0
-    for group in people_mod.list_auto_faces(person_id=person_id, offset=offset, limit=cap):
+    for group in people_mod.list_auto_faces(
+        person_id=person_id, offset=offset, limit=cap, after_id=after_id
+    ):
         person = group["person"]
         n = int(group.get("face_count") or len(group["faces"]))
         total += n
@@ -1529,6 +1710,7 @@ def list_auto_review(
                     {
                         "id": f["id"],
                         "photo_id": f["photo_id"],
+                        "face_ids": f.get("face_ids") or [f["id"]],
                         "crop_url": f"/api/faces/{f['id']}/crop?v=384",
                         "filename": Path(f["path"]).name if f.get("path") else "",
                         "taken_at": f.get("taken_at"),

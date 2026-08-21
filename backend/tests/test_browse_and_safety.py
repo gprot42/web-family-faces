@@ -113,11 +113,11 @@ def test_read_photo_clues_does_not_rewrite_original(tmp_path):
 
 def test_preview_folder_is_detected():
     assert originals.is_preview_path("/album/1024 x 768/shot.jpg")
-    assert originals.is_preview_path("/album/2003 - Bern 1024 x 768/shot.jpg")
-    assert originals.is_preview_path("/album/2003 - Montreux-1024x768/shot.jpg")
-    assert not originals.is_preview_path("/album/2003 - Tokyo/shot.jpg")
-    assert originals.is_preview_dir_name("2003 - Geneva - Hike 1024x768")
-    assert not originals.is_preview_dir_name("2003 - Tokyo")
+    assert originals.is_preview_path("/album/1994 - Trip 1024 x 768/shot.jpg")
+    assert originals.is_preview_path("/album/1994 - Lake-1024x768/shot.jpg")
+    assert not originals.is_preview_path("/album/1994 - Harbor/shot.jpg")
+    assert originals.is_preview_dir_name("1994 - Woods - Hike 1024x768")
+    assert not originals.is_preview_dir_name("1994 - Harbor")
     kept = originals.drop_preview_rows(
         [
             {"path": "/album/1024 x 768/DSC00267.jpg", "id": 1},
@@ -606,8 +606,8 @@ def test_import_does_not_move_or_modify_originals(tmp_path, monkeypatch):
 
 def test_import_two_sibling_folders(tmp_path, monkeypatch):
     _db(tmp_path, monkeypatch)
-    tokyo = tmp_path / "2003 - Tokyo"
-    vodka = tmp_path / "2001 - Vodka"
+    tokyo = tmp_path / "1994 - Harbor"
+    vodka = tmp_path / "1996 - Picnic"
     tokyo.mkdir()
     vodka.mkdir()
     Image.new("RGB", (16, 16), "navy").save(tokyo / "a.jpg", "JPEG")

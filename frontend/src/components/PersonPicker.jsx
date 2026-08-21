@@ -1,11 +1,37 @@
 import { useMemo, useState } from "react";
 import { tip } from "../tip.js";
 
+export const PERSON_DRAG_TYPE = "application/x-photosort-person";
+
 const CATEGORIES = [
   { id: "family", label: "Family" },
   { id: "work", label: "Work" },
   { id: "other", label: "Other" },
 ];
+
+export function personFromDataTransfer(dt) {
+  if (!dt) return null;
+  try {
+    const raw = dt.getData(PERSON_DRAG_TYPE) || dt.getData("application/json");
+    if (raw) {
+      const data = JSON.parse(raw);
+      if (data && (data.id != null || data.person_id != null)) {
+        return { id: data.id ?? data.person_id, name: data.name || "" };
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  const text = String(dt.getData("text/plain") || "");
+  const match = text.match(/^person:(\d+):(.*)$/);
+  if (match) return { id: Number(match[1]), name: match[2] };
+  return null;
+}
+
+export function isPersonDrag(dt) {
+  const types = [...(dt?.types || [])];
+  return types.includes(PERSON_DRAG_TYPE) || types.includes("application/json") || types.includes("text/plain");
+}
 
 export default function PersonPicker({
   people,
@@ -88,8 +114,18 @@ export default function PersonPicker({
             role="listitem"
             disabled={disabled}
             aria-label={p.name}
+            draggable={!disabled}
             onClick={() => onPick(p)}
-            {...tip(hint || `This group is ${p.name}.`)}
+            onDragStart={(e) => {
+              const payload = JSON.stringify({ id: p.id, name: p.name });
+              e.dataTransfer.setData(PERSON_DRAG_TYPE, payload);
+              e.dataTransfer.setData("application/json", payload);
+              e.dataTransfer.setData("text/plain", `person:${p.id}:${p.name}`);
+              e.dataTransfer.effectAllowed = "copy";
+              const img = e.currentTarget.querySelector("img");
+              if (img) e.dataTransfer.setDragImage(img, 24, 24);
+            }}
+            {...tip(hint || `This group is ${p.name}. Drag onto Name this person, or click.`)}
           >
             {p.cover_url ? (
               <img src={p.cover_url} alt="" decoding="async" />

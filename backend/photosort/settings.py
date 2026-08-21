@@ -14,6 +14,7 @@ from . import state as state_mod
 
 AUTO_UPDATE_KEY = "auto_update"
 AUTO_SCAN_NEW_KEY = "auto_scan_new"
+NAME_SEX_CHECK_KEY = "name_sex_check"
 
 # Official env name, stored as a file any xAI tool can find.
 KEY_ENV = "XAI_API_KEY"
@@ -193,6 +194,7 @@ def public_settings(*, reveal: bool = False) -> dict[str, Any]:
         "lookup_available": bool(saved or env or oauth_ready),
         "auto_update": auto_update_enabled(),
         "auto_scan_new": auto_scan_new_enabled(),
+        "name_sex_check": name_sex_check_enabled(),
         **oauth,
     }
     out["xai_key_set"] = bool(active)
@@ -287,11 +289,20 @@ def auto_scan_new_enabled() -> bool:
     return _truthy(state_mod.get_state(AUTO_SCAN_NEW_KEY), True)
 
 
+def name_sex_check_enabled() -> bool:
+    return _truthy(state_mod.get_state(NAME_SEX_CHECK_KEY), True)
+
+
 def save_auto_update(*, auto_update: bool | None = None, auto_scan_new: bool | None = None) -> dict[str, Any]:
     if auto_update is not None:
         state_mod.set_state(AUTO_UPDATE_KEY, "1" if auto_update else "0")
     if auto_scan_new is not None:
         state_mod.set_state(AUTO_SCAN_NEW_KEY, "1" if auto_scan_new else "0")
+    return public_settings()
+
+
+def save_name_sex_check(enabled: bool) -> dict[str, Any]:
+    state_mod.set_state(NAME_SEX_CHECK_KEY, "1" if enabled else "0")
     return public_settings()
 
 

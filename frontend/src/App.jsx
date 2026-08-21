@@ -256,7 +256,7 @@ export default function App() {
           <Route path="/" element={<Dashboard stats={stats} jobs={jobs} onJobs={setJobs} onChange={onChange} />} />
           <Route path="/photos" element={<Photos />} />
           <Route path="/photos/:id" element={<PhotoDetail />} />
-          <Route path="/to-name" element={<Clusters onChange={onChange} />} />
+          <Route path="/to-name" element={<Clusters stats={stats} onChange={onChange} />} />
           <Route path="/clusters" element={<Navigate to="/to-name" replace />} />
           <Route path="/search" element={<Search />} />
           <Route path="/review" element={<Review onChange={onChange} />} />

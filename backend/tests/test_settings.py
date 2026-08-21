@@ -135,3 +135,14 @@ def test_auto_update_flags_persist(tmp_path, monkeypatch):
     settings.save_auto_update(auto_update=False)
     assert settings.auto_update_enabled() is False
     assert settings.auto_scan_new_enabled() is False
+
+
+def test_name_sex_check_defaults_on_and_persists(tmp_path, monkeypatch):
+    _data(tmp_path, monkeypatch)
+    assert settings.name_sex_check_enabled() is True
+    assert settings.public_settings()["name_sex_check"] is True
+    settings.save_name_sex_check(False)
+    assert settings.name_sex_check_enabled() is False
+    assert settings.public_settings()["name_sex_check"] is False
+    settings.save_name_sex_check(True)
+    assert settings.name_sex_check_enabled() is True

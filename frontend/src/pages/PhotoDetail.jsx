@@ -352,6 +352,17 @@ export default function PhotoDetail() {
     };
   }, [id, personId, tagFilter]);
 
+  const lastLoggedErr = useRef("");
+  useEffect(() => {
+    if (!err) {
+      lastLoggedErr.current = "";
+      return;
+    }
+    if (err === lastLoggedErr.current) return;
+    lastLoggedErr.current = err;
+    api.reportError(err, { page: "photo", photo_id: Number(id) || null }).catch(() => {});
+  }, [err, id]);
+
   useEffect(() => {
     if (people.length) return undefined;
     let cancelled = false;
@@ -1612,6 +1623,24 @@ export default function PhotoDetail() {
     }
   }
 
+  async function removeAllNames() {
+    const ids = (photo?.faces || []).filter((f) => f.person_id && f.assigned_how !== "junk").map((f) => f.id);
+    if (!ids.length) return;
+    ids.forEach((fid) => rememberFaceChange(fid, "removing the name"));
+    setErr("");
+    setNote("Removing names…");
+    try {
+      await api.unassignPhoto(photo.id);
+      await load();
+      setNote(
+        ids.length === 1 ? "Name removed from this face." : `Names removed from ${ids.length} faces on this photo.`,
+      );
+    } catch (ex) {
+      setNote("");
+      setErr(ex.message || "Could not remove the names.");
+    }
+  }
+
   if (!photo) {
     if (full || readPlay()) {
       return (
@@ -1683,7 +1712,7 @@ export default function PhotoDetail() {
             </p>
           ) : null}
           {err ? (
-            <p className="error" role="alert">
+            <p className="error save-error" role="alert">
               {err}
             </p>
           ) : null}
@@ -1775,6 +1804,20 @@ export default function PhotoDetail() {
             >
               {fullLabels ? "Hide names" : "Show names"}
             </button>
+            {(photo.faces || []).some((f) => f.person_id && f.assigned_how !== "junk") ? (
+              <button
+                type="button"
+                className="secondary"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  removeAllNames();
+                }}
+                {...tip("Take every catalog name off this photo. Re-identify will not put them back. The original file is unchanged.")}
+              >
+                Remove names
+              </button>
+            ) : null}
             <button
               type="button"
               className="secondary"
@@ -1831,7 +1874,7 @@ export default function PhotoDetail() {
                 e.stopPropagation();
                 rematchFaces();
               }}
-              {...tip("Match unnamed faces to the catalog: closest named photos, several examples of each person, and people already in this album. Already-named photos stay fast. Use Add a face if someone was missed.")}
+              {...tip("Match unnamed faces to the catalog. Names you removed stay off. Already-named photos stay fast. Use Add a face if someone was missed.")}
             >
               {rematching ? "Re-identifying…" : "Re-identify faces"}
             </button>
@@ -2322,7 +2365,11 @@ export default function PhotoDetail() {
                       onApplyExisting={(personId) => assign({ person_id: personId }, f.id)}
                       onConfirm={(hit) => assign({ name: hit.name }, f.id)}
                     />
-                    {err ? <p className="error">{err}</p> : null}
+                    {err ? (
+                      <p className="error save-error" role="alert">
+                        {err}
+                      </p>
+                    ) : null}
                   </div>
                 ) : null}
                 </>
@@ -2498,6 +2545,15 @@ export default function PhotoDetail() {
             >
               {fullLabels ? "Hide names" : "Show names"}
             </button>
+            {(photo.faces || []).some((f) => f.person_id && f.assigned_how !== "junk") ? (
+              <button
+                type="button"
+                onClick={removeAllNames}
+                {...tip("Take every catalog name off this photo. Re-identify will not put them back. The original file is unchanged.")}
+              >
+                Remove names
+              </button>
+            ) : null}
             <button
               type="button"
               aria-pressed={pickingFace}
@@ -2534,7 +2590,7 @@ export default function PhotoDetail() {
               type="button"
               disabled={rematching}
               onClick={rematchFaces}
-              {...tip("Match unnamed faces to the catalog: closest named photos, several examples of each person, and people already in this album. Already-named photos stay fast. Use Add a face if someone was missed.")}
+              {...tip("Match unnamed faces to the catalog. Names you removed stay off. Already-named photos stay fast. Use Add a face if someone was missed.")}
             >
               {rematching ? "Re-identifying…" : "Re-identify faces"}
             </button>

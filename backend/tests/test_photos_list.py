@@ -26,11 +26,11 @@ def _db(tmp_path, monkeypatch):
     init_db(conn)
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/Volumes/share/2004 - Scotland/a.jpg", "a", 100, 100, now_iso()),
+        ("/Volumes/share/1995 - Coast/a.jpg", "a", 100, 100, now_iso()),
     )
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/Volumes/share/2003 - Tokyo/b.jpg", "b", 100, 100, now_iso()),
+        ("/Volumes/share/1994 - Harbor/b.jpg", "b", 100, 100, now_iso()),
     )
     conn.execute(
         """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, created_at)
@@ -50,7 +50,7 @@ def test_list_photos_filters_folder_without_touching_disk(tmp_path, monkeypatch)
     assert {item["filename"] for item in all_photos["items"]} == {"a.jpg", "b.jpg"}
     assert all_photos["items"][0]["faces"] or all_photos["items"][1]["faces"]
 
-    scoped = client.get("/api/photos", params=[("folder", "/Volumes/share/2004 - Scotland")]).json()
+    scoped = client.get("/api/photos", params=[("folder", "/Volumes/share/1995 - Coast")]).json()
     assert scoped["total"] == 1
     assert scoped["items"][0]["filename"] == "a.jpg"
 
@@ -64,18 +64,18 @@ def test_list_photos_folder_underscore_is_literal(tmp_path, monkeypatch):
     conn = connect()
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/Volumes/share/Scanned_Photos_2016/Set 1/a.jpg", "n1", 100, 100, now_iso()),
+        ("/Volumes/share/Scanned_Album_1994/Set 1/a.jpg", "n1", 100, 100, now_iso()),
     )
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/Volumes/share/ScannedXPhotosY2016/other.jpg", "n2", 100, 100, now_iso()),
+        ("/Volumes/share/ScannedXAlbumY1994/other.jpg", "n2", 100, 100, now_iso()),
     )
     conn.commit()
     conn.close()
     client = TestClient(app)
     scoped = client.get(
         "/api/photos",
-        params=[("folder", "/Volumes/share/Scanned_Photos_2016")],
+        params=[("folder", "/Volumes/share/Scanned_Album_1994")],
     ).json()
     assert scoped["total"] == 1
     assert scoped["items"][0]["filename"] == "a.jpg"
@@ -85,8 +85,8 @@ def test_catalog_folders_include_album_path(tmp_path, monkeypatch):
     _db(tmp_path, monkeypatch)
     items = list_name_folders()
     by_name = {row["folder"]: row for row in items}
-    assert by_name["2004 - Scotland"]["path"] == "/Volumes/share/2004 - Scotland"
-    assert by_name["2004 - Scotland"]["photos"] == 1
+    assert by_name["1995 - Coast"]["path"] == "/Volumes/share/1995 - Coast"
+    assert by_name["1995 - Coast"]["photos"] == 1
 
 
 def test_list_albums_under_includes_unscanned_children(tmp_path, monkeypatch):
@@ -94,16 +94,16 @@ def test_list_albums_under_includes_unscanned_children(tmp_path, monkeypatch):
 
     _db(tmp_path, monkeypatch)
     root = tmp_path / "Photo_Collection"
-    (root / "2005 - London").mkdir(parents=True)
-    (root / "2026 - Manila 2").mkdir()
-    (root / "2003 - Bern 1024 x 768").mkdir()
+    (root / "1997 - Market").mkdir(parents=True)
+    (root / "1998 - Harbor 2").mkdir()
+    (root / "1994 - Trip 1024 x 768").mkdir()
     items = list_albums_under([str(root)])
     names = [row["folder"] for row in items]
-    assert names == ["2005 - London", "2026 - Manila 2"]
+    assert names == ["1997 - Market", "1998 - Harbor 2"]
     by_name = {row["folder"]: row for row in items}
-    assert by_name["2005 - London"]["photos"] == 0
-    assert by_name["2026 - Manila 2"]["photos"] == 0
-    assert by_name["2005 - London"].get("group") in ("", None)
+    assert by_name["1997 - Market"]["photos"] == 0
+    assert by_name["1998 - Harbor 2"]["photos"] == 0
+    assert by_name["1997 - Market"].get("group") in ("", None)
 
 
 def test_list_albums_under_expands_nested_scan_sets(tmp_path, monkeypatch):
@@ -112,10 +112,10 @@ def test_list_albums_under_expands_nested_scan_sets(tmp_path, monkeypatch):
 
     _db(tmp_path, monkeypatch)
     root = tmp_path / "Photo_Collection"
-    nested = root / "Scanned_Photos_2022_Apr"
+    nested = root / "Scanned_Album_1998_Apr"
     (nested / "Loose Photos").mkdir(parents=True)
     (nested / "Scanned Photos Set (1)").mkdir()
-    (root / "2005 - London").mkdir()
+    (root / "1997 - Market").mkdir()
     conn = connect()
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
@@ -133,20 +133,20 @@ def test_list_albums_under_expands_nested_scan_sets(tmp_path, monkeypatch):
     assert str(nested / "Loose Photos") in by_path
     assert str(nested / "Scanned Photos Set (1)") in by_path
     assert by_path[str(nested / "Loose Photos")]["photos"] == 1
-    assert by_path[str(nested / "Loose Photos")]["group"] == "Scanned_Photos_2022_Apr"
+    assert by_path[str(nested / "Loose Photos")]["group"] == "Scanned_Album_1998_Apr"
     assert by_path[str(nested / "Loose Photos")]["group_path"] == str(nested)
-    assert by_path[str(root / "2005 - London")]["group"] in ("", None)
-    assert by_path[str(root / "2005 - London")]["photos"] == 0
+    assert by_path[str(root / "1997 - Market")]["group"] in ("", None)
+    assert by_path[str(root / "1997 - Market")]["photos"] == 0
 
 
 def test_path_in_folder_includes_nested_scan_sets():
     from photosort.people import path_in_folder
 
-    nested = "/Volumes/media/Scanned_Photos_2016/Set 79 - Holiday scans/a.jpg"
-    assert path_in_folder(nested, "Scanned_Photos_2016")
-    assert path_in_folder(nested, "/Volumes/media/Scanned_Photos_2016")
-    assert path_in_folder(nested, "Set 79 - Holiday scans")
-    assert not path_in_folder(nested, "Scanned_Photos_2022_Apr")
+    nested = "/Volumes/media/Scanned_Album_1994/Set 3 - Holiday scans/a.jpg"
+    assert path_in_folder(nested, "Scanned_Album_1994")
+    assert path_in_folder(nested, "/Volumes/media/Scanned_Album_1994")
+    assert path_in_folder(nested, "Set 3 - Holiday scans")
+    assert not path_in_folder(nested, "Scanned_Album_1998_Apr")
 
 
 def test_face_tag_position_is_stored(tmp_path, monkeypatch):
@@ -197,7 +197,7 @@ def test_photo_comment_is_stored_and_listed(tmp_path, monkeypatch):
     client = TestClient(app)
     saved = client.patch("/api/photos/1", json={"comment": "  Wedding at the church  "}).json()
     assert saved["comment"] == "Wedding at the church"
-    assert saved["path"] == "/Volumes/share/2004 - Scotland/a.jpg"
+    assert saved["path"] == "/Volumes/share/1995 - Coast/a.jpg"
     photo = client.get("/api/photos/1").json()
     assert photo["comment"] == "Wedding at the church"
     listed = client.get("/api/photos", params={"q": "church"}).json()
@@ -238,7 +238,7 @@ def test_rotate_and_hide_photo_leave_original_path(tmp_path, monkeypatch):
     client = TestClient(app)
     first = client.patch("/api/photos/1", json={"rotate": "right"}).json()
     assert first["rotation"] == 90
-    assert first["path"] == "/Volumes/share/2004 - Scotland/a.jpg"
+    assert first["path"] == "/Volumes/share/1995 - Coast/a.jpg"
     again = client.patch("/api/photos/1", json={"rotate": "right"}).json()
     assert again["rotation"] == 180
     left = client.patch("/api/photos/1", json={"rotate": "left"}).json()
@@ -256,7 +256,7 @@ def test_photo_neighbors_use_person_join(tmp_path, monkeypatch):
     conn = connect()
     conn.execute(
         "INSERT INTO photos (path, sha256, taken_at, width, height, created_at) VALUES (?,?,?,?,?,?)",
-        ("/Volumes/share/2004 - Scotland/c.jpg", "c", "2004-01-02T00:00:00", 100, 100, now_iso()),
+        ("/Volumes/share/1995 - Coast/c.jpg", "c", "2004-01-02T00:00:00", 100, 100, now_iso()),
     )
     conn.execute(
         "INSERT INTO people (id, name, created_at) VALUES (1, 'Pat', ?)",

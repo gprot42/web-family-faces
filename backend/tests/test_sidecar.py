@@ -49,7 +49,7 @@ def _add_face(conn, photo_id, box=(10, 10, 40, 50), person_id=None, how=None):
 
 def test_naming_writes_sidecar_and_leaves_original(tmp_path, monkeypatch):
     _db(tmp_path, monkeypatch)
-    album = tmp_path / "2003 - Tokyo"
+    album = tmp_path / "1994 - Harbor"
     photo = _photo(album)
     before = photo.read_bytes()
     before_mtime = photo.stat().st_mtime_ns
@@ -71,7 +71,7 @@ def test_naming_writes_sidecar_and_leaves_original(tmp_path, monkeypatch):
 
 def test_copied_folder_restores_name_to_same_person(tmp_path, monkeypatch):
     _db(tmp_path, monkeypatch)
-    tokyo = tmp_path / "2003 - Tokyo"
+    tokyo = tmp_path / "1994 - Harbor"
     _photo(tokyo)
     importer.import_folder(create_job("import"), tokyo)
     conn = connect()
@@ -81,7 +81,7 @@ def test_copied_folder_restores_name_to_same_person(tmp_path, monkeypatch):
     person = create_person("Sam")
     assign_faces([face_id], person["id"], "manual")
 
-    copied = tmp_path / "copy" / "2003 - Tokyo"
+    copied = tmp_path / "copy" / "1994 - Harbor"
     shutil.copytree(tokyo, copied)
     importer.import_folder(create_job("import"), copied)
     assert (copied / originals.SIDECAR_NAME).is_file()
@@ -110,7 +110,7 @@ def test_copied_folder_restores_name_to_same_person(tmp_path, monkeypatch):
 
 def test_reset_folder_keeps_sidecar(tmp_path, monkeypatch):
     _db(tmp_path, monkeypatch)
-    album = tmp_path / "2001 - Vodka"
+    album = tmp_path / "1996 - Picnic"
     _photo(album, "drink.jpg", "maroon")
     importer.import_folder(create_job("import"), album)
     conn = connect()
@@ -121,7 +121,7 @@ def test_reset_folder_keeps_sidecar(tmp_path, monkeypatch):
     sidecar = album / originals.SIDECAR_NAME
     assert sidecar.is_file()
     before = sidecar.read_text(encoding="utf-8")
-    out = reset_names("2001 - Vodka")
+    out = reset_names("1996 - Picnic")
     assert out["writes_sidecars"] is False
     assert sidecar.is_file()
     assert sidecar.read_text(encoding="utf-8") == before
@@ -207,7 +207,7 @@ def test_label_tag_writes_sidecar_and_restores(tmp_path, monkeypatch):
 
 def test_face_comment_writes_sidecar_and_restores(tmp_path, monkeypatch):
     _db(tmp_path, monkeypatch)
-    album = tmp_path / "2008 - Wedding"
+    album = tmp_path / "1999 - Party"
     photo = _photo(album, "aisle.jpg", "ivory")
     before = photo.read_bytes()
     importer.import_folder(create_job("import"), album)
@@ -215,7 +215,7 @@ def test_face_comment_writes_sidecar_and_restores(tmp_path, monkeypatch):
     photo_id = conn.execute("SELECT id FROM photos").fetchone()["id"]
     face_id = _add_face(conn, photo_id, box=(8, 8, 42, 48))
     conn.close()
-    assign_faces([face_id], create_person("Clifford")["id"], "manual")
+    assign_faces([face_id], create_person("Arthur")["id"], "manual")
     saved = set_face_comment(face_id, "holding the cake")
     assert saved["comment"] == "holding the cake"
     dest = album / originals.SIDECAR_NAME
@@ -223,7 +223,7 @@ def test_face_comment_writes_sidecar_and_restores(tmp_path, monkeypatch):
     assert payload["photos"]["aisle.jpg"]["faces"][0]["comment"] == "holding the cake"
     assert photo.read_bytes() == before
 
-    copied = tmp_path / "copy" / "2008 - Wedding"
+    copied = tmp_path / "copy" / "1999 - Party"
     shutil.copytree(album, copied)
     importer.import_folder(create_job("import"), copied)
     conn = connect()
@@ -244,27 +244,27 @@ def test_face_comment_writes_sidecar_and_restores(tmp_path, monkeypatch):
     ).fetchone()
     conn.close()
     assert row["comment"] == "holding the cake"
-    assert row["name"] == "Clifford"
+    assert row["name"] == "Arthur"
 
 
 def test_comment_writes_sidecar_and_restores(tmp_path, monkeypatch):
     _db(tmp_path, monkeypatch)
-    album = tmp_path / "2008 - Wedding"
+    album = tmp_path / "1999 - Party"
     photo = _photo(album, "aisle.jpg", "ivory")
     before = photo.read_bytes()
     importer.import_folder(create_job("import"), album)
     conn = connect()
     photo_id = conn.execute("SELECT id FROM photos").fetchone()["id"]
     conn.close()
-    saved = set_photo_comment(photo_id, "Clifford at the back.")
-    assert saved["comment"] == "Clifford at the back."
+    saved = set_photo_comment(photo_id, "Arthur at the back.")
+    assert saved["comment"] == "Arthur at the back."
     dest = album / originals.SIDECAR_NAME
     assert dest.is_file()
     payload = json.loads(dest.read_text(encoding="utf-8"))
-    assert payload["photos"]["aisle.jpg"]["comment"] == "Clifford at the back."
+    assert payload["photos"]["aisle.jpg"]["comment"] == "Arthur at the back."
     assert photo.read_bytes() == before
 
-    copied = tmp_path / "copy" / "2008 - Wedding"
+    copied = tmp_path / "copy" / "1999 - Party"
     shutil.copytree(album, copied)
     importer.import_folder(create_job("import"), copied)
     conn = connect()
@@ -275,12 +275,12 @@ def test_comment_writes_sidecar_and_restores(tmp_path, monkeypatch):
     conn = connect()
     row = conn.execute("SELECT comment FROM photos WHERE id = ?", (new_id,)).fetchone()
     conn.close()
-    assert row["comment"] == "Clifford at the back."
+    assert row["comment"] == "Arthur at the back."
 
 
 def test_photo_tags_write_sidecar_and_restore(tmp_path, monkeypatch):
     _db(tmp_path, monkeypatch)
-    album = tmp_path / "2008 - Wedding"
+    album = tmp_path / "1999 - Party"
     photo = _photo(album, "aisle.jpg", "ivory")
     before = photo.read_bytes()
     importer.import_folder(create_job("import"), album)
@@ -294,7 +294,7 @@ def test_photo_tags_write_sidecar_and_restore(tmp_path, monkeypatch):
     assert payload["photos"]["aisle.jpg"]["tags"] == ["Christmas", "family"]
     assert photo.read_bytes() == before
 
-    copied = tmp_path / "copy" / "2008 - Wedding"
+    copied = tmp_path / "copy" / "1999 - Party"
     shutil.copytree(album, copied)
     importer.import_folder(create_job("import"), copied)
     conn = connect()

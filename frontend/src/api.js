@@ -1,14 +1,37 @@
+function errorDetail(body, fallback) {
+  const detail = body?.detail;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (detail && typeof detail === "object") {
+    if (typeof detail.message === "string" && detail.message.trim()) return detail.message;
+    if (typeof detail.detail === "string" && detail.detail.trim()) return detail.detail;
+  }
+  if (typeof body?.message === "string" && body.message.trim()) return body.message;
+  if (body && typeof body === "object") {
+    try {
+      return JSON.stringify(body);
+    } catch {
+      /* ignore */
+    }
+  }
+  return fallback;
+}
+
 async function request(path, options = {}) {
-  const res = await fetch(path, {
-    cache: "no-store",
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      cache: "no-store",
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options,
+    });
+  } catch (ex) {
+    throw new Error(ex.message || "Could not reach the app. Is it still running?");
+  }
   if (!res.ok) {
-    let detail = res.statusText;
+    let detail = res.statusText || "Request failed";
     try {
       const body = await res.json();
-      detail = body.detail || JSON.stringify(body);
+      detail = errorDetail(body, detail);
     } catch {
       /* ignore */
     }
@@ -23,6 +46,17 @@ export const api = {
   pauseJob: () => request("/api/jobs/pause", { method: "POST" }),
   resumeJob: () => request("/api/jobs/resume", { method: "POST" }),
   health: () => request("/api/health"),
+  reportError: (message, extra = {}) =>
+    request("/api/log", {
+      method: "POST",
+      body: JSON.stringify({
+        message: String(message || "Unknown error").slice(0, 2000),
+        page: extra.page || "",
+        action: extra.action || "",
+        cluster_id: extra.cluster_id || extra.clusterId || null,
+        photo_id: extra.photo_id || extra.photoId || null,
+      }),
+    }).catch(() => ({ ok: false })),
   pipeline: (folder) => {
     const folders = Array.isArray(folder) ? folder.filter(Boolean) : [folder].filter(Boolean);
     const body = folders.length > 1 ? { folders } : { folder: folders[0] };
@@ -114,6 +148,7 @@ export const api = {
   patchFace: (id, body) => request(`/api/faces/${id}`, { method: "PATCH", body: JSON.stringify(body || {}) }),
   assignFace: (id, body) => request(`/api/faces/${id}/assign`, { method: "POST", body: JSON.stringify(body) }),
   unassignFace: (id) => request(`/api/faces/${id}/unassign`, { method: "POST" }),
+  unassignPhoto: (id) => request(`/api/photos/${id}/unassign`, { method: "POST" }),
   junkFace: (id) => request(`/api/faces/${id}/junk`, { method: "POST" }),
   restoreFace: (id) => request(`/api/faces/${id}/restore`, { method: "POST" }),
   unknownFace: (id) => request(`/api/faces/${id}/unknown`, { method: "POST" }),

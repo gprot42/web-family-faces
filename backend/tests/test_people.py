@@ -2,6 +2,7 @@ from photosort import config, db
 from photosort.db import connect, init_db
 from photosort.people import (
     assign_cluster,
+    assign_cluster_report,
     assign_faces,
     auto_face_count,
     confirm_faces,
@@ -19,6 +20,7 @@ from photosort.people import (
     reset_matching,
     reset_names,
     revoke_cluster_names,
+    person_matches_query,
     search_catalog,
     search_photos,
     split_person_cluster,
@@ -69,7 +71,7 @@ def test_unnamed_counts_ignore_preview_copies(tmp_path, monkeypatch):
     conn = _setup(tmp_path, monkeypatch)
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/album/2003 - Tokyo/a.jpg", "a", 10, 10, now_iso()),
+        ("/album/1994 - Harbor/a.jpg", "a", 10, 10, now_iso()),
     )
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
@@ -116,11 +118,11 @@ def test_name_in_one_folder_auto_matches_other_folder(tmp_path, monkeypatch):
     conn = connect()
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/album/2003 - Tokyo/a.jpg", "a", 100, 100, now_iso()),
+        ("/album/1994 - Harbor/a.jpg", "a", 100, 100, now_iso()),
     )
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/album/2001 - Vodka/b.jpg", "b", 100, 100, now_iso()),
+        ("/album/1996 - Picnic/b.jpg", "b", 100, 100, now_iso()),
     )
     vec = embedding_to_bytes(np.ones(8, dtype=np.float32))
     conn.execute(
@@ -260,12 +262,25 @@ def test_suggestions_omit_weak_catalog_hits(tmp_path, monkeypatch):
     assert suggestions_for_face(2) == []
 
 
+def test_person_matches_query_alan_allan():
+    person = {"name": "Allan James Cole", "nickname": ""}
+    assert person_matches_query(person, "alan")
+    assert person_matches_query(person, "Alan Cole")
+    assert person_matches_query(person, "allan")
+    assert person_matches_query(person, "james")
+    assert not person_matches_query(person, "alex")
+    assert not person_matches_query(person, "zzz")
+    nick = {"name": "Robert Smith", "nickname": "Bob"}
+    assert person_matches_query(nick, "bob")
+    assert not person_matches_query(nick, "alan")
+
+
 def test_search_catalog_finds_person_and_photo(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     conn = connect()
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/album/2003 - Tokyo/a.jpg", "a", 100, 100, now_iso()),
+        ("/album/1994 - Harbor/a.jpg", "a", 100, 100, now_iso()),
     )
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
@@ -295,7 +310,7 @@ def test_search_catalog_finds_person_and_photo(tmp_path, monkeypatch):
     empty = search_catalog("zzz")
     assert empty["people"] == []
     assert empty["photos"] == []
-    by_file = search_photos("Tokyo")
+    by_file = search_photos("Harbor")
     assert [p["id"] for p in by_file["photos"]] == [1]
     by_name = search_photos("DSCN")
     assert by_name["photos"] == []
@@ -309,11 +324,11 @@ def test_review_auto_confirm_and_reject(tmp_path, monkeypatch):
     conn = connect()
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/album/2003 - Tokyo/a.jpg", "a", 100, 100, now_iso()),
+        ("/album/1994 - Harbor/a.jpg", "a", 100, 100, now_iso()),
     )
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/album/2003 - Tokyo/b.jpg", "b", 100, 100, now_iso()),
+        ("/album/1994 - Harbor/b.jpg", "b", 100, 100, now_iso()),
     )
     conn.execute(
         """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, person_id, assigned_how, created_at)
@@ -371,15 +386,104 @@ def test_list_auto_faces_caps_per_person(tmp_path, monkeypatch):
     assert {f["id"] for f in first[0]["faces"]}.isdisjoint({f["id"] for f in more[0]["faces"]})
     rest = list_auto_faces(person_id=person["id"], offset=4, limit=2)
     assert len(rest[0]["faces"]) == 1
+    after = list_auto_faces(person_id=person["id"], after_id=first[0]["faces"][-1]["id"], limit=10)
+    assert [f["id"] for f in after[0]["faces"]] == [f["id"] for f in more[0]["faces"]] + [
+        f["id"] for f in rest[0]["faces"]
+    ]
+    assert after[0]["face_count"] == 5
+
+
+def test_list_auto_faces_one_card_per_photo(tmp_path, monkeypatch):
+    from photosort.util import now_iso
+
+    _setup(tmp_path, monkeypatch)
+    person = create_person("Sam")
+    other = create_person("Alex")
+    conn = connect()
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/album/group.jpg", "same-bytes", 100, 100, now_iso()),
+    )
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/album/copy/group.jpg", "same-bytes", 100, 100, now_iso()),
+    )
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/album/other.jpg", "other", 100, 100, now_iso()),
+    )
+    now = now_iso()
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, person_id, assigned_how, created_at)
+           VALUES (1,0,0,10,10,0.9,'ok',?,'auto',?)""",
+        (person["id"], now),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, person_id, assigned_how, created_at)
+           VALUES (1,20,20,30,30,0.4,'ok',?,'auto',?)""",
+        (person["id"], now),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, person_id, assigned_how, created_at)
+           VALUES (2,0,0,10,10,0.8,'ok',?,'auto',?)""",
+        (person["id"], now),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, person_id, assigned_how, created_at)
+           VALUES (3,0,0,10,10,0.9,'ok',?,'auto',?)""",
+        (other["id"], now),
+    )
+    conn.commit()
+    conn.close()
+    assert auto_face_count() == 2
+    groups = {g["person"]["name"]: g for g in list_auto_faces()}
+    sam = groups["Sam"]
+    assert sam["face_count"] == 1
+    assert len(sam["faces"]) == 1
+    assert sam["faces"][0]["id"] == 1
+    assert set(sam["faces"][0]["face_ids"]) == {1, 2, 3}
+    assert groups["Alex"]["face_count"] == 1
+    assert confirm_faces(face_ids=[1]) == 3
+    assert auto_face_count() == 1
+    leftover = list_auto_faces()
+    assert len(leftover) == 1
+    assert leftover[0]["person"]["name"] == "Alex"
+
+
+def test_list_auto_faces_after_id_skips_confirmed(tmp_path, monkeypatch):
+    from photosort.util import now_iso
+
+    _setup(tmp_path, monkeypatch)
+    person = create_person("Sam")
+    conn = connect()
+    for i in range(6):
+        conn.execute(
+            "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+            (f"/album/{i}.jpg", str(i), 10, 10, now_iso()),
+        )
+        conn.execute(
+            """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, person_id, assigned_how, created_at)
+               VALUES (?,0,0,10,10,0.9,'ok',?,'auto',?)""",
+            (i + 1, person["id"], now_iso()),
+        )
+    conn.commit()
+    conn.close()
+    first = list_auto_faces(person_id=person["id"], limit=3)
+    shown = first[0]["faces"]
+    confirm_faces(face_ids=[shown[0]["id"], shown[2]["id"]])
+    leftover_id = shown[1]["id"]
+    more = list_auto_faces(person_id=person["id"], after_id=leftover_id, limit=10)
+    assert more[0]["face_count"] == 4
+    assert [f["id"] for f in more[0]["faces"]] == [4, 5, 6]
 
 
 def test_list_auto_faces_skips_preview_copies(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
-    person = create_person("Elsie")
+    person = create_person("Nora")
     conn = connect()
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/album/2003 - Tokyo/a.jpg", "a", 100, 100, now_iso()),
+        ("/album/1994 - Harbor/a.jpg", "a", 100, 100, now_iso()),
     )
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
@@ -400,7 +504,7 @@ def test_list_auto_faces_skips_preview_copies(tmp_path, monkeypatch):
     groups = list_auto_faces()
     assert auto_face_count() == 1
     assert len(groups) == 1
-    assert groups[0]["person"]["name"] == "Elsie"
+    assert groups[0]["person"]["name"] == "Nora"
     assert [f["photo_id"] for f in groups[0]["faces"]] == [1]
 
 
@@ -442,6 +546,43 @@ def test_unassign_face_clears_same_photo_copies(tmp_path, monkeypatch):
     conn.close()
     assert left == 0
     assert cleared == 3
+
+
+def test_unassign_photo_names_clears_every_named_face(tmp_path, monkeypatch):
+    from photosort.people import unassign_photo_names
+
+    _setup(tmp_path, monkeypatch)
+    ada = create_person("Ada")
+    sam = create_person("Sam")
+    conn = connect()
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/class.jpg", "c", 100, 100, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, person_id, assigned_how, created_at)
+           VALUES (1,0,0,10,10,0.9,'ok',?,'auto',?)""",
+        (ada["id"], now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, person_id, assigned_how, created_at)
+           VALUES (1,20,0,30,10,0.9,'ok',?,'manual',?)""",
+        (sam["id"], now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, person_id, assigned_how, created_at)
+           VALUES (1,40,0,50,10,0.9,'ok',NULL,'junk',?)""",
+        (now_iso(),),
+    )
+    conn.commit()
+    conn.close()
+    assert unassign_photo_names(1, sync_sidecars=False) >= 2
+    conn = connect()
+    rows = list(conn.execute("SELECT id, person_id, assigned_how FROM faces ORDER BY id"))
+    conn.close()
+    assert rows[0]["person_id"] is None and rows[0]["assigned_how"] == "cleared"
+    assert rows[1]["person_id"] is None and rows[1]["assigned_how"] == "cleared"
+    assert rows[2]["assigned_how"] == "junk"
 
 
 def test_unassign_is_not_rematched(tmp_path, monkeypatch):
@@ -540,6 +681,184 @@ def test_name_cluster_http_does_not_stamp_mega_cluster(tmp_path, monkeypatch):
     assert named == 24
 
 
+def test_name_cluster_saves_new_person_when_lookalike_exists(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from photosort import catalog, originals
+    from photosort.main import app
+
+    conn = _setup(tmp_path, monkeypatch)
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setattr(config, "DATA_DIR", data)
+    monkeypatch.setattr(config, "BACKUP_DIR", data / "backups")
+    monkeypatch.setattr(catalog, "DB_PATH", config.DB_PATH)
+    monkeypatch.setattr(catalog, "BACKUP_DIR", data / "backups")
+    monkeypatch.setattr(originals, "DATA_DIR", data)
+    (data / "backups").mkdir()
+    existing = create_person("Jonathan Reid Cole")
+    same = embedding_to_bytes(l2_normalize(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)))
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/named/a.jpg", "n", 100, 100, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, person_id, assigned_how, created_at)
+           VALUES (1,0,0,10,10,0.9,'ok',?,?, 'manual', ?)""",
+        (same, existing["id"], now_iso()),
+    )
+    conn.execute("INSERT INTO clusters (status, created_at) VALUES ('unknown', ?)", (now_iso(),))
+    for i in range(3):
+        conn.execute(
+            "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+            (f"/album/p{i}.jpg", f"h{i}", 100, 100, now_iso()),
+        )
+        conn.execute(
+            """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, cluster_id, created_at)
+               VALUES (?,0,0,10,10,0.9,'ok',?,1,?)""",
+            (i + 2, same, now_iso()),
+        )
+    conn.commit()
+    conn.close()
+    client = TestClient(app)
+    result = client.post("/api/clusters/1/name", json={"name": "Jonathan Cole", "face_ids": [2, 3, 4]}).json()
+    assert result["assigned"] == 3
+    assert result["person"]["name"] == "Jonathan Cole"
+    assert result["person"]["id"] != existing["id"]
+    conn = connect()
+    named = conn.execute(
+        "SELECT COUNT(*) AS n FROM faces WHERE person_id = ?",
+        (result["person"]["id"],),
+    ).fetchone()["n"]
+    conn.close()
+    assert named == 3
+
+
+def test_name_cluster_ignores_wrong_sex_guess(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from photosort import catalog, originals
+    from photosort.main import app
+
+    conn = _setup(tmp_path, monkeypatch)
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setattr(config, "DATA_DIR", data)
+    monkeypatch.setattr(config, "BACKUP_DIR", data / "backups")
+    monkeypatch.setattr(catalog, "DB_PATH", config.DB_PATH)
+    monkeypatch.setattr(catalog, "BACKUP_DIR", data / "backups")
+    monkeypatch.setattr(originals, "DATA_DIR", data)
+    (data / "backups").mkdir()
+    conn.execute("INSERT INTO clusters (status, created_at) VALUES ('unknown', ?)", (now_iso(),))
+    emb = embedding_to_bytes(np.ones(8, dtype=np.float32))
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/album/a.jpg", "a", 100, 100, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, cluster_id, sex_est, age_est, created_at)
+           VALUES (1,0,0,10,10,0.9,'ok',?,1,'F',40,?)""",
+        (emb, now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    client = TestClient(app)
+    result = client.post("/api/clusters/1/name", json={"name": "Jonathan Cole", "face_ids": [1]}).json()
+    assert result["assigned"] == 1
+    assert result["person"]["name"] == "Jonathan Cole"
+
+
+def test_jonathan_is_a_male_name():
+    from photosort.people import _name_sex
+
+    assert _name_sex("Jonathan") == "M"
+    assert _name_sex("Jonathan Cole") == "M"
+    assert _name_sex("Jonathan Reid Cole") == "M"
+
+
+def test_name_sex_check_off_allows_mismatch_auto_name(tmp_path, monkeypatch):
+    from photosort import settings as settings_mod
+
+    _setup(tmp_path, monkeypatch)
+    crops = tmp_path / "crops"
+    crops.mkdir()
+    monkeypatch.setattr(config, "CROP_DIR", crops)
+    jonathan = create_person("Jonathan Cole")
+    named = _unit(1.0, 0.0)
+    probe = _unit(0.92, (1.0 - 0.92**2) ** 0.5)
+    conn = connect()
+    conn.execute(
+        "INSERT INTO photos (path, sha256, taken_at, width, height, created_at) VALUES (?,?,?,?,?,?)",
+        ("/set/a.jpg", "a", "1994-01-01T00:00:00", 200, 200, now_iso()),
+    )
+    conn.execute(
+        "INSERT INTO photos (path, sha256, taken_at, width, height, created_at) VALUES (?,?,?,?,?,?)",
+        ("/set/b.jpg", "b", "1994-01-01T00:01:00", 200, 200, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, sex_est, person_id, assigned_how, created_at)
+           VALUES (1,0,0,10,10,0.9,'ok',?,'M',?, 'manual', ?)""",
+        (embedding_to_bytes(named), jonathan["id"], now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, sex_est, age_est, created_at)
+           VALUES (2,0,0,40,40,0.9,'ok',?,'F',40,?)""",
+        (embedding_to_bytes(probe), now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    blocked = match_photo(2)
+    conn = connect()
+    row = conn.execute("SELECT person_id FROM faces WHERE photo_id = 2").fetchone()
+    conn.close()
+    assert blocked["auto_assigned"] == 0
+    assert row["person_id"] is None
+    settings_mod.save_name_sex_check(False)
+    allowed = match_photo(2)
+    conn = connect()
+    row = conn.execute("SELECT person_id FROM faces WHERE photo_id = 2").fetchone()
+    conn.close()
+    assert allowed["auto_assigned"] == 1
+    assert row["person_id"] == jonathan["id"]
+
+
+def test_match_names_jonathan_even_if_detector_guessed_female(tmp_path, monkeypatch):
+    """A man's given name plus a real gallery beats InsightFace saying F."""
+    _setup(tmp_path, monkeypatch)
+    crops = tmp_path / "crops"
+    crops.mkdir()
+    monkeypatch.setattr(config, "CROP_DIR", crops)
+    jonathan = create_person("Jonathan Cole")
+    named = _unit(1.0, 0.0)
+    probe = _unit(0.92, (1.0 - 0.92**2) ** 0.5)
+    conn = connect()
+    conn.execute(
+        "INSERT INTO photos (path, sha256, taken_at, width, height, created_at) VALUES (?,?,?,?,?,?)",
+        ("/set/a.jpg", "a", "1994-01-01T00:00:00", 200, 200, now_iso()),
+    )
+    conn.execute(
+        "INSERT INTO photos (path, sha256, taken_at, width, height, created_at) VALUES (?,?,?,?,?,?)",
+        ("/set/b.jpg", "b", "1994-01-01T00:01:00", 200, 200, now_iso()),
+    )
+    for i in range(20):
+        conn.execute(
+            """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, sex_est, person_id, assigned_how, created_at)
+               VALUES (1,?,?,?, ?,0.9,'ok',?,'M',?, 'manual', ?)""",
+            (i, 0, i + 10, 10, embedding_to_bytes(named), jonathan["id"], now_iso()),
+        )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, sex_est, age_est, created_at)
+           VALUES (2,0,0,40,40,0.9,'ok',?,'F',40,?)""",
+        (embedding_to_bytes(probe), now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    out = match_photo(2)
+    assert out["auto_assigned"] == 1
+    conn = connect()
+    row = conn.execute("SELECT person_id FROM faces WHERE photo_id = 2").fetchone()
+    conn.close()
+    assert row["person_id"] == jonathan["id"]
+
+
 def test_match_unknown_does_not_stamp_mega_cluster_leftovers(tmp_path, monkeypatch):
     conn = _setup(tmp_path, monkeypatch)
     crops = tmp_path / "crops"
@@ -608,6 +927,94 @@ def test_match_unknown_names_mega_leftover_that_matches_a_manual_person(tmp_path
     assert sofa["person_id"] == person["id"]
 
 
+def test_list_clusters_includes_named_group_with_leftovers(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from photosort import catalog, originals
+    from photosort.main import app
+
+    conn = _setup(tmp_path, monkeypatch)
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setattr(config, "DATA_DIR", data)
+    monkeypatch.setattr(config, "BACKUP_DIR", data / "backups")
+    monkeypatch.setattr(catalog, "DB_PATH", config.DB_PATH)
+    monkeypatch.setattr(catalog, "BACKUP_DIR", data / "backups")
+    monkeypatch.setattr(originals, "DATA_DIR", data)
+    (data / "backups").mkdir()
+    person = create_person("Dana Price")
+    conn.execute("INSERT INTO clusters (status, created_at) VALUES ('named', ?)", (now_iso(),))
+    for i in range(5):
+        conn.execute(
+            "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+            (str(tmp_path / f"{i}.jpg"), f"h{i}", 100, 100, now_iso()),
+        )
+        person_id = person["id"] if i == 0 else None
+        how = "manual" if i == 0 else None
+        conn.execute(
+            """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, cluster_id,
+                                  person_id, assigned_how, created_at)
+               VALUES (?,0,0,10,10,0.9,'ok',1,?,?,?)""",
+            (i + 1, person_id, how, now_iso()),
+        )
+    conn.commit()
+    conn.close()
+    items = TestClient(app).get("/api/clusters").json()["items"]
+    assert items
+    assert items[0]["face_count"] == 4
+
+
+def test_inherit_mega_leftover_names_faces_that_match_manual_person(tmp_path, monkeypatch):
+    from photosort.match import inherit_named_cluster_leftovers
+
+    _setup(tmp_path, monkeypatch)
+    crops = tmp_path / "crops"
+    crops.mkdir()
+    monkeypatch.setattr(config, "CROP_DIR", crops)
+    person = create_person("Sam")
+    other = create_person("Bea")
+    sam = embedding_to_bytes(l2_normalize(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)))
+    bea = embedding_to_bytes(l2_normalize(np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)))
+    conn = connect()
+    conn.execute("INSERT INTO clusters (status, created_at) VALUES ('named', ?)", (now_iso(),))
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/named/a.jpg", "n", 100, 100, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, person_id, assigned_how, cluster_id, created_at)
+           VALUES (1,0,0,10,10,0.9,'ok',?,?, 'manual', 1, ?)""",
+        (sam, person["id"], now_iso()),
+    )
+    for i in range(30):
+        conn.execute(
+            "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+            (f"/album/p{i}.jpg", f"h{i}", 100, 100, now_iso()),
+        )
+        conn.execute(
+            """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, cluster_id, created_at)
+               VALUES (?,0,0,10,10,0.9,'ok',?,1,?)""",
+            (i + 2, sam if i < 28 else bea, now_iso()),
+        )
+    conn.commit()
+    conn.close()
+    n = inherit_named_cluster_leftovers(1)
+    assert n >= 20
+    conn = connect()
+    named_sam = conn.execute(
+        "SELECT COUNT(*) AS n FROM faces WHERE person_id = ?", (person["id"],)
+    ).fetchone()["n"]
+    named_bea = conn.execute(
+        "SELECT COUNT(*) AS n FROM faces WHERE person_id = ?", (other["id"],)
+    ).fetchone()["n"]
+    leftover = conn.execute(
+        "SELECT COUNT(*) AS n FROM faces WHERE cluster_id = 1 AND person_id IS NULL"
+    ).fetchone()["n"]
+    conn.close()
+    assert named_sam >= 21
+    assert named_bea == 0
+    assert leftover >= 1
+
+
 def test_revoke_cluster_names_keeps_manual(tmp_path, monkeypatch):
     conn = _setup(tmp_path, monkeypatch)
     conn.execute("INSERT INTO clusters (status, created_at) VALUES ('unknown', ?)", (now_iso(),))
@@ -673,6 +1080,12 @@ def test_assign_cluster_by_face_ids_after_cluster_rebuild(tmp_path, monkeypatch)
     assert row["person_id"] == person["id"]
     listed = list_people()
     assert any(p["name"] == "Lila Cole" and p["face_count"] == 1 for p in listed)
+    import photosort.people as people_mod
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("lite lists should not scan embeddings for covers")
+
+    monkeypatch.setattr(people_mod, "_sex_centroids", boom)
     lite = list_people(lite=True)
     assert any(p["name"] == "Lila Cole" and p["cover_face_id"] == 1 for p in lite)
 
@@ -755,6 +1168,54 @@ def test_list_people_cover_skips_occluded_face(tmp_path, monkeypatch):
         Image.new("RGB", (64, 64), (150, 140, 130)).save(crops / f"{i}.jpg", "JPEG")
     listed = {p["name"]: p for p in list_people()}
     assert listed["Adam Cole"]["cover_face_id"] == 3
+    lite = {p["name"]: p for p in list_people(lite=True)}
+    assert lite["Adam Cole"]["cover_face_id"] == 3
+
+
+def test_list_people_cover_prefers_unobscured_over_color(tmp_path, monkeypatch):
+    from PIL import Image
+
+    conn = _setup(tmp_path, monkeypatch)
+    crops = tmp_path / "crops"
+    crops.mkdir()
+    monkeypatch.setattr(config, "CROP_DIR", crops)
+    import photosort.people as people_mod
+
+    monkeypatch.setattr(people_mod, "CROP_DIR", crops)
+    person = create_person("Adam Cole")
+    other = create_person("In Front")
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/color-blocked.jpg", "b", 400, 400, now_iso()),
+    )
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/bw-clear.jpg", "c", 400, 400, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (id, photo_id, x1, y1, x2, y2, det_score, quality, person_id, created_at)
+           VALUES (1,1,40,40,160,160,0.99,'ok',?,?)""",
+        (person["id"], now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (id, photo_id, x1, y1, x2, y2, det_score, quality, person_id, created_at)
+           VALUES (2,1,80,80,200,200,0.9,'ok',?,?)""",
+        (other["id"], now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (id, photo_id, x1, y1, x2, y2, det_score, quality, person_id, created_at)
+           VALUES (3,2,20,20,100,100,0.72,'ok',?,?)""",
+        (person["id"], now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    Image.new("RGB", (64, 64), (190, 110, 80)).save(crops / "1.jpg", "JPEG")
+    Image.new("RGB", (64, 64), (190, 110, 80)).save(crops / "2.jpg", "JPEG")
+    Image.new("RGB", (64, 64), (128, 128, 128)).save(crops / "3.jpg", "JPEG")
+    listed = {p["name"]: p for p in list_people()}
+    assert listed["Adam Cole"]["cover_face_id"] == 3
+    lite = {p["name"]: p for p in list_people(lite=True)}
+    assert lite["Adam Cole"]["cover_face_id"] == 3
 
 
 def test_list_people_cover_prefers_color_over_bw(tmp_path, monkeypatch):
@@ -792,6 +1253,8 @@ def test_list_people_cover_prefers_color_over_bw(tmp_path, monkeypatch):
     Image.new("RGB", (64, 64), (190, 110, 80)).save(crops / "2.jpg", "JPEG")
     listed = {p["name"]: p for p in list_people()}
     assert listed["Adam Cole"]["cover_face_id"] == 2
+    lite = {p["name"]: p for p in list_people(lite=True)}
+    assert lite["Adam Cole"]["cover_face_id"] == 2
 
 
 def test_list_people_cover_prefers_majority_sex(tmp_path, monkeypatch):
@@ -1196,12 +1659,12 @@ def test_rename_person_http_updates_name(tmp_path, monkeypatch):
     from photosort.main import app
 
     _setup(tmp_path, monkeypatch)
-    person = create_person("Elsie")
+    person = create_person("Nora")
     client = TestClient(app)
-    saved = client.patch(f"/api/people/{person['id']}", json={"name": "Elsie Hall"}).json()
-    assert saved["name"] == "Elsie Hall"
+    saved = client.patch(f"/api/people/{person['id']}", json={"name": "Nora Hall"}).json()
+    assert saved["name"] == "Nora Hall"
     fetched = client.get(f"/api/people/{person['id']}").json()
-    assert fetched["name"] == "Elsie Hall"
+    assert fetched["name"] == "Nora Hall"
 
 
 def test_person_nickname_is_saved_and_used_in_search(tmp_path, monkeypatch):
@@ -1250,6 +1713,21 @@ def test_person_category_family_work_other(tmp_path, monkeypatch):
     assert cleared["category"] == ""
     family = create_person("Pat", category="Family")
     assert family["category"] == "family"
+
+
+def test_patch_person_http_sets_other_category(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from photosort.main import app
+
+    _setup(tmp_path, monkeypatch)
+    person = create_person("Alex Cole")
+    client = TestClient(app)
+    other = client.patch(f"/api/people/{person['id']}", json={"category": "other"}).json()
+    assert other["category"] == "other"
+    shown = client.get(f"/api/people/{person['id']}").json()
+    assert shown["category"] == "other"
+    cleared = client.patch(f"/api/people/{person['id']}", json={"category": ""}).json()
+    assert cleared["category"] == ""
 
 
 def test_assign_face_http_reuses_name_and_sets_category(tmp_path, monkeypatch):
@@ -1439,7 +1917,7 @@ def test_match_assigns_small_unidentifiable_face(tmp_path, monkeypatch):
     assert row["assigned_how"] == "auto"
 
 
-def test_match_photo_retries_cleared_faces(tmp_path, monkeypatch):
+def test_match_photo_skips_cleared_faces(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from photosort.main import app
 
@@ -1472,15 +1950,15 @@ def test_match_photo_retries_cleared_faces(tmp_path, monkeypatch):
     assert skipped["auto_assigned"] == 0
     client = TestClient(app)
     out = client.post("/api/photos/1/match", params={"wait": True}).json()
-    assert out["auto_assigned"] == 1
+    assert out["auto_assigned"] == 0
     assert out["photo_id"] == 1
     conn = connect()
     rows = {r["id"]: r for r in conn.execute("SELECT id, person_id, assigned_how FROM faces")}
     conn.close()
     assert rows[1]["person_id"] == person["id"]
     assert rows[1]["assigned_how"] == "manual"
-    assert rows[2]["person_id"] == person["id"]
-    assert rows[2]["assigned_how"] == "auto"
+    assert rows[2]["person_id"] is None
+    assert rows[2]["assigned_how"] == "cleared"
     assert rows[3]["person_id"] is None
     assert rows[3]["assigned_how"] == "junk"
 
@@ -1970,9 +2448,12 @@ def test_undo_match_photo_clears_auto_names_only(tmp_path, monkeypatch):
     assert rows[2]["assigned_how"] == "cleared"
     client = TestClient(app)
     again = client.post("/api/photos/1/match", params={"wait": True}).json()
-    assert again["auto_assigned"] >= 1
-    undone = client.post("/api/photos/1/match/undo", json={"face_ids": [item["face_id"] for item in again["assigned"]]}).json()
-    assert undone["undone"] >= 1
+    assert again["auto_assigned"] == 0
+    conn = connect()
+    stuck = conn.execute("SELECT person_id, assigned_how FROM faces WHERE id = 2").fetchone()
+    conn.close()
+    assert stuck["person_id"] is None
+    assert stuck["assigned_how"] == "cleared"
 
 
 def _unit(*vals, dim=32):
@@ -2559,11 +3040,11 @@ def test_list_people_filters_to_one_folder(tmp_path, monkeypatch):
     conn = _setup(tmp_path, monkeypatch)
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/album/2003 - Tokyo/a.jpg", "a", 10, 10, now_iso()),
+        ("/album/1994 - Harbor/a.jpg", "a", 10, 10, now_iso()),
     )
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/album/2001 - Vodka/b.jpg", "b", 10, 10, now_iso()),
+        ("/album/1996 - Picnic/b.jpg", "b", 10, 10, now_iso()),
     )
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
@@ -2609,12 +3090,12 @@ def test_list_people_filters_to_one_folder(tmp_path, monkeypatch):
     assert everyone["Emperor Akihito"]["face_count"] == 2
     assert everyone["Empress Michiko"]["cover_face_id"] is not None
 
-    tokyo_only = {p["name"]: p for p in list_people(folder="2003 - Tokyo")}
+    tokyo_only = {p["name"]: p for p in list_people(folder="1994 - Harbor")}
     assert set(tokyo_only) == {"Empress Michiko", "Emperor Akihito"}
     assert tokyo_only["Empress Michiko"]["face_count"] == 1
     assert tokyo_only["Emperor Akihito"]["face_count"] == 1
 
-    vodka_only = {p["name"]: p for p in list_people(folder="2001 - Vodka")}
+    vodka_only = {p["name"]: p for p in list_people(folder="1996 - Picnic")}
     assert set(vodka_only) == {"Sam", "Emperor Akihito"}
     assert vodka_only["Sam"]["face_count"] == 1
     assert vodka_only["Emperor Akihito"]["face_count"] == 1
@@ -2622,18 +3103,18 @@ def test_list_people_filters_to_one_folder(tmp_path, monkeypatch):
     from photosort.people import list_people_folders
 
     names = {row["folder"] for row in list_people_folders()}
-    assert names == {"2001 - Vodka", "2003 - Tokyo"}
+    assert names == {"1996 - Picnic", "1994 - Harbor"}
 
 
 def test_reset_names_one_folder_keeps_other_folder(tmp_path, monkeypatch):
     conn = _setup(tmp_path, monkeypatch)
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/album/2003 - Tokyo/a.jpg", "a", 10, 10, now_iso()),
+        ("/album/1994 - Harbor/a.jpg", "a", 10, 10, now_iso()),
     )
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/album/2001 - Vodka/b.jpg", "b", 10, 10, now_iso()),
+        ("/album/1996 - Picnic/b.jpg", "b", 10, 10, now_iso()),
     )
     conn.commit()
     conn.close()
@@ -2663,8 +3144,8 @@ def test_reset_names_one_folder_keeps_other_folder(tmp_path, monkeypatch):
     )
     conn.commit()
     conn.close()
-    out = reset_names("2003 - Tokyo")
-    assert out["folder"] == "2003 - Tokyo"
+    out = reset_names("1994 - Harbor")
+    assert out["folder"] == "1994 - Harbor"
     conn = connect()
     names = {r["name"] for r in conn.execute("SELECT name FROM people")}
     assert names == {"Sam", "Emperor Akihito"}
@@ -2683,11 +3164,11 @@ def test_reset_matching_clears_auto_keeps_manual(tmp_path, monkeypatch):
     conn = _setup(tmp_path, monkeypatch)
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/album/2003 - Tokyo/a.jpg", "a", 10, 10, now_iso()),
+        ("/album/1994 - Harbor/a.jpg", "a", 10, 10, now_iso()),
     )
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/album/2001 - Vodka/b.jpg", "b", 10, 10, now_iso()),
+        ("/album/1996 - Picnic/b.jpg", "b", 10, 10, now_iso()),
     )
     conn.commit()
     conn.close()
@@ -2705,7 +3186,7 @@ def test_reset_matching_clears_auto_keeps_manual(tmp_path, monkeypatch):
     )
     conn.commit()
     conn.close()
-    out = reset_matching("2001 - Vodka")
+    out = reset_matching("1996 - Picnic")
     assert out["faces_cleared"] == 1
     conn = connect()
     tokyo = conn.execute("SELECT person_id, assigned_how FROM faces WHERE photo_id = 1").fetchone()
@@ -2722,11 +3203,11 @@ def test_reset_names_two_folders(tmp_path, monkeypatch):
     conn = _setup(tmp_path, monkeypatch)
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/album/2003 - Tokyo/a.jpg", "a", 10, 10, now_iso()),
+        ("/album/1994 - Harbor/a.jpg", "a", 10, 10, now_iso()),
     )
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
-        ("/album/2001 - Vodka/b.jpg", "b", 10, 10, now_iso()),
+        ("/album/1996 - Picnic/b.jpg", "b", 10, 10, now_iso()),
     )
     conn.execute(
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
@@ -2755,8 +3236,8 @@ def test_reset_names_two_folders(tmp_path, monkeypatch):
     )
     conn.commit()
     conn.close()
-    out = reset_names(folders=["2003 - Tokyo", "2001 - Vodka"])
-    assert set(out["folders"]) == {"2003 - Tokyo", "2001 - Vodka"}
+    out = reset_names(folders=["1994 - Harbor", "1996 - Picnic"])
+    assert set(out["folders"]) == {"1994 - Harbor", "1996 - Picnic"}
     conn = connect()
     names = {r["name"] for r in conn.execute("SELECT name FROM people")}
     assert names == {"Ada"}
@@ -2961,3 +3442,141 @@ def test_assign_cluster_skips_face_that_matches_someone_else(tmp_path, monkeypat
     row = conn.execute("SELECT person_id, assigned_how FROM faces WHERE cluster_id = 1").fetchone()
     conn.close()
     assert row["person_id"] is None
+
+
+def test_assign_cluster_report_explains_already_in_photo(tmp_path, monkeypatch):
+    conn = _setup(tmp_path, monkeypatch)
+    conn.execute("INSERT INTO clusters (status, created_at) VALUES ('unknown', ?)", (now_iso(),))
+    emb = embedding_to_bytes(np.ones(8, dtype=np.float32))
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/pub.jpg", "p", 800, 600, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, cluster_id, created_at)
+           VALUES (1,0,0,80,80,0.9,'ok',?,1,?)""",
+        (emb, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, cluster_id, created_at)
+           VALUES (1,200,0,280,80,0.9,'ok',?,1,?)""",
+        (emb, now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    alex = create_person("Alex Cole")
+    assign_faces([1], alex["id"], how="manual", rematch=False, sync_sidecars=False)
+    report = assign_cluster_report(1, alex["id"], face_ids=[2], sync_sidecars=False)
+    assert report.assigned == 0
+    assert report.reason == "already_in_photo"
+    assert "already named" in report.message().lower()
+
+
+def test_assign_cluster_report_explains_lookalike(tmp_path, monkeypatch):
+    conn = _setup(tmp_path, monkeypatch)
+    conn.execute("INSERT INTO clusters (status, created_at) VALUES ('unknown', ?)", (now_iso(),))
+    alex_vec = _unit(1.0, 0.0)
+    jon_vec = _unit(0.0, 1.0)
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/named.jpg", "n", 100, 100, now_iso()),
+    )
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/pub.jpg", "p", 800, 600, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, person_id, assigned_how, created_at)
+           VALUES (1,0,0,10,10,0.9,'ok',?,?, 'manual', ?)""",
+        (embedding_to_bytes(alex_vec), None, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, cluster_id, created_at)
+           VALUES (2,0,0,80,80,0.9,'ok',?,1,?)""",
+        (embedding_to_bytes(jon_vec), now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    alex = create_person("Alex Cole")
+    jordan = create_person("Jordan Cole")
+    assign_faces([1], alex["id"], how="manual", rematch=False, sync_sidecars=False)
+    conn = connect()
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, person_id, assigned_how, created_at)
+           VALUES (1,80,0,90,10,0.9,'ok',?,?, 'manual', ?)""",
+        (embedding_to_bytes(jon_vec), jordan["id"], now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    report = assign_cluster_report(1, alex["id"], sync_sidecars=False)
+    assert report.assigned == 0
+    assert report.reason == "lookalike"
+    assert "someone else" in report.message().lower()
+
+
+def test_name_cluster_http_returns_reason_and_writes_log(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from photosort import catalog, originals
+    from photosort.main import app
+
+    monkeypatch.setenv("PHOTOSORT_LOG_FILE", "1")
+    conn = _setup(tmp_path, monkeypatch)
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setattr(config, "DATA_DIR", data)
+    monkeypatch.setattr(catalog, "DB_PATH", config.DB_PATH)
+    monkeypatch.setattr(catalog, "BACKUP_DIR", data / "backups")
+    monkeypatch.setattr(originals, "DATA_DIR", data)
+    (data / "backups").mkdir()
+    conn.execute("INSERT INTO clusters (status, created_at) VALUES ('unknown', ?)", (now_iso(),))
+    emb = embedding_to_bytes(np.ones(8, dtype=np.float32))
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/pub.jpg", "p", 800, 600, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, cluster_id, created_at)
+           VALUES (1,0,0,80,80,0.9,'ok',?,1,?)""",
+        (emb, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, cluster_id, created_at)
+           VALUES (1,200,0,280,80,0.9,'ok',?,1,?)""",
+        (emb, now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    alex = create_person("Alex Cole")
+    assign_faces([1], alex["id"], how="manual", rematch=False, sync_sidecars=False)
+    client = TestClient(app)
+    result = client.post(
+        "/api/clusters/1/assign",
+        json={"person_id": alex["id"], "face_ids": [2]},
+    ).json()
+    assert result["assigned"] == 0
+    assert result["reason"] == "already_in_photo"
+    assert "already named" in (result["message"] or "").lower()
+    log_text = (data / "logs" / "app.log").read_text()
+    assert "save assign failed" in log_text
+    assert "cluster=1" in log_text
+    assert "already_in_photo" in log_text
+
+
+def test_client_log_endpoint_writes_app_log(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from photosort.main import app
+
+    monkeypatch.setenv("PHOTOSORT_LOG_FILE", "1")
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setattr(config, "DATA_DIR", data)
+    client = TestClient(app)
+    out = client.post(
+        "/api/log",
+        json={"message": "Could not save that name.", "page": "to-name", "action": "name", "cluster_id": 42},
+    ).json()
+    assert out["ok"] is True
+    log_text = (data / "logs" / "app.log").read_text()
+    assert "Could not save that name." in log_text
+    assert "page=to-name" in log_text
+    assert "cluster=42" in log_text

@@ -8,7 +8,7 @@
 #   ./scripts/app.sh restart
 #   ./scripts/app.sh status
 #   ./scripts/app.sh debug                 # foreground, API reload, debug logs
-#   ./scripts/app.sh logs [--follow] [api|ui]
+#   ./scripts/app.sh logs [--follow] [api|ui|app]
 #   ./scripts/app.sh start --port 8750 --ui-port 5180
 #   ./scripts/app.sh start --debug --foreground
 #   ./scripts/app.sh --help
@@ -19,7 +19,7 @@
 #   restart     Stop, then start
 #   status      Show ports, PIDs, and API health
 #   debug       Foreground start with uvicorn --reload and debug logs
-#   logs        Print recent API/UI logs
+#   logs        Print recent API, UI, or save/error (app) logs
 #
 # Options:
 #   --port, --api-port N   API port (default 8741, env PHOTOSORT_PORT)
@@ -56,6 +56,7 @@ UI_PIDFILE=""
 STATE_FILE=""
 API_LOG=""
 UI_LOG=""
+APP_LOG=""
 API_PID=""
 UI_PID=""
 
@@ -75,6 +76,7 @@ init_paths() {
   STATE_FILE="$RUN_DIR/ports"
   API_LOG="$DATA_DIR/logs/api.log"
   UI_LOG="$DATA_DIR/logs/ui.log"
+  APP_LOG="$DATA_DIR/logs/app.log"
 }
 
 listen_pids() {
@@ -466,7 +468,8 @@ cmd_logs() {
   case "$LOG_WHICH" in
     api) files="$API_LOG" ;;
     ui)  files="$UI_LOG" ;;
-    *)   files="$API_LOG $UI_LOG" ;;
+    app) files="$APP_LOG" ;;
+    *)   files="$API_LOG $UI_LOG $APP_LOG" ;;
   esac
   local f existing=""
   for f in $files; do
@@ -541,7 +544,7 @@ while [[ $i -lt ${#args[@]} ]]; do
       LOG_FOLLOW=true
       i=$((i + 1))
       ;;
-    api|ui|both)
+    api|ui|app|both)
       if [[ "$CMD" == "logs" || -z "$CMD" ]]; then
         LOG_WHICH="$arg"
         i=$((i + 1))
