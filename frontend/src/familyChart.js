@@ -120,8 +120,11 @@ export function layoutFamilyTree(chart) {
   const nodeMap = Object.fromEntries((chart?.nodes || []).map((n) => [n.id, n]));
   const unions = chart?.unions || [];
   const pos = {};
-  if (!focusId || !nodeMap[focusId]) {
+  if (!focusId) {
     return { nodes: [], edges: [], width: 400, height: 240, focus: focusId };
+  }
+  if (!nodeMap[focusId]) {
+    nodeMap[focusId] = { id: focusId, name: focusId };
   }
 
   const own = unions.filter((u) => u.role === "own" && (u.partners || []).includes(focusId));
@@ -271,6 +274,32 @@ export function layoutFamilyTree(chart) {
 
 export function clampZoom(value) {
   return clamp(Number(value) || 1, 0.12, 2.5);
+}
+
+export function viewOnFocus(layout, viewW, viewH) {
+  const nodes = layout?.nodes || [];
+  const focus = nodes.find((n) => n.focus) || nodes[0];
+  const width = Number(viewW) || 0;
+  const height = Number(viewH) || 0;
+  if (!focus || width < 80 || height < 80) {
+    return { x: 0, y: 0, zoom: 1 };
+  }
+  const pad = 48;
+  const near = nodes.filter((n) => Math.abs((n.y || 0) - focus.y) <= ROW + CARD_H);
+  const xs = [focus.x, ...near.map((n) => n.x)];
+  const ys = [focus.y, ...near.map((n) => n.y)];
+  const minX = Math.min(...xs) - pad;
+  const maxX = Math.max(...xs.map((x) => x + CARD_W)) + pad;
+  const minY = Math.min(...ys) - pad;
+  const maxY = Math.max(...ys.map((y) => y + CARD_H)) + pad;
+  const boxW = Math.max(CARD_W + pad * 2, maxX - minX);
+  const boxH = Math.max(CARD_H + pad * 2, maxY - minY);
+  const zoom = clampZoom(Math.min((width - 24) / boxW, (height - 24) / boxH, 1.15));
+  return {
+    x: width / 2 - (focus.x + CARD_W / 2) * zoom,
+    y: height * 0.62 - (focus.y + CARD_H / 2) * zoom,
+    zoom,
+  };
 }
 
 export function wheelZoomFactor(event) {

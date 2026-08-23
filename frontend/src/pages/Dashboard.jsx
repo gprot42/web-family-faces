@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api";
+import ConfirmAsk from "../components/ConfirmAsk.jsx";
 import FolderPicker from "../components/FolderPicker.jsx";
 import { addedFolderPaths, folderLabel, importFoldersStored, isAlbumPath, normalizeFolderPath, readImportFolders, writeImportFolders } from "../folders.js";
 import { tip } from "../tip.js";
@@ -31,6 +32,7 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
   const [backupMsg, setBackupMsg] = useState("");
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupDone, setBackupDone] = useState(false);
+  const [ask, setAsk] = useState(null);
   const foldersAtPickerOpen = useRef(folders);
 
   useEffect(() => {
@@ -145,13 +147,18 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
     const added = addedFolderPaths(clean, foldersAtPickerOpen.current);
     setFolders(clean);
     writeImportFolders(clean);
-    if (scanNew && added.length && !active) startFindFaces(added);
+    if (scanNew && added.length && !active) setAsk({ kind: "scan", paths: added });
   }
 
   async function runPipeline(e) {
     e.preventDefault();
     const next = addTypedPath();
-    await startFindFaces(next);
+    const list = (next || []).filter(isAlbumPath);
+    if (!list.length) {
+      setErr("Choose at least one folder.");
+      return;
+    }
+    setAsk({ kind: "scan", paths: list });
   }
 
   async function refreshJobs() {
@@ -275,6 +282,42 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
           }}
         />
       ) : null}
+      {ask?.kind === "scan" ? (
+        <ConfirmAsk
+          title={
+            ask.paths.length === 1
+              ? "Find Known Faces in this folder?"
+              : `Find Known Faces in ${ask.paths.length} folders?`
+          }
+          body="Read photos that are not in the catalog yet. Already scanned albums stay as they are. Files stay where they are."
+          onCancel={() => setAsk(null)}
+          onConfirm={() => {
+            const list = ask.paths;
+            setAsk(null);
+            startFindFaces(list);
+          }}
+        >
+          <ul className="scan-confirm-list">
+            {ask.paths.map((path) => (
+              <li key={path}>
+                <strong>{folderLabel(path)}</strong>
+                <div className="hint" title={path}>{path}</div>
+              </li>
+            ))}
+          </ul>
+        </ConfirmAsk>
+      ) : null}
+      {ask?.kind === "check" ? (
+        <ConfirmAsk
+          title="Check every indexed photo?"
+          body="Re-hash the original files. Reports if any photo was changed, moved, or is missing. Does not alter the photos."
+          onCancel={() => setAsk(null)}
+          onConfirm={() => {
+            setAsk(null);
+            api.verify().then(onChange);
+          }}
+        />
+      ) : null}
       {err ? <p className="error">{err}</p> : null}
 
       {active ? <JobGauge job={active} title={jobTitle[active.type] || active.type} onResumed={refreshJobs} /> : null}
@@ -395,7 +438,7 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
             type="button"
             className="secondary"
             disabled={!!active || !stats?.photos}
-            onClick={() => api.verify().then(onChange)}
+            onClick={() => setAsk({ kind: "check" })}
             {...tip("Re-check the original files. Reports if any photo was changed, moved, or is missing. Does not alter the photos.")}
           >
             Check photos unchanged

@@ -8,7 +8,8 @@ import ViewSwitch from "../components/ViewSwitch.jsx";
 import LabeledPhoto, { displayFaces, faceMark, faceTone, overlayFaces, unnamedName } from "../components/LabeledPhoto.jsx";
 import { applyFullscreenLabels, FULLSCREEN_LABELS_EVENT, readFullscreenLabels } from "../nametag.js";
 import NamesToggle from "../components/NamesToggle.jsx";
-import { PLAY_EVENT, enterBrowserFullscreen, exitBrowserFullscreen, playHref, playIndexOf, prefetchPlay, readPlay, stopPlay, updatePlay } from "../play.js";
+import LabelLayoutToggle from "../components/LabelLayoutToggle.jsx";
+import { PLAY_EVENT, enterBrowserFullscreen, exitBrowserFullscreen, playHref, playIndexOf, prefetchPlay, readPlay, readPlayIntervalMs, stopPlay, updatePlay } from "../play.js";
 import PersonPicker from "../components/PersonPicker.jsx";
 import FamousLookup from "../components/FamousLookup.jsx";
 import ImaginePrompt from "../components/ImaginePrompt.jsx";
@@ -18,6 +19,7 @@ import { loadCachedPeople, saveCachedPeople } from "../peopleCache.js";
 import { emitPhotoChange, PHOTO_CHANGE_EVENT, showPhotoMenu } from "../photoMenu.js";
 import { clearRematchUndo, readRematchUndo, writeRematchUndo } from "../rematchUndo.js";
 import { peekUndo, popUndo, pushFaceUndo, pushUndo } from "../editUndo.js";
+import { folderHashFrom, personIdFrom, personShotHash, readAlbumPos, writeAlbumPos, writePersonPos } from "../albumPos.js";
 
 const ZOOM_MIN = 0.25;
 const ZOOM_MAX = 4;
@@ -30,7 +32,7 @@ const FACE_CATEGORIES = [
   { id: "other", label: "Other" },
 ];
 
-const TOOLS_POS_KEY = "photosort-full-tools-pos";
+const TOOLS_POS_KEY = "photosort-full-tools-pos-v2";
 const TOOLS_PAD = 8;
 const BACK_RESERVE_W = 128;
 const BACK_RESERVE_H = 72;
@@ -116,6 +118,10 @@ function eventOrigin(event, el) {
   return { x: cx - host.left - host.width / 2, y: cy - host.top - host.height / 2 };
 }
 
+function photoImgUrl(photoId, kind) {
+  return photoId ? `/api/photos/${photoId}/${kind}` : "";
+}
+
 export default function PhotoDetail() {
   const { id } = useParams();
   const [params] = useSearchParams();
@@ -134,7 +140,8 @@ export default function PhotoDetail() {
   const [changingId, setChangingId] = useState(null);
   const [categories, setCategories] = useState({});
   const [people, setPeople] = useState(() => loadCachedPeople(""));
-  const [photoSrc, setPhotoSrc] = useState("");
+  const [photoSrc, setPhotoSrc] = useState(() => (id ? photoImgUrl(id, "thumb") : ""));
+  const zoomRef = useRef(ZOOM_FIT);
   const [namePick, setNamePick] = useState(-1);
   const [commentDraft, setCommentDraft] = useState("");
   const [commentSaved, setCommentSaved] = useState(false);
@@ -214,20 +221,34 @@ export default function PhotoDetail() {
     return value;
   }
 
-  function backTo() {
+  function personReturnTo(photoId = id) {
     const from = safeFrom(loc.state?.from);
+    const pid = personIdFrom(from);
+    if (pid && photoId) return `/people/${pid}#${personShotHash(photoId)}`;
+    return from;
+  }
+
+  function backTo() {
+    const from = personReturnTo() || safeFrom(loc.state?.from);
     if (from) return from;
     if (personId) return `/photos?by=person&person=${personId}`;
     if (tagFilter) return `/photos?by=tag&tag=${encodeURIComponent(tagFilter)}`;
     return "/photos";
   }
 
-  function photoNavState(extra = {}) {
-    const from = safeFrom(loc.state?.from);
+  function photoNavState(extra = {}, photoId = id) {
+    const from = personReturnTo(photoId) || safeFrom(loc.state?.from);
     return {
       ...extra,
       ...(from ? { from } : {}),
     };
+  }
+
+  function rememberPersonPos(photoId = id) {
+    const from = safeFrom(loc.state?.from);
+    const pid = personIdFrom(from);
+    if (!pid || !photoId) return;
+    writePersonPos({ personId: pid, photoId: Number(photoId) });
   }
 
   function goPhoto(photoId) {
@@ -239,9 +260,10 @@ export default function PhotoDetail() {
     }
     advancing.current = Boolean(session);
     stayNamed.current = !fullNow.current && !session;
+    rememberPersonPos(photoId);
     nav(
       hrefFor(photoId),
-      { state: photoNavState(fullNow.current || session ? { fullscreen: true } : {}) },
+      { state: photoNavState(fullNow.current || session ? { fullscreen: true } : {}, photoId) },
     );
   }
 
@@ -276,6 +298,10 @@ export default function PhotoDetail() {
     setPlay(updatePlay({ playing: !session.playing }));
   }
 
+  function inboxFrom(from) {
+    return from === "/to-name" || from.startsWith("/to-name#") || from === "/review" || from.startsWith("/review#");
+  }
+
   function goBack(e) {
     e?.preventDefault();
     if (fullNow.current) {
@@ -285,8 +311,8 @@ export default function PhotoDetail() {
       exitBrowserFullscreen();
     }
     const from = safeFrom(loc.state?.from);
-    if ((from === "/to-name" || from === "/review") && window.history.length > 1) {
-      nav(-1);
+    if (inboxFrom(from)) {
+      nav(from, { replace: true });
       return;
     }
     nav(backTo());
@@ -357,6 +383,11 @@ export default function PhotoDetail() {
     setPan({ x: 0, y: 0 });
     setUndoRematch(readRematchUndo(id));
     setCommentOpen(false);
+    const albumHash = folderHashFrom(safeFrom(loc.state?.from));
+    if (albumHash && id) {
+      writeAlbumPos({ hash: albumHash, photoId: Number(id) });
+    }
+    rememberPersonPos(id);
     let cancelled = false;
     api
       .matchPhotoStatus(id)
@@ -370,6 +401,17 @@ export default function PhotoDetail() {
       rematchAbort.current?.abort();
     };
   }, [id, personId, tagFilter]);
+
+  useEffect(() => {
+    const albumHash = folderHashFrom(safeFrom(loc.state?.from));
+    if (!albumHash || !id) return;
+    const prev = readAlbumPos() || {};
+    writeAlbumPos({
+      hash: albumHash,
+      photoId: Number(id),
+      count: Math.max(Number(prev.count) || 0, Number(photo?.photo_index) || 0),
+    });
+  }, [id, photo?.photo_index, loc.state?.from]);
 
   const lastLoggedErr = useRef("");
   useEffect(() => {
@@ -410,21 +452,50 @@ export default function PhotoDetail() {
   }, []);
 
   useEffect(() => {
-    if (!photo) return undefined;
-    const thumb = photo.thumb_url;
-    const full = photo.file_available === false ? thumb : photo.file_url;
-    setPhotoSrc(thumb || full || "");
-    if (!full || full === thumb) return undefined;
+    zoomRef.current = zoom;
+  }, [zoom]);
+
+  useEffect(() => {
+    if (!id) return undefined;
+    const thumb = photoImgUrl(id, "thumb");
+    const view = photoImgUrl(id, "view");
+    setPhotoSrc(thumb);
     let cancelled = false;
     const img = new Image();
     img.onload = () => {
-      if (!cancelled) setPhotoSrc(full);
+      if (cancelled || zoomRef.current >= 2) return;
+      setPhotoSrc(view);
     };
-    img.src = full;
+    img.src = view;
     return () => {
       cancelled = true;
     };
-  }, [photo?.id, photo?.thumb_url, photo?.file_url, photo?.file_available]);
+  }, [id]);
+
+  useEffect(() => {
+    if (!photo || zoom < 2 || photo.file_available === false || !photo.file_url) return undefined;
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => {
+      if (!cancelled) setPhotoSrc(photo.file_url);
+    };
+    img.src = photo.file_url;
+    return () => {
+      cancelled = true;
+    };
+  }, [photo?.id, photo?.file_url, photo?.file_available, zoom]);
+
+  useEffect(() => {
+    if (!photo) return undefined;
+    const ids = [photo.prev_id, photo.next_id].filter(Boolean);
+    for (const nid of ids) {
+      const thumb = new Image();
+      thumb.src = `/api/photos/${nid}/thumb`;
+      const view = new Image();
+      view.src = `/api/photos/${nid}/view`;
+    }
+    return undefined;
+  }, [photo?.id, photo?.prev_id, photo?.next_id]);
 
   useEffect(() => {
     if (!photo || !active) return undefined;
@@ -556,7 +627,7 @@ export default function PhotoDetail() {
   function onPanStart(e) {
     if (pickingNow.current) return;
     if (e.button != null && e.button !== 0) return;
-    if (e.target.closest?.(".photo-full-tools, .photo-full-nav, .back-btn, .app-brand, .photo-imagine-pop, .photo-sharpen-badge, .photo-tag-row, .photo-full-tags")) {
+    if (e.target.closest?.(".photo-full-tools, .photo-full-nav, .photo-full-east, .photo-full-dock, .back-btn, .app-brand, .photo-imagine-pop, .photo-sharpen-badge, .photo-tag-row, .photo-full-tags")) {
       return;
     }
     if (zoomNow.current <= ZOOM_FIT) return;
@@ -819,7 +890,7 @@ export default function PhotoDetail() {
 
   useEffect(() => {
     if (!full || !play?.playing || playIndex() < 0 || !isFitZoom(zoom)) return undefined;
-    const ms = Math.max(2000, Number(play.intervalMs) || 5000);
+    const ms = readPlayIntervalMs();
     const timer = window.setTimeout(() => goPlay(1), ms);
     return () => window.clearTimeout(timer);
   }, [id, full, play?.playing, play?.intervalMs, play?.ids, zoom]);
@@ -1415,8 +1486,13 @@ export default function PhotoDetail() {
       }
     } catch (ex) {
       if (gen !== pickingGen.current) return;
-      setNote("Drag a new box around the head, a little tighter.");
-      setErr(ex.message || "Could not pick up that face.");
+      const msg = ex.message || "Could not pick up that face.";
+      if (/larger box|too small|tighter/i.test(msg)) {
+        setNote("Drag a new box around the head, a little tighter.");
+      } else {
+        setNote("");
+      }
+      setErr(msg);
     } finally {
       if (gen === pickingGen.current) {
         pickingBusyNow.current = false;
@@ -1438,6 +1514,7 @@ export default function PhotoDetail() {
       await load();
       const named = Number(result.auto_assigned) || 0;
       const leftover = Number(result.medium) || 0;
+      const viaAda = Number(result.adaface_assigned) || 0;
       const found = Number(result.new_faces) || 0;
       const considered = Number(result.considered) || 0;
       const who = [...new Set((result.assigned || []).map((row) => row.name).filter(Boolean))];
@@ -1456,10 +1533,11 @@ export default function PhotoDetail() {
         setNote(`This face is a person. Named ${restoredNamed.name}.`);
       } else if (named) {
         const whoText = who.length ? ` (${who.join(", ")})` : "";
+        const adaText = viaAda ? ` ${viaAda} via AdaFace.` : "";
         setNote(
           leftover
-            ? `Named ${named} face${named === 1 ? "" : "s"} from the catalog${whoText}. Undo if they are wrong. ${leftover} still look close — check suggestions.`
-            : `Named ${named} face${named === 1 ? "" : "s"} from the catalog${whoText}. Undo if they are wrong.`,
+            ? `Named ${named} face${named === 1 ? "" : "s"} from the catalog${whoText}.${adaText} Undo if they are wrong. ${leftover} still look close — check suggestions.`
+            : `Named ${named} face${named === 1 ? "" : "s"} from the catalog${whoText}.${adaText} Undo if they are wrong.`,
         );
       } else if (leftover) {
         setNote("No sure matches yet. Unnamed faces have fresh suggestions from the nearest named photos.");
@@ -1561,10 +1639,10 @@ export default function PhotoDetail() {
     runSharpen();
   }
 
-  function sharpenLabel() {
+  function sharpenLabel(compact = false) {
     if (sharpening) return "Sharpening…";
-    if (showSharpened) return "Show original";
-    if (sharpenedUrl) return "Show sharpened";
+    if (showSharpened) return compact ? "Original" : "Show original";
+    if (sharpenedUrl) return compact ? "Sharpened" : "Show sharpened";
     return "Sharpen";
   }
 
@@ -1635,11 +1713,11 @@ export default function PhotoDetail() {
     openImagine();
   }
 
-  function imagineLabel() {
+  function imagineLabel(compact = false) {
     if (imagining) return "Changing…";
-    if (showImagined) return "Show original";
-    if (imaginedUrl) return "Show changed";
-    return "Change with Grok";
+    if (showImagined) return compact ? "Original" : "Show original";
+    if (imaginedUrl) return compact ? "Changed" : "Show changed";
+    return compact ? "Grok" : "Change with Grok";
   }
 
   async function removeName(faceId) {
@@ -1675,15 +1753,43 @@ export default function PhotoDetail() {
     }
   }
 
+  async function removeAllUnnamed() {
+    const ids = (photo?.faces || [])
+      .filter((f) => !f.person_id && f.assigned_how !== "junk")
+      .map((f) => f.id);
+    if (!ids.length) return;
+    ids.forEach((fid) => rememberFaceChange(fid, "hiding this face"));
+    setErr("");
+    setNote("Hiding unnamed faces…");
+    try {
+      const result = await api.junkUnnamedPhoto(photo.id);
+      await load();
+      const n = Number(result?.junked) || ids.length;
+      setNote(
+        n === 1 ? "Hid the unnamed face on this photo." : `Hid ${n} unnamed faces on this photo. Named people stay.`,
+      );
+    } catch (ex) {
+      setNote("");
+      setErr(ex.message || "Could not hide the unnamed faces.");
+      await load();
+    }
+  }
+
   if (!photo) {
+    const eager = photoSrc || photoImgUrl(id, "thumb");
+    const eagerImg = eager ? (
+      <img src={eager} alt="" fetchPriority="high" decoding="async" />
+    ) : (
+      <p className="photo-full-hint">Loading…</p>
+    );
     if (full || readPlay()) {
       return (
-        <div className="photo-full" role="dialog" aria-label="Loading slideshow">
-          <p className="photo-full-hint">Loading…</p>
+        <div className="photo-full" role="dialog" aria-label="Loading photo">
+          <div className="photo-full-zoom">{eagerImg}</div>
         </div>
       );
     }
-    return <p className="hint">Loading…</p>;
+    return eager ? <div className="viewer">{eagerImg}</div> : <p className="hint">Loading…</p>;
   }
   const taggedPhoto = {
     ...photo,
@@ -1694,7 +1800,7 @@ export default function PhotoDetail() {
       return { ...f, person_name: typed };
     }),
   };
-  const playSrc = play?.ids?.length ? photo.thumb_url : photoSrc || photo.thumb_url || photo.file_url;
+  const playSrc = photoSrc || photo.thumb_url || photo.view_url || photo.file_url;
   const liveSrc =
     showImagined && imaginedUrl
       ? imaginedUrl
@@ -1726,9 +1832,9 @@ export default function PhotoDetail() {
             to={backTo()}
             onClick={goBack}
             {...tip(
-              loc.state?.from === "/to-name"
+              String(loc.state?.from || "").startsWith("/to-name")
                 ? "Return to Faces to name."
-                : loc.state?.from === "/review"
+                : String(loc.state?.from || "").startsWith("/review")
                   ? "Return to Check names."
                   : personId
                     ? "Return to this person's photos."
@@ -1766,75 +1872,82 @@ export default function PhotoDetail() {
           ) : null}
         </div>
         <div className="photo-head-tools">
-          {photo.prev_id ? (
-            <Link className="btn secondary" to={hrefFor(photo.prev_id)} state={photoNavState()} {...tip(personId ? "Previous photo of this person." : "Open the previous photo in the album.")}>
-              Previous
-            </Link>
-          ) : null}
-          {seq ? (
-            <span className="photo-seq" aria-live="polite">
-              {seq.index} of {seq.count}
-            </span>
-          ) : null}
-          {photo.next_id ? (
-            <Link className="btn secondary" to={hrefFor(photo.next_id)} state={photoNavState()} {...tip(personId ? "Next photo of this person." : "Open the next photo in the album.")}>
-              Next
-            </Link>
-          ) : null}
-          <div className="zoom-tools" role="group" aria-label="Zoom">
-            <button
-              type="button"
-              className="secondary"
-              disabled={zoom <= ZOOM_MIN}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                nudgeZoom(-1);
-              }}
-              {...tip("Zoom out. Shortcut −")}
-            >
-              −
-            </button>
-            <button
-              type="button"
-              className="zoom-level"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                cycleZoom();
-              }}
-              {...tip("Cycle 75% → 100% → 200% → 400%. Shortcut 0 fits the photo at 75%.")}
-            >
-              {Math.round(zoom * 100)}%
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              disabled={zoom >= ZOOM_MAX}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                nudgeZoom(1);
-              }}
-              {...tip("Zoom in a step, up to 400%. Shortcut +")}
-            >
-              +
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              aria-pressed={zoom >= ZOOM_MAX - 0.05}
-              disabled={zoom >= ZOOM_MAX}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                zoomTo(ZOOM_MAX);
-              }}
-              {...tip("Zoom the photo to 400%.")}
-            >
-              400%
-            </button>
+          <div className="photo-head-tools-row">
+            <div className="photo-nav" role="group" aria-label="Photos">
+              {photo.prev_id ? (
+                <Link className="btn secondary" to={hrefFor(photo.prev_id)} state={photoNavState()} {...tip(personId ? "Previous photo of this person." : "Open the previous photo in the album.")}>
+                  Previous
+                </Link>
+              ) : null}
+              {seq ? (
+                <span className="photo-seq" aria-live="polite">
+                  {seq.index} of {seq.count}
+                </span>
+              ) : null}
+              {photo.next_id ? (
+                <Link className="btn secondary" to={hrefFor(photo.next_id)} state={photoNavState()} {...tip(personId ? "Next photo of this person." : "Open the next photo in the album.")}>
+                  Next
+                </Link>
+              ) : null}
+            </div>
+            <div className="zoom-tools" role="group" aria-label="Zoom">
+              <button
+                type="button"
+                className="secondary"
+                disabled={zoom >= ZOOM_MAX}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  nudgeZoom(1);
+                }}
+                {...tip("Zoom in a step, up to 400%. Shortcut +")}
+              >
+                +
+              </button>
+              <button
+                type="button"
+                className="zoom-level"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  cycleZoom();
+                }}
+                {...tip("Cycle 75% → 100% → 200% → 400%. Shortcut 0 fits the photo at 75%.")}
+              >
+                {Math.round(zoom * 100)}%
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={zoom <= ZOOM_MIN}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  nudgeZoom(-1);
+                }}
+                {...tip("Zoom out. Shortcut −")}
+              >
+                −
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                aria-pressed={zoom >= ZOOM_MAX - 0.05}
+                disabled={zoom >= ZOOM_MAX}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  zoomTo(ZOOM_MAX);
+                }}
+                {...tip("Zoom the photo to 400%.")}
+              >
+                400%
+              </button>
+            </div>
+          </div>
+          <div className="photo-head-actions" role="toolbar" aria-label="Photo">
             <NamesToggle />
+            <LabelLayoutToggle />
             {(photo.faces || []).some((f) => f.person_id && f.assigned_how !== "junk") ? (
               <button
                 type="button"
@@ -1844,9 +1957,23 @@ export default function PhotoDetail() {
                   e.stopPropagation();
                   removeAllNames();
                 }}
-                {...tip("Take every catalog name off this photo. Re-identify will not put them back. The original file is unchanged.")}
+                {...tip("Take every catalog name off this photo. Re-identify can try those faces again. The original file is unchanged.")}
               >
                 Remove names
+              </button>
+            ) : null}
+            {(photo.faces || []).some((f) => !f.person_id && f.assigned_how !== "junk") ? (
+              <button
+                type="button"
+                className="secondary"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  removeAllUnnamed();
+                }}
+                {...tip("Hide every unnamed face on this photo as not a person. Named people stay. Undo puts them back. Other photos are not changed. The original file is unchanged.")}
+              >
+                Remove unnamed
               </button>
             ) : null}
             <button
@@ -1878,7 +2005,7 @@ export default function PhotoDetail() {
                 e.stopPropagation();
                 toggleSharpen();
               }}
-              {...tip("Grok Imagine makes a sharper preview for this view. The original file is never overwritten.")}
+              {...tip("Grok Imagine makes a sharper preview, with extra clarity on faces. The original file is never overwritten.")}
             >
               {sharpenLabel()}
             </button>
@@ -1905,7 +2032,7 @@ export default function PhotoDetail() {
                 e.stopPropagation();
                 rematchFaces();
               }}
-              {...tip("Match unnamed faces to the catalog. Names you removed stay off. Already-named photos stay fast. Use Add a face if someone was missed.")}
+              {...tip("Match unnamed faces to the catalog using the closest named photos, several examples of each person, and people already in this album. Names taken off this photo are tried again. Use Undo if a name is wrong.")}
             >
               {rematching ? "Re-identifying…" : "Re-identify faces"}
             </button>
@@ -1951,8 +2078,9 @@ export default function PhotoDetail() {
             >
               <LabeledPhoto
                 photo={taggedPhoto}
-                src={liveSrc || photoSrc || photo.thumb_url || photo.file_url}
+                src={liveSrc || photoSrc || photo.thumb_url || photo.view_url || photo.file_url}
                 fallbackSrc={photo.thumb_url}
+                priority
                 activeId={active}
                 onFaceClick={(f) => openFace(f)}
                 onPhotoClick={() => {
@@ -2431,7 +2559,7 @@ export default function PhotoDetail() {
               return;
             }
             if (pickingNow.current) return;
-            if (e.target.closest(".photo-full-tools, .photo-full-nav, .photo-full-caption, .back-btn, .app-brand, .nav, .photo-full-comment, .photo-sharpen-badge, .photo-imagine-pop, .photo-tag-row, .photo-full-tags")) return;
+            if (e.target.closest(".photo-full-tools, .photo-full-nav, .photo-full-east, .photo-full-dock, .photo-full-caption, .back-btn, .app-brand, .nav, .photo-full-comment, .photo-sharpen-badge, .photo-imagine-pop, .photo-tag-row, .photo-full-tags")) return;
             if (e.target.closest(".nametag, .face-box")) return;
             if (didDrag.current) return;
             if (clickResetsZoom()) return;
@@ -2462,6 +2590,7 @@ export default function PhotoDetail() {
                 photo={taggedPhoto}
                 src={liveSrc}
                 fallbackSrc={photo.thumb_url}
+                priority
                 activeId={active}
                 onFaceClick={(f) => {
                   setFull(false);
@@ -2480,6 +2609,8 @@ export default function PhotoDetail() {
               <img
                 src={liveSrc}
                 alt={photo.filename}
+                fetchPriority="high"
+                decoding="async"
                 onError={(e) => {
                   if (photo.thumb_url && e.currentTarget.src !== photo.thumb_url) {
                     e.currentTarget.src = photo.thumb_url;
@@ -2506,6 +2637,10 @@ export default function PhotoDetail() {
               Previous
             </button>
           ) : null}
+          <div
+            className="photo-full-east"
+            onClick={(e) => e.stopPropagation()}
+          >
           {photo.next_id || play?.ids?.length ? (
             <button
               type="button"
@@ -2519,6 +2654,31 @@ export default function PhotoDetail() {
               Next
             </button>
           ) : null}
+            <div className="zoom-tools" role="group" aria-label="Zoom">
+            <button type="button" disabled={zoom >= ZOOM_MAX} onClick={() => nudgeZoom(1)} {...tip("Zoom in a step, up to 400%. Shortcut +")}>
+              +
+            </button>
+            <button
+              type="button"
+              onClick={() => cycleZoom()}
+              {...tip("Cycle 75% → 100% → 200% → 400%. Shortcut 0 fits the photo at 75%.")}
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button type="button" disabled={zoom <= ZOOM_MIN} onClick={() => nudgeZoom(-1)} {...tip("Zoom out. Shortcut −")}>
+              −
+            </button>
+            <button
+              type="button"
+              aria-pressed={zoom >= ZOOM_MAX - 0.05}
+              disabled={zoom >= ZOOM_MAX}
+              onClick={() => zoomTo(ZOOM_MAX)}
+              {...tip("Zoom the photo to 400%.")}
+            >
+              400%
+            </button>
+            </div>
+          </div>
           <div
             ref={toolsRef}
             className={`photo-full-tools${toolsPos ? " moved" : ""}${toolsDragging ? " dragging" : ""}`}
@@ -2529,6 +2689,7 @@ export default function PhotoDetail() {
             onPointerUp={onToolsPointerUp}
             onPointerCancel={onToolsPointerUp}
           >
+            <div className="photo-full-actions">
             <span
               className="photo-full-grab"
               aria-label="Move the options bar. Double-click to put it back at the top."
@@ -2563,23 +2724,8 @@ export default function PhotoDetail() {
             >
               Add names
             </button>
-            <button
-              type="button"
-              onClick={openComment}
-              {...tip(photo.comment ? "Edit the comment on this photo." : "Add a comment about this photo.")}
-            >
-              {photo.comment ? "Edit comment" : "Add comment"}
-            </button>
             <NamesToggle className="" />
-            {(photo.faces || []).some((f) => f.person_id && f.assigned_how !== "junk") ? (
-              <button
-                type="button"
-                onClick={removeAllNames}
-                {...tip("Take every catalog name off this photo. Re-identify will not put them back. The original file is unchanged.")}
-              >
-                Remove names
-              </button>
-            ) : null}
+            <LabelLayoutToggle className="" />
             <button
               type="button"
               aria-pressed={pickingFace}
@@ -2596,12 +2742,22 @@ export default function PhotoDetail() {
             </button>
             <button
               type="button"
+              onClick={openComment}
+              {...tip(photo.comment ? "Edit the comment on this photo." : "Add a comment about this photo.")}
+            >
+              {photo.comment ? "Edit comment" : "Comment"}
+            </button>
+            </div>
+          </div>
+          <div className="photo-full-dock" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
               aria-pressed={showSharpened}
               disabled={sharpening || imagining}
               onClick={toggleSharpen}
-              {...tip("Grok Imagine makes a sharper preview for this view. The original file is never overwritten.")}
+              {...tip("Grok Imagine makes a sharper preview, with extra clarity on faces. The original file is never overwritten.")}
             >
-              {sharpenLabel()}
+              {sharpenLabel(true)}
             </button>
             <button
               type="button"
@@ -2610,16 +2766,34 @@ export default function PhotoDetail() {
               onClick={toggleImagine}
               {...tip("Describe a change and Grok Imagine makes a preview. The original file is never overwritten.")}
             >
-              {imagineLabel()}
+              {imagineLabel(true)}
             </button>
             <button
               type="button"
               disabled={rematching}
               onClick={rematchFaces}
-              {...tip("Match unnamed faces to the catalog. Names you removed stay off. Already-named photos stay fast. Use Add a face if someone was missed.")}
+              {...tip("Match unnamed faces to the catalog using the closest named photos, several examples of each person, and people already in this album. Names taken off this photo are tried again. Use Undo if a name is wrong.")}
             >
-              {rematching ? "Re-identifying…" : "Re-identify faces"}
+              {rematching ? "Re-identifying…" : "Re-identify"}
             </button>
+            {(photo.faces || []).some((f) => f.person_id && f.assigned_how !== "junk") ? (
+              <button
+                type="button"
+                onClick={removeAllNames}
+                {...tip("Take every catalog name off this photo. Re-identify can try those faces again. The original file is unchanged.")}
+              >
+                Remove names
+              </button>
+            ) : null}
+            {(photo.faces || []).some((f) => !f.person_id && f.assigned_how !== "junk") ? (
+              <button
+                type="button"
+                onClick={removeAllUnnamed}
+                {...tip("Hide every unnamed face on this photo as not a person. Named people stay. Undo puts them back. Other photos are not changed. The original file is unchanged.")}
+              >
+                Hide unnamed
+              </button>
+            ) : null}
             {undoRematch?.faceIds?.length ? (
               <button
                 type="button"
@@ -2631,7 +2805,7 @@ export default function PhotoDetail() {
                   ? "Undoing…"
                   : undoRematch.faceIds.length === 1
                     ? "Undo name"
-                    : `Undo ${undoRematch.faceIds.length} names`}
+                    : `Undo ${undoRematch.faceIds.length}`}
               </button>
             ) : null}
             {play?.ids?.length ? (
@@ -2643,33 +2817,6 @@ export default function PhotoDetail() {
                 {play.playing ? "Pause" : "Play"}
               </button>
             ) : null}
-            <button type="button" disabled={zoom <= ZOOM_MIN} onClick={() => nudgeZoom(-1)} {...tip("Zoom out. Shortcut −")}>
-              −
-            </button>
-            <button
-              type="button"
-              onClick={() => cycleZoom()}
-              {...tip("Cycle 75% → 100% → 200% → 400%. Shortcut 0 fits the photo at 75%.")}
-            >
-              {Math.round(zoom * 100)}%
-            </button>
-            <button
-              type="button"
-              disabled={zoom >= ZOOM_MAX}
-              onClick={() => nudgeZoom(1)}
-              {...tip("Zoom in a step, up to 400%. Shortcut +")}
-            >
-              +
-            </button>
-            <button
-              type="button"
-              aria-pressed={zoom >= ZOOM_MAX - 0.05}
-              disabled={zoom >= ZOOM_MAX}
-              onClick={() => zoomTo(ZOOM_MAX)}
-              {...tip("Zoom the photo to 400%.")}
-            >
-              400%
-            </button>
           </div>
           {play?.ids?.length ? (
             <p className="photo-full-caption">
@@ -2714,15 +2861,13 @@ export default function PhotoDetail() {
           ) : showSharpened ? (
             <p className="photo-sharpen-badge full">Temporary Grok preview · original unchanged</p>
           ) : null}
+          {pickingFace || pickingBusy ? (
           <p className="photo-full-hint">
             {pickingBusy
               ? "Finding the face in that box… Cancel or Esc to stop"
-              : pickingFace
-                ? "Draw a box around the face to add · Esc cancels · Esc again or Back to leave"
-                : play?.ids?.length
-                  ? "space or click pause · ← → photos · + − or pinch zoom · 0 or click to fit · esc or Back to exit"
-                  : "← → photos · + − or pinch zoom · 400% · 0 or click to fit · other key or click to exit"}
+              : "Draw a box around the face to add · Esc cancels"}
           </p>
+          ) : null}
         </div>
       ) : null}
     </div>

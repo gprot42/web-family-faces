@@ -1,4 +1,12 @@
 export const FOLDERS_KEY = "photosort-import-folders";
+export const STARRED_FOLDERS_KEY = "photosort-starred-folders";
+export const FOLDER_TITLES_KEY = "photosort-folder-titles";
+export const FOLDER_TITLE_MAX = 80;
+export const ALL_FOLDERS_EVENT = "photosort-all-folders";
+
+export function requestFolderIndex() {
+  window.dispatchEvent(new Event(ALL_FOLDERS_EVENT));
+}
 
 export function isAlbumPath(path) {
   const raw = String(path || "").trim();
@@ -118,4 +126,107 @@ export function writeImportFolders(folders) {
   } catch {
     /* ignore */
   }
+}
+
+export function readStarredFolders() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STARRED_FOLDERS_KEY) || "[]");
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set();
+    const out = [];
+    for (const item of parsed) {
+      const path = normalizeFolderPath(item);
+      if (!path || path === "/" || seen.has(path)) continue;
+      seen.add(path);
+      out.push(path);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+export function writeStarredFolders(folders) {
+  try {
+    const seen = new Set();
+    const out = [];
+    for (const item of folders || []) {
+      const path = normalizeFolderPath(item);
+      if (!path || path === "/" || seen.has(path)) continue;
+      seen.add(path);
+      out.push(path);
+    }
+    localStorage.setItem(STARRED_FOLDERS_KEY, JSON.stringify(out));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function isFolderStarred(path, starred) {
+  const n = normalizeFolderPath(path);
+  if (!n || n === "/") return false;
+  return (starred || []).some((item) => normalizeFolderPath(item) === n);
+}
+
+/** Add or remove a folder star. Newly starred folders go at the end. */
+export function toggleStarredFolder(path, starred) {
+  const n = normalizeFolderPath(path);
+  if (!n || n === "/") return [...(starred || [])];
+  const items = [];
+  const seen = new Set();
+  for (const item of starred || []) {
+    const key = normalizeFolderPath(item);
+    if (!key || key === "/" || seen.has(key)) continue;
+    seen.add(key);
+    items.push(key);
+  }
+  if (seen.has(n)) return items.filter((item) => item !== n);
+  return [...items, n];
+}
+
+export function readFolderTitles() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(FOLDER_TITLES_KEY) || "{}");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out = {};
+    for (const [path, title] of Object.entries(parsed)) {
+      const key = normalizeFolderPath(path);
+      const name = String(title || "").trim().slice(0, FOLDER_TITLE_MAX);
+      if (key && key !== "/" && name) out[key] = name;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function writeFolderTitles(titles) {
+  try {
+    const cleaned = {};
+    for (const [path, title] of Object.entries(titles || {})) {
+      const key = normalizeFolderPath(path);
+      const name = String(title || "").trim().slice(0, FOLDER_TITLE_MAX);
+      if (key && key !== "/" && name) cleaned[key] = name;
+    }
+    localStorage.setItem(FOLDER_TITLES_KEY, JSON.stringify(cleaned));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Catalog name for Folder View. The folder on disk is not renamed. */
+export function folderDisplayName(path, fallback, titles) {
+  const key = normalizeFolderPath(path);
+  const custom = key && titles ? String(titles[key] || "").trim() : "";
+  return custom || String(fallback || folderLabel(path) || "").trim();
+}
+
+export function setFolderTitle(path, title, titles) {
+  const key = normalizeFolderPath(path);
+  const next = { ...(titles || {}) };
+  if (!key || key === "/") return next;
+  const name = String(title || "").trim().slice(0, FOLDER_TITLE_MAX);
+  if (!name) delete next[key];
+  else next[key] = name;
+  return next;
 }

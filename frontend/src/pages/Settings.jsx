@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import ConfirmAsk from "../components/ConfirmAsk.jsx";
 import { readImportFolders } from "../folders.js";
 import {
   applyFullscreenLabelsDefault,
@@ -9,18 +10,26 @@ import {
   readNametag,
 } from "../nametag.js";
 import { applyTheme, readTheme, THEMES } from "../theme.js";
+import {
+  applyPlayIntervalMs,
+  PLAY_INTERVAL_MAX_MS,
+  PLAY_INTERVAL_MIN_MS,
+  readPlayIntervalMs,
+} from "../play.js";
 import { tip } from "../tip.js";
 
 export default function Settings() {
   const [theme, setTheme] = useState(() => readTheme());
   const [nametag, setNametag] = useState(() => readNametag());
   const [fullscreenLabels, setFullscreenLabels] = useState(() => readFullscreenLabels());
+  const [playSeconds, setPlaySeconds] = useState(() => readPlayIntervalMs() / 1000);
   const [info, setInfo] = useState(null);
   const [folders, setFolders] = useState([]);
   const [resetFolders, setResetFolders] = useState([]);
   const [key, setKey] = useState("");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [purgeAsk, setPurgeAsk] = useState(null);
   const [oauthBusy, setOauthBusy] = useState(false);
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
@@ -192,14 +201,7 @@ export default function Settings() {
     const picked = Array.isArray(folder) ? folder.filter(Boolean) : folder ? [folder] : [];
     const all = !picked.length;
     const label = picked.join(", ");
-    const okGo = window.confirm(
-      all
-        ? "Purge ALL names from the database? Photo files and each album’s .photosort.json stay. A later Find Known Faces can restore names from those files."
-        : picked.length === 1
-          ? `Purge names from the database for “${label}” only? Other folders stay. Photo files and .photosort.json stay.`
-          : `Purge names from the database in ${picked.length} folders (${label})? Other folders stay. Photo files and .photosort.json stay.`,
-    );
-    if (!okGo) return;
+    setPurgeAsk(null);
     setErr("");
     setOk("");
     setBusy(true);
@@ -243,6 +245,25 @@ export default function Settings() {
 
   return (
     <div>
+      {purgeAsk ? (
+        <ConfirmAsk
+          danger
+          title={
+            !purgeAsk.length
+              ? "Purge ALL names from the database?"
+              : purgeAsk.length === 1
+                ? `Purge names for “${purgeAsk[0]}” only?`
+                : `Purge names in ${purgeAsk.length} folders?`
+          }
+          body={
+            !purgeAsk.length
+              ? "Photo files and each album’s .photosort.json stay. A later Find Known Faces can restore names from those files."
+              : "Other folders stay. Photo files and .photosort.json stay."
+          }
+          onCancel={() => setPurgeAsk(null)}
+          onConfirm={() => resetNames(purgeAsk)}
+        />
+      ) : null}
       <div className="page-head">
         <div>
           <p className="eyebrow">Settings</p>
@@ -323,6 +344,38 @@ export default function Settings() {
       </section>
 
       <section className="card help-block settings-card">
+        <h2>Play album</h2>
+        <p>When you press Play, each photo stays on screen for this long before the next one.</p>
+        <label className="settings-field" htmlFor="play-seconds">
+          Seconds on each photo
+        </label>
+        <div className="settings-number-row">
+          <input
+            id="play-seconds"
+            type="number"
+            min={PLAY_INTERVAL_MIN_MS / 1000}
+            max={PLAY_INTERVAL_MAX_MS / 1000}
+            step="0.5"
+            value={playSeconds}
+            onChange={(e) => {
+              const sec = Number(e.target.value);
+              if (!Number.isFinite(sec)) return;
+              setPlaySeconds(sec);
+              if (sec >= PLAY_INTERVAL_MIN_MS / 1000 && sec <= PLAY_INTERVAL_MAX_MS / 1000) {
+                applyPlayIntervalMs(sec * 1000);
+              }
+            }}
+            onBlur={() => {
+              const next = applyPlayIntervalMs(playSeconds * 1000);
+              setPlaySeconds(next / 1000);
+            }}
+            {...tip("How long each picture stays on screen during Play. Default is 2.5 seconds.")}
+          />
+          <span className="hint">1–30 seconds · default 2.5</span>
+        </div>
+      </section>
+
+      <section className="card help-block settings-card">
         <h2>Auto-update albums</h2>
         <p>
           Look for new photos in the folders you chose on Summary, including albums on the NAS.
@@ -341,8 +394,8 @@ export default function Settings() {
           <span>Auto-update listed folders</span>
         </label>
         <p className="hint">
-          Uses the same albums as Find Known Faces. New files appear in Folder View when they are
-          found.
+          Uses the same albums as Find Known Faces. It lists files to find new ones; it does not
+          re-scan every old photo for faces. New files appear in Folder View when they are found.
         </p>
         <label
           className={`settings-check nested${info?.auto_update === false ? " dim" : ""}`}
@@ -551,7 +604,7 @@ export default function Settings() {
           type="button"
           className="danger"
           disabled={busy}
-          onClick={() => resetNames()}
+          onClick={() => setPurgeAsk([])}
           {...tip("Clear names from the database in every folder. Photo files and .photosort.json stay.")}
         >
           {busy ? "Purging…" : "Purge faces from database"}
@@ -607,7 +660,7 @@ export default function Settings() {
             type="button"
             className="secondary"
             disabled={busy || !resetFolders.length}
-            onClick={() => resetNames(resetFolders)}
+            onClick={() => setPurgeAsk(resetFolders)}
             {...tip("Purge names from the database only in the ticked folders. .photosort.json stays.")}
           >
             {resetFolders.length > 1

@@ -18,6 +18,7 @@ import PhotoMenu from "./components/PhotoMenu.jsx";
 import BrandLogo from "./components/BrandLogo.jsx";
 import PeopleSearch from "./components/PeopleSearch.jsx";
 import { tip } from "./tip.js";
+import { FolderViewLink } from "./components/ViewSwitch.jsx";
 
 function navActive(on) {
   return on ? "active" : undefined;
@@ -144,14 +145,13 @@ export default function App() {
           <NavLink to="/" end {...tip("Folder summary: how many people and faces are named, and start a scan.")}>
             Summary
           </NavLink>
-          <NavLink
-            to="/photos"
+          <FolderViewLink
             className={() => navActive(folderNav)}
             aria-current={folderNav ? "page" : undefined}
-            {...tip("Folder view: photos with names on each person.")}
+            {...tip("Folder view: photos with names on each person. Click again for the folder list.")}
           >
             Folder View
-          </NavLink>
+          </FolderViewLink>
           <NavLink
             to="/to-name"
             {...tip("Groups of unnamed faces. Name a whole group at once instead of photo by photo.")}

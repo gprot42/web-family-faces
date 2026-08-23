@@ -26,9 +26,11 @@ from .db import connect, init_db
 from .originals import open_image
 from .util import now_iso
 
-SHARPEN_PROMPT = """Sharpen and upscale this existing family photograph for close inspection at 400% zoom.
+PROMPT_VERSION = 2
 
-Increase edge clarity and local contrast so faces and fine detail stay crisp when magnified.
+SHARPEN_PROMPT = """Restore this existing family photograph so it stays clear at 400% zoom.
+
+Make every face the sharpest, most readable part of the image: eyes, eyebrows, eyelashes, nose, mouth, teeth, skin texture, and hair. Recover facial detail first. Then sharpen clothing, objects, and the background.
 
 Hard rules:
 - Keep the same crop, framing, camera angle, and aspect ratio.
@@ -68,6 +70,17 @@ def has_preview(photo_id: int) -> bool:
     return path.is_file() and path.stat().st_size > 32
 
 
+def _preview_is_current(photo_id: int) -> bool:
+    if not has_preview(photo_id):
+        return False
+    meta = preview_path(photo_id).with_suffix(".json")
+    try:
+        data = json.loads(meta.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return False
+    return int(data.get("prompt_version") or 0) == PROMPT_VERSION
+
+
 def drop_preview(photo_id: int) -> bool:
     path = preview_path(photo_id)
     meta = path.with_suffix(".json")
@@ -93,12 +106,12 @@ def sharpen_photo(photo_id: int, *, fresh: bool = False) -> dict[str, Any]:
         raise SharpenError("Photo not found", 404)
     original = Path(row["path"])
     original_bytes = original.read_bytes() if original.is_file() else None
-    cached = has_preview(photo_id)
+    cached = _preview_is_current(photo_id)
     if cached and not fresh:
         return _result(photo_id, cached=True, original=original)
     source = _source_image(photo_id, original)
     jpeg, src_w, src_h = _downscale_jpeg(source)
-    raw = _edit_with_grok(jpeg, src_w, src_h)
+    raw = _edit_with_grok(jpeg, src_w, src_h, photo_id=photo_id)
     _store_preview(photo_id, raw)
     if original.is_file() and original_bytes is not None and original.read_bytes() != original_bytes:
         raise SharpenError("Sharpen aborted: the original file changed on disk.", 500)
@@ -169,11 +182,58 @@ def _aspect_ratio(width: int, height: int) -> str:
     return min(choices, key=lambda key: abs(choices[key] - ar))
 
 
-def _edit_with_grok(jpeg: bytes, width: int, height: int) -> bytes:
+def _face_count(photo_id: int) -> int:
+    conn = connect()
+    init_db(conn)
+    try:
+        n = conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM faces
+            WHERE photo_id = ?
+              AND IFNULL(assigned_how, '') != 'junk'
+            """,
+            (int(photo_id),),
+        ).fetchone()["n"]
+        return int(n or 0)
+    finally:
+        conn.close()
+
+
+def _sharpen_prompt(photo_id: int) -> str:
+    n = _face_count(photo_id)
+    if n == 1:
+        focus = (
+            "There is one face in this photograph. Make that face the sharpest, most readable "
+            "area of the image: eyes, eyebrows, eyelashes, nose, mouth, teeth, skin texture, and hair."
+        )
+    elif n > 1:
+        focus = (
+            f"There are {n} faces in this photograph. Make every face the sharpest, most readable "
+            "areas of the image: eyes, eyebrows, eyelashes, nose, mouth, teeth, skin texture, and hair."
+        )
+    else:
+        focus = (
+            "If any faces are present, make them the sharpest, most readable areas of the image: "
+            "eyes, eyebrows, eyelashes, nose, mouth, teeth, skin texture, and hair."
+        )
+    return (
+        "Restore this existing family photograph so it stays clear at 400% zoom.\n\n"
+        f"{focus}\n"
+        "Recover facial detail first. Then sharpen clothing, objects, and the background.\n\n"
+        "Hard rules:\n"
+        "- Keep the same crop, framing, camera angle, and aspect ratio.\n"
+        "- Keep every person, face, pose, expression, clothing, object, and background identical.\n"
+        "- Do not add, remove, restyle, colorize, beautify, or age anyone.\n"
+        "- Do not change the era, film look, or lighting except a modest sharpness boost.\n"
+        "- Output at the highest resolution available. Identities must stay exact.\n"
+    )
+
+
+def _edit_with_grok(jpeg: bytes, width: int, height: int, *, photo_id: int | None = None) -> bytes:
     b64 = base64.b64encode(jpeg).decode("ascii")
     body = {
         "model": SHARPEN_MODEL,
-        "prompt": SHARPEN_PROMPT,
+        "prompt": _sharpen_prompt(photo_id) if photo_id is not None else SHARPEN_PROMPT,
         "n": 1,
         "response_format": "b64_json",
         "resolution": SHARPEN_RESOLUTION,
@@ -276,6 +336,7 @@ def _store_preview(photo_id: int, raw: bytes) -> Path:
     meta = {
         "photo_id": photo_id,
         "model": SHARPEN_MODEL,
+        "prompt_version": PROMPT_VERSION,
         "created_at": now_iso(),
         "width": frame.size[0],
         "height": frame.size[1],

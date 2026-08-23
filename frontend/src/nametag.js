@@ -41,6 +41,63 @@ export function applyNametag(id) {
   return place;
 }
 
+export const LABEL_LAYOUT_KEY = "photosort-label-layout";
+export const LABEL_LAYOUT_EVENT = "photosort-label-layout";
+
+export const LABEL_LAYOUTS = [
+  {
+    id: "smart",
+    label: "Smart",
+    hint: "Numbers and names sit above the head, not on the eyes.",
+  },
+  {
+    id: "rows",
+    label: "Rows",
+    hint: "Back row names go above; front row names go below.",
+  },
+  {
+    id: "halo",
+    label: "Halo",
+    hint: "Park names around the group, not on people.",
+  },
+  {
+    id: "numbers",
+    label: "Numbers",
+    hint: "Numbers on faces. Full names stay in the list.",
+  },
+];
+
+export function readLabelLayout() {
+  try {
+    const value = localStorage.getItem(LABEL_LAYOUT_KEY);
+    if (LABEL_LAYOUTS.some((item) => item.id === value)) return value;
+  } catch {
+    /* private mode */
+  }
+  return "smart";
+}
+
+export function applyLabelLayout(id) {
+  const layout = LABEL_LAYOUTS.some((item) => item.id === id) ? id : "smart";
+  try {
+    localStorage.setItem(LABEL_LAYOUT_KEY, layout);
+  } catch {
+    /* private mode */
+  }
+  window.dispatchEvent(new Event(LABEL_LAYOUT_EVENT));
+  return layout;
+}
+
+export function cycleLabelLayout() {
+  const cur = readLabelLayout();
+  const i = Math.max(0, LABEL_LAYOUTS.findIndex((item) => item.id === cur));
+  return applyLabelLayout(LABEL_LAYOUTS[(i + 1) % LABEL_LAYOUTS.length].id);
+}
+
+export function labelLayoutInfo(id = readLabelLayout()) {
+  return LABEL_LAYOUTS.find((item) => item.id === id) || LABEL_LAYOUTS[0];
+}
+
 export const FULLSCREEN_LABELS_KEY = "photosort-show-names";
 export const FULLSCREEN_LABELS_SESSION_KEY = "photosort-show-names-session";
 export const FULLSCREEN_LABELS_EVENT = "photosort-fullscreen-labels";

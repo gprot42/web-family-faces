@@ -501,4 +501,4 @@ def get_person(person_id: str) -> dict[str, Any]:
     loaded = load_tree()
     if not loaded:
         raise FileNotFoundError("No GEDCOM file is loaded.")
-    return person_detail(loaded["_tree"], person_id)
+    return person_detail(loaded["_tree"], xref_id(person_id))

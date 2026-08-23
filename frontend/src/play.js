@@ -1,6 +1,37 @@
 export const PLAY_KEY = "photosort-play";
 export const PLAY_EVENT = "photosort-play";
-export const PLAY_INTERVAL_MS = 5000;
+export const PLAY_INTERVAL_KEY = "photosort-play-interval-ms";
+export const PLAY_INTERVAL_MS = 2500;
+export const PLAY_INTERVAL_MIN_MS = 1000;
+export const PLAY_INTERVAL_MAX_MS = 30000;
+
+export function clampPlayIntervalMs(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n)) return PLAY_INTERVAL_MS;
+  return Math.min(PLAY_INTERVAL_MAX_MS, Math.max(PLAY_INTERVAL_MIN_MS, Math.round(n)));
+}
+
+export function readPlayIntervalMs() {
+  try {
+    const raw = localStorage.getItem(PLAY_INTERVAL_KEY);
+    if (raw == null || raw === "") return PLAY_INTERVAL_MS;
+    return clampPlayIntervalMs(raw);
+  } catch {
+    return PLAY_INTERVAL_MS;
+  }
+}
+
+export function applyPlayIntervalMs(ms) {
+  const next = clampPlayIntervalMs(ms);
+  try {
+    localStorage.setItem(PLAY_INTERVAL_KEY, String(next));
+  } catch {
+    /* private mode */
+  }
+  const session = readPlay();
+  if (session) updatePlay({ intervalMs: next });
+  return next;
+}
 
 export function uniquePhotoIds(photos) {
   const ids = [];
@@ -82,8 +113,10 @@ export function prefetchPlay(session, photoId) {
   if (at < 0) return;
   for (const nextId of [session.ids[at + 1], session.ids[at + 2]]) {
     if (!nextId) continue;
-    const img = new Image();
-    img.src = `/api/photos/${nextId}/thumb`;
+    const thumb = new Image();
+    thumb.src = `/api/photos/${nextId}/thumb`;
+    const view = new Image();
+    view.src = `/api/photos/${nextId}/view`;
   }
 }
 
@@ -99,10 +132,12 @@ export function beginPlay(nav, photos, opts = {}) {
     personId: opts.personId != null ? String(opts.personId) : null,
     tag: opts.tag ? String(opts.tag) : null,
     playing: true,
-    intervalMs: opts.intervalMs || PLAY_INTERVAL_MS,
+    intervalMs: opts.intervalMs || readPlayIntervalMs(),
   });
-  const first = new Image();
-  first.src = `/api/photos/${ids[start]}/thumb`;
+  const firstThumb = new Image();
+  firstThumb.src = `/api/photos/${ids[start]}/thumb`;
+  const firstView = new Image();
+  firstView.src = `/api/photos/${ids[start]}/view`;
   prefetchPlay(session, ids[start]);
   enterBrowserFullscreen();
   nav(playHref(ids[start], session), { state: { fullscreen: true, from: opts.from } });

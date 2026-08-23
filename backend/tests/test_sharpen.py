@@ -19,6 +19,7 @@ def _setup(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", path)
     monkeypatch.setattr(config, "DATA_DIR", data)
     monkeypatch.setattr(config, "THUMB_DIR", thumbs)
+    monkeypatch.setattr(config, "VIEW_DIR", data / "views")
     monkeypatch.setattr(config, "SHARPEN_DIR", sharpen_dir)
     monkeypatch.setattr(sharpen, "SHARPEN_DIR", sharpen_dir)
     monkeypatch.setattr(sharpen, "THUMB_DIR", thumbs)
@@ -90,6 +91,9 @@ def test_sharpen_requests_high_resolution(tmp_path, monkeypatch):
     body = client.posts[0][1]["json"]
     assert body["resolution"] == "2k"
     assert body["aspect_ratio"] in {"1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "2:1", "1:2"}
+    prompt = body["prompt"].lower()
+    assert "face" in prompt
+    assert prompt.find("face") < prompt.find("background")
 
 
 def test_sharpen_writes_preview_not_original(tmp_path, monkeypatch):
@@ -112,6 +116,43 @@ def test_sharpen_writes_preview_not_original(tmp_path, monkeypatch):
     again = sharpen.sharpen_photo(1)
     assert again["cached"] is True
     assert src.read_bytes() == before
+
+
+def test_sharpen_prompt_names_detected_faces(tmp_path, monkeypatch):
+    conn, _data, _sharpen_dir = _setup(tmp_path, monkeypatch)
+    _photo(conn, tmp_path)
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, created_at)
+           VALUES (1,0,0,10,10,0.9,'ok',?), (1,20,0,30,10,0.9,'ok',?)""",
+        (now_iso(), now_iso()),
+    )
+    conn.commit()
+    text = sharpen._sharpen_prompt(1)
+    assert "2 faces" in text
+    assert "every face" in text.lower()
+    assert "facial detail first" in text.lower()
+
+
+def test_sharpen_regenerates_when_prompt_version_changes(tmp_path, monkeypatch):
+    conn, _data, sharpen_dir = _setup(tmp_path, monkeypatch)
+    src = _photo(conn, tmp_path)
+    before = src.read_bytes()
+    old = _jpeg_bytes((10, 10, 10), (20, 16))
+    new = _jpeg_bytes((200, 40, 40), (40, 30))
+    preview = sharpen_dir / "1.jpg"
+    preview.write_bytes(old)
+    (sharpen_dir / "1.json").write_text('{"prompt_version": 1}', encoding="utf-8")
+    payload = {"data": [{"b64_json": __import__("base64").b64encode(new).decode("ascii")}]}
+    monkeypatch.setattr(sharpen, "xai_api_key", lambda: "xai-test")
+    monkeypatch.setattr(sharpen.httpx, "Client", lambda **kwargs: _FakeClient(payload))
+    result = sharpen.sharpen_photo(1)
+    assert result["cached"] is False
+    assert preview.read_bytes() != old
+    assert src.read_bytes() == before
+    meta = __import__("json").loads((sharpen_dir / "1.json").read_text(encoding="utf-8"))
+    assert meta["prompt_version"] == sharpen.PROMPT_VERSION
+    again = sharpen.sharpen_photo(1)
+    assert again["cached"] is True
 
 
 def test_sharpen_requires_key(tmp_path, monkeypatch):

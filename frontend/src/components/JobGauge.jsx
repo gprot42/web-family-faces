@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { estimateEta } from "../jobEta.js";
 
 function splitMessage(message) {
   const text = (message || "").trim();
@@ -9,46 +10,6 @@ function splitMessage(message) {
   return { main: text.slice(0, sep), extra: text.slice(sep + 3) };
 }
 
-function formatEta(seconds) {
-  if (!Number.isFinite(seconds) || seconds < 0) return "";
-  if (seconds < 45) return "less than a minute left";
-  const minutes = Math.round(seconds / 60);
-  if (minutes === 1) return "about 1 minute left";
-  if (minutes < 90) return `about ${minutes} minutes left`;
-  const hours = seconds / 3600;
-  const h = Math.floor(hours);
-  const m = Math.round((seconds % 3600) / 60);
-  if (h < 1) return `about ${minutes} minutes left`;
-  if (h === 1 && m < 8) return "about 1 hour left";
-  if (h === 1) return `about 1 hour ${m} min left`;
-  if (m < 8) return `about ${h} hours left`;
-  return `about ${h} hours ${m} min left`;
-}
-
-function estimateEta(job, samples) {
-  const progress = Math.max(0, Number(job.progress) || 0);
-  const total = Math.max(0, Number(job.total) || 0);
-  if (!total || progress >= total) return "";
-  const remaining = total - progress;
-  let rate = 0;
-  if (samples.length >= 2) {
-    const first = samples[0];
-    const last = samples[samples.length - 1];
-    const dp = last.p - first.p;
-    const dt = (last.t - first.t) / 1000;
-    if (dp > 0 && dt >= 6) rate = dp / dt;
-  }
-  if (!rate) {
-    const started = Date.parse(job.created_at || "");
-    if (started && progress > 4) {
-      const elapsed = (Date.now() - started) / 1000;
-      if (elapsed >= 20) rate = progress / elapsed;
-    }
-  }
-  if (!rate) return "";
-  return formatEta(remaining / rate);
-}
-
 function JobGaugeInner({ job, title, resumeable = true, compact = false, onResumed }) {
   const progress = Math.max(0, Number(job.progress) || 0);
   const total = Math.max(0, Number(job.total) || 0);
@@ -56,15 +17,19 @@ function JobGaugeInner({ job, title, resumeable = true, compact = false, onResum
   const paused = job.status === "paused";
   const canResume =
     resumeable && (job.type === "pipeline" || job.type === "scan");
-  const heading = (title || "Finding known faces") + (paused ? " — paused" : "");
   const { main, extra } = splitMessage(job.message);
   const counting = /counting photos/i.test(main);
+  const checking = /checking /i.test(main);
   const scanning = /scanning /i.test(main);
+  const heading =
+    (checking ? "Looking for new photos" : title || "Finding known faces") + (paused ? " — paused" : "");
   const label = counting
     ? main || "Counting photos…"
-    : scanning && total
-      ? `Scanning ${progress.toLocaleString()} of ${total.toLocaleString()} photos`
-      : main || (total ? `${progress.toLocaleString()} of ${total.toLocaleString()}` : "Starting…");
+    : checking && total
+      ? `Checking ${progress.toLocaleString()} of ${total.toLocaleString()} files`
+      : scanning && total
+        ? `Looking for faces in ${progress.toLocaleString()} of ${total.toLocaleString()} photos`
+        : main || (total ? `${progress.toLocaleString()} of ${total.toLocaleString()}` : "Starting…");
   const detail = extra && extra !== label ? extra : "";
   const r = 42;
   const c = 2 * Math.PI * r;

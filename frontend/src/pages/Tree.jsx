@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import { CARD_H, CARD_W, clampZoom, layoutFamilyTree, wheelZoomFactor } from "../familyChart.js";
+import { CARD_H, CARD_W, clampZoom, layoutFamilyTree, viewOnFocus, wheelZoomFactor } from "../familyChart.js";
 import { queryMatchesName } from "../nameSuggest.js";
 import { enterBrowserFullscreen, exitBrowserFullscreen } from "../play.js";
 import { tip } from "../tip.js";
@@ -135,6 +135,19 @@ function FamilyChart({ chart, onOpen, full, onToggleFull }) {
     setZoom(z);
   }
 
+  function applyView(next) {
+    zoomRef.current = next.zoom;
+    panRef.current = { x: next.x, y: next.y };
+    setZoom(next.zoom);
+    setPan({ x: next.x, y: next.y });
+  }
+
+  function centerOnFocus() {
+    const el = stageRef.current;
+    if (!el || el.clientWidth < 80 || el.clientHeight < 80) return;
+    applyView(viewOnFocus(layout, el.clientWidth, el.clientHeight));
+  }
+
   function fit() {
     const el = stageRef.current;
     if (!el || !layout.width || !layout.height) return;
@@ -143,27 +156,30 @@ function FamilyChart({ chart, onOpen, full, onToggleFull }) {
     const sx = (el.clientWidth - pad * 2) / layout.width;
     const sy = (el.clientHeight - pad * 2) / layout.height;
     const z = clampZoom(Math.min(sx, sy, 1.15));
-    const moved = {
+    applyView({
+      zoom: z,
       x: (el.clientWidth - layout.width * z) / 2,
       y: (el.clientHeight - layout.height * z) / 2,
-    };
-    zoomRef.current = z;
-    panRef.current = moved;
-    setZoom(z);
-    setPan(moved);
+    });
   }
 
   useEffect(() => {
     const id = window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(fit);
+      window.requestAnimationFrame(centerOnFocus);
     });
-    return () => window.cancelAnimationFrame(id);
+    const t = window.setTimeout(centerOnFocus, 60);
+    const t2 = window.setTimeout(centerOnFocus, 280);
+    return () => {
+      window.cancelAnimationFrame(id);
+      window.clearTimeout(t);
+      window.clearTimeout(t2);
+    };
   }, [full, layout.focus, layout.width, layout.height]);
 
   useEffect(() => {
     const el = stageRef.current;
     if (!el) return undefined;
-    const ro = new ResizeObserver(() => fit());
+    const ro = new ResizeObserver(() => centerOnFocus());
     ro.observe(el);
     function onWheelNative(event) {
       event.preventDefault();
@@ -283,14 +299,14 @@ function FamilyChart({ chart, onOpen, full, onToggleFull }) {
         </div>
       </div>
       <div className="ged-zoom zoom-tools">
-        <button type="button" onClick={() => applyZoom(zoomRef.current / 1.2)} {...tip("Zoom out")}>
-          −
+        <button type="button" onClick={() => applyZoom(zoomRef.current * 1.2)} {...tip("Zoom in")}>
+          +
         </button>
         <button type="button" className="zoom-level" onClick={fit} {...tip("Fit the whole tree in view")}>
           {Math.round(zoom * 100)}%
         </button>
-        <button type="button" onClick={() => applyZoom(zoomRef.current * 1.2)} {...tip("Zoom in")}>
-          +
+        <button type="button" onClick={() => applyZoom(zoomRef.current / 1.2)} {...tip("Zoom out")}>
+          −
         </button>
         <button type="button" onClick={fit} {...tip("Fit the whole tree in view")}>
           Fit
@@ -325,6 +341,9 @@ export default function Tree() {
   const [full, setFull] = useState(false);
   const searchRef = useRef(null);
   const fullRef = useRef(null);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const [personBusy, setPersonBusy] = useState(false);
 
   function openPerson(id) {
     const next = new URLSearchParams(params);
@@ -344,7 +363,7 @@ export default function Tree() {
     loadList()
       .then((next) => {
         if (cancel) return;
-        if (!selected && next.loaded && next.people?.[0]?.id) {
+        if (!selectedRef.current && next.loaded && next.people?.[0]?.id) {
           openPerson(next.people[0].id);
         }
       })
@@ -370,16 +389,24 @@ export default function Tree() {
     }
     if (!selected || !data?.loaded) {
       setPerson(null);
+      setPersonBusy(false);
       return undefined;
     }
     let cancel = false;
+    setPersonBusy(true);
     api
       .gedcomPerson(selected)
       .then((next) => {
         if (!cancel) setPerson(next);
       })
       .catch((ex) => {
-        if (!cancel) setErr(ex.message);
+        if (!cancel) {
+          setErr(ex.message);
+          setPerson(null);
+        }
+      })
+      .finally(() => {
+        if (!cancel) setPersonBusy(false);
       });
     return () => {
       cancel = true;
@@ -424,16 +451,32 @@ export default function Tree() {
   const filtered = q.trim() ? matches : data?.people || [];
   const suggestions = q.trim() ? matches.slice(0, 12) : [];
 
+  function treeIdForJump(id) {
+    const catalogId = catalogPersonId(id);
+    if (!catalogId) return id;
+    const people = data?.people || [];
+    const linked = people.find((p) => Number(p.catalog_id) === Number(catalogId));
+    if (linked?.id) return linked.id;
+    const hit = matches.find((p) => String(p.id) === String(id));
+    const needle = String(hit?.name || "").trim().toLowerCase();
+    if (!needle) return "";
+    const named = people.filter((p) => String(p.name || "").trim().toLowerCase() === needle);
+    return named.length === 1 ? named[0].id : "";
+  }
+
   function jumpTo(id) {
     if (!id) return;
-    const catalogId = catalogPersonId(id);
     setSuggest(false);
     setPick(0);
-    if (catalogId) {
-      nav(`/people/${catalogId}`);
+    const treeId = treeIdForJump(id);
+    if (treeId) {
+      openPerson(treeId);
       return;
     }
-    openPerson(id);
+    const catalogId = catalogPersonId(id);
+    if (catalogId) {
+      nav(`/people/${catalogId}`);
+    }
   }
 
   async function onFile(file) {
@@ -473,8 +516,13 @@ export default function Tree() {
   }, [q]);
 
   useEffect(() => {
-    const node = document.querySelector(".ged-person.active");
-    node?.scrollIntoView({ block: "nearest" });
+    const list = document.querySelector(".ged-list");
+    const node = list?.querySelector(".ged-person.active");
+    if (!list || !node) return;
+    const nodeRect = node.getBoundingClientRect();
+    const listRect = list.getBoundingClientRect();
+    if (nodeRect.top >= listRect.top && nodeRect.bottom <= listRect.bottom) return;
+    list.scrollTop += nodeRect.top - listRect.top - list.clientHeight / 2 + nodeRect.height / 2;
   }, [selected, filtered]);
 
   function enterFull() {
@@ -631,6 +679,7 @@ export default function Tree() {
               {person ? (
                 <>
                   <FamilyChart
+                    key={person.id}
                     chart={person.chart}
                     onOpen={openPerson}
                     full={full}
@@ -652,7 +701,9 @@ export default function Tree() {
                   )}
                 </>
               ) : (
-                <p className="hint">Choose a person on the left.</p>
+                <p className="hint">
+                  {personBusy || selected ? "Drawing this tree…" : "Choose a person on the left."}
+                </p>
               )}
             </div>
           </div>

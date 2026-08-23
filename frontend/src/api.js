@@ -149,6 +149,7 @@ export const api = {
   assignFace: (id, body) => request(`/api/faces/${id}/assign`, { method: "POST", body: JSON.stringify(body) }),
   unassignFace: (id) => request(`/api/faces/${id}/unassign`, { method: "POST" }),
   unassignPhoto: (id) => request(`/api/photos/${id}/unassign`, { method: "POST" }),
+  junkUnnamedPhoto: (id) => request(`/api/photos/${id}/junk-unnamed`, { method: "POST" }),
   junkFace: (id) => request(`/api/faces/${id}/junk`, { method: "POST" }),
   restoreFace: (id) => request(`/api/faces/${id}/restore`, { method: "POST" }),
   unknownFace: (id) => request(`/api/faces/${id}/unknown`, { method: "POST" }),
@@ -192,6 +193,7 @@ export const api = {
   person: (id) => request(`/api/people/${id}`),
   createPerson: (name) => request("/api/people", { method: "POST", body: JSON.stringify({ name }) }),
   patchPerson: (id, body) => request(`/api/people/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  nextPersonCover: (id) => request(`/api/people/${id}/next-cover`, { method: "POST" }),
   lookupPerson: (id, body = {}) =>
     request(`/api/people/${id}/lookup`, { method: "POST", body: JSON.stringify(body || {}) }),
   mergePerson: (targetId, sourceId) =>
@@ -264,10 +266,11 @@ export const api = {
   resume: () => request("/api/resume"),
   verify: () => request("/api/verify", { method: "POST" }),
   backup: () => request("/api/backup", { method: "POST" }),
-  nameFolders: (under) => {
+  nameFolders: (under, opts = {}) => {
     const q = new URLSearchParams();
     const folders = Array.isArray(under) ? under.filter(Boolean) : under ? [under] : [];
     for (const folder of folders) q.append("under", folder);
+    if (opts.disk) q.set("disk", "1");
     const qs = q.toString();
     return request(`/api/catalog/folders${qs ? `?${qs}` : ""}`);
   },

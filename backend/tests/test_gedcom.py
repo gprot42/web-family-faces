@@ -167,6 +167,10 @@ def test_save_and_http_roundtrip(tmp_path, monkeypatch):
     assert john["catalog_id"]
     detail = client.get("/api/gedcom/people/I1").json()
     assert detail["name"] == "John Smith"
+    wrapped = client.get("/api/gedcom/people/%40I1%40").json()
+    assert wrapped["id"] == "I1"
+    assert wrapped["chart"]["focus"] == "I1"
+    assert wrapped["chart"]["nodes"]
     assert detail["catalog"]["name"] == "John Smith"
     assert detail["parents"][0]["name"] == "William Smith"
     missing = client.get("/api/gedcom/people/NOPE")

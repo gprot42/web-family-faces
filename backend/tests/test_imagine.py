@@ -19,6 +19,7 @@ def _setup(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", path)
     monkeypatch.setattr(config, "DATA_DIR", data)
     monkeypatch.setattr(config, "THUMB_DIR", thumbs)
+    monkeypatch.setattr(config, "VIEW_DIR", data / "views")
     monkeypatch.setattr(config, "IMAGINE_DIR", imagine_dir)
     monkeypatch.setattr(imagine, "IMAGINE_DIR", imagine_dir)
     monkeypatch.setattr(imagine, "THUMB_DIR", thumbs)

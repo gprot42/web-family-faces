@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { tip } from "../tip.js";
@@ -54,6 +54,7 @@ export default function People() {
   const [ready, setReady] = useState(() => loadCachedPeople(folder).length > 0);
   const [ignored, setIgnored] = useState(() => loadIgnored());
   const [err, setErr] = useState("");
+  const [coverMenu, setCoverMenu] = useState(null);
   const countsKnown = ready || people.length > 0;
 
   useEffect(() => {
@@ -127,6 +128,18 @@ export default function People() {
     if (group && group !== "family") cur.set("group", group);
     const qs = cur.toString();
     return qs ? `/people?${qs}` : "/people";
+  }
+
+  function setCover(id, fields) {
+    setPeople((cur) => cur.map((p) => (p.id === id ? { ...p, ...fields } : p)));
+    patchCachedPerson(id, fields, folder);
+  }
+
+  function openCoverMenu(event, person) {
+    if (!person?.cover_url) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setCoverMenu({ x: event.clientX, y: event.clientY, person });
   }
 
   function setCategory(id, category) {
@@ -256,7 +269,12 @@ export default function People() {
           </h2>
           <div className="people-grid">
             {named.map((p) => (
-              <PersonCard key={p.id} person={p} onCategory={setCategory} />
+              <PersonCard
+                key={p.id}
+                person={p}
+                onCategory={setCategory}
+                onCoverMenu={openCoverMenu}
+              />
             ))}
           </div>
         </section>
@@ -273,7 +291,12 @@ export default function People() {
           </p>
           <div className="people-grid">
             {unnamed.map((p) => (
-              <PersonCard key={p.id} person={p} onCategory={setCategory} />
+              <PersonCard
+                key={p.id}
+                person={p}
+                onCategory={setCategory}
+                onCoverMenu={openCoverMenu}
+              />
             ))}
           </div>
         </section>
@@ -314,6 +337,19 @@ export default function People() {
         </p>
       ) : null}
       {!ready && !people.length ? <p className="hint">Loading people…</p> : null}
+      {coverMenu ? (
+        <CoverMenu
+          menu={coverMenu}
+          onClose={() => setCoverMenu(null)}
+          onPicked={(person) => {
+            setCover(person.id, {
+              cover_url: person.cover_url,
+              cover_face_id: person.cover_face_id,
+            });
+            setCoverMenu(null);
+          }}
+        />
+      ) : null}
       {ready && !people.length && !err ? (
         <div className="card empty">
           {folder
@@ -328,12 +364,15 @@ export default function People() {
   );
 }
 
-function PersonCard({ person, onCategory }) {
+function PersonCard({ person, onCategory, onCoverMenu }) {
   const category = categoryOf(person);
   return (
     <div className="card person-card">
       <Link className="person-card-link" to={`/people/${person.id}`}>
-        <div className="person-head">
+        <div
+          className="person-head"
+          onContextMenu={(event) => onCoverMenu(event, person)}
+        >
           {person.cover_url ? (
             <img src={person.cover_url} alt="" loading="lazy" decoding="async" />
           ) : (
@@ -411,6 +450,78 @@ function MergeCard({ suggestion, people, onJoin, onIgnore }) {
           Not the same person
         </button>
       </div>
+    </div>
+  );
+}
+
+const MENU_PAD = 8;
+
+function CoverMenu({ menu, onClose, onPicked }) {
+  const box = useRef(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    function insideMenu(event) {
+      if (!box.current) return false;
+      if (event?.target && box.current.contains(event.target)) return true;
+      return false;
+    }
+    function hide(event) {
+      if (event?.type === "keydown") {
+        if (event.key !== "Escape") return;
+        onClose();
+        return;
+      }
+      if (insideMenu(event)) return;
+      onClose();
+    }
+    window.addEventListener("pointerdown", hide, true);
+    window.addEventListener("keydown", hide);
+    window.addEventListener("scroll", hide, true);
+    return () => {
+      window.removeEventListener("pointerdown", hide, true);
+      window.removeEventListener("keydown", hide);
+      window.removeEventListener("scroll", hide, true);
+    };
+  }, [onClose]);
+
+  useLayoutEffect(() => {
+    if (!box.current) return;
+    const r = box.current.getBoundingClientRect();
+    let left = menu.x;
+    let top = menu.y;
+    if (left + r.width > window.innerWidth - MENU_PAD) left = window.innerWidth - r.width - MENU_PAD;
+    if (top + r.height > window.innerHeight - MENU_PAD) top = window.innerHeight - r.height - MENU_PAD;
+    if (left < MENU_PAD) left = MENU_PAD;
+    if (top < MENU_PAD) top = MENU_PAD;
+    box.current.style.left = `${left}px`;
+    box.current.style.top = `${top}px`;
+  }, [menu]);
+
+  async function findBetter() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const next = await api.nextPersonCover(menu.person.id);
+      onPicked(next);
+    } catch (ex) {
+      window.alert(ex.message || "Could not find another photo.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      ref={box}
+      className="photo-menu"
+      role="menu"
+      aria-label="Person cover"
+      onPointerDown={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <button type="button" role="menuitem" disabled={busy} onClick={findBetter}>
+        {busy ? "Finding…" : "Find a better photo"}
+      </button>
     </div>
   );
 }

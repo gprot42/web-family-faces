@@ -17,6 +17,7 @@ def _db(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", path)
     monkeypatch.setattr(config, "DATA_DIR", data)
     monkeypatch.setattr(config, "THUMB_DIR", data / "thumbs")
+    monkeypatch.setattr(config, "VIEW_DIR", data / "views")
     monkeypatch.setattr(config, "CROP_DIR", data / "crops")
     monkeypatch.setattr(config, "BACKUP_DIR", data / "backups")
     monkeypatch.setattr(db, "DB_PATH", path)
@@ -25,6 +26,7 @@ def _db(tmp_path, monkeypatch):
     monkeypatch.setattr(catalog, "BACKUP_DIR", data / "backups")
     (data / "backups").mkdir()
     (data / "thumbs").mkdir()
+    (data / "views").mkdir()
     conn = connect()
     init_db(conn)
     conn.close()
@@ -490,6 +492,34 @@ def test_looks_like_statue_painted_temple_relief(tmp_path):
     assert looks_like_statue(portrait, temple) is False
 
 
+def test_looks_like_statue_sand_sculpture_in_a_beach_photo(tmp_path):
+    """Grainy beige sand art in a mixed beach scene is not a person."""
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    grain = rng.normal(0, 8, (80, 80, 1))
+    chroma_noise = rng.normal(0, 4, (80, 80, 3))
+    crop = np.clip(np.array([148, 132, 116], dtype=np.float32) + grain + chroma_noise, 0, 255).astype(
+        np.uint8
+    )
+    sand = tmp_path / "sand.png"
+    Image.fromarray(crop).save(sand)
+    scene = np.zeros((120, 200, 3), dtype=np.uint8)
+    scene[:50] = (90, 150, 210)
+    scene[50:95, 30:170] = (130, 116, 102)
+    scene[95:] = (40, 140, 50)
+    beach = tmp_path / "beach.png"
+    Image.fromarray(scene).save(beach)
+    sepia = tmp_path / "sepia-print.png"
+    Image.new("RGB", (200, 120), (140, 124, 110)).save(sepia)
+    portrait = tmp_path / "portrait.png"
+    Image.new("RGB", (80, 80), (190, 140, 100)).save(portrait)
+    assert looks_like_statue(sand, beach) is True
+    assert looks_like_statue(sand) is False
+    assert looks_like_statue(sand, sepia) is False
+    assert looks_like_statue(portrait, beach) is False
+
+
 def test_looks_like_statue_painted_gold_temple_face(tmp_path):
     """Gold-painted guardian face in a mixed temple scene is not a person."""
     import numpy as np
@@ -620,6 +650,19 @@ def test_import_two_sibling_folders(tmp_path, monkeypatch):
     assert len(paths) == 2
     assert any(path.endswith("a.jpg") for path in paths)
     assert any(path.endswith("b.jpg") for path in paths)
+
+
+def test_import_writes_local_display_view(tmp_path, monkeypatch):
+    data = _db(tmp_path, monkeypatch)
+    album = tmp_path / "heirlooms"
+    album.mkdir()
+    Image.new("RGB", (2000, 1200), "navy").save(album / "a.jpg", "JPEG")
+    importer.import_folder(create_job("import"), album)
+    conn = connect()
+    photo_id = conn.execute("SELECT id FROM photos").fetchone()["id"]
+    conn.close()
+    view = Image.open(data / "views" / f"{photo_id}.jpg")
+    assert max(view.size) <= 1600
 
 
 def test_reimport_skips_known_paths_and_adds_only_new(tmp_path, monkeypatch):

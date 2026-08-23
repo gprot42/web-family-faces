@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS people (
     nickname TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
     birth_year INTEGER,
+    cover_face_id INTEGER,
     created_at TEXT NOT NULL
 );
 
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS faces (
     det_score REAL NOT NULL,
     quality TEXT NOT NULL CHECK (quality IN ('ok', 'unidentifiable')),
     embedding BLOB,
+    embedding_ada BLOB,
     age_est REAL,
     sex_est TEXT,
     person_id INTEGER REFERENCES people(id) ON DELETE SET NULL,
@@ -103,6 +105,7 @@ MIGRATIONS = [
     "ALTER TABLE photos ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE people ADD COLUMN category TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE people ADD COLUMN nickname TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE people ADD COLUMN cover_face_id INTEGER",
     "ALTER TABLE photos ADD COLUMN comment TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE faces ADD COLUMN tag_x REAL",
     "ALTER TABLE faces ADD COLUMN tag_y REAL",
@@ -116,6 +119,8 @@ MIGRATIONS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_photo_tags_tag ON photo_tags(tag)",
+    "CREATE INDEX IF NOT EXISTS idx_photos_path ON photos(path)",
+    "ALTER TABLE faces ADD COLUMN embedding_ada BLOB",
 ]
 
 

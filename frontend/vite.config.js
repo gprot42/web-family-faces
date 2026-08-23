@@ -13,7 +13,7 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: `http://${apiHost}:${apiPort}`,
-        timeout: 180_000,
+        timeout: 600_000,
       },
     },
   },

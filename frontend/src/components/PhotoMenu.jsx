@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
+import { imageBlobForClipboard } from "../copyPhoto.js";
 import { applyFullscreenLabels, readFullscreenLabels } from "../nametag.js";
 import { emitPhotoChange, subscribePhotoMenu } from "../photoMenu.js";
 import { clearRematchUndo, readRematchUndo, writeRematchUndo } from "../rematchUndo.js";
@@ -79,7 +80,7 @@ export default function PhotoMenu() {
     }
     setBusy("copy");
     try {
-      const png = imageBlobForClipboard(menu.photo);
+      const png = await imageBlobForClipboard(menu.photo);
       await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
       setMenu(null);
     } catch (ex) {
@@ -206,6 +207,27 @@ export default function PhotoMenu() {
     } catch (ex) {
       emitPhotoChange(prev);
       window.alert(ex.message || "Could not hide this face.");
+    }
+  }
+
+  async function removeAllUnnamed() {
+    const prev = menu.photo;
+    const hide = (prev.faces || []).filter((f) => !f.person_id && f.assigned_how !== "junk");
+    if (!hide.length) return;
+    const hideIds = new Set(hide.map((f) => Number(f.id)));
+    const faces = (prev.faces || []).map((f) =>
+      hideIds.has(Number(f.id)) ? { ...f, person_id: null, person_name: null, assigned_how: "junk" } : f,
+    );
+    emitPhotoChange({ ...prev, faces });
+    setMenu(null);
+    try {
+      for (const hit of hide) {
+        pushFaceUndo(prev, hit, "hiding this face");
+      }
+      await api.junkUnnamedPhoto(prev.id);
+    } catch (ex) {
+      emitPhotoChange(prev);
+      window.alert(ex.message || "Could not hide unnamed faces.");
     }
   }
 
@@ -417,6 +439,11 @@ export default function PhotoMenu() {
           {busy === "unnamed" ? "Removing…" : `Remove ${u.label}`}
         </button>
       ))}
+      {unnamed.length > 1 ? (
+        <button type="button" role="menuitem" onClick={removeAllUnnamed}>
+          Remove all unnamed
+        </button>
+      ) : null}
       <div className="photo-menu-sep" role="separator" />
       <button type="button" role="menuitem" className="danger" disabled={!!busy} onClick={remove}>
         Delete photo
@@ -476,56 +503,4 @@ function unnamedToHide(faces, faceIds) {
   return ids;
 }
 
-function displayedPhotoImage() {
-  return (
-    document.querySelector(".photo-full img") ||
-    document.querySelector(".labeled img") ||
-    document.querySelector(".stage img")
-  );
-}
 
-function canvasToPng(canvas) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((out) => {
-      if (!out) reject(new Error("Could not copy this photo."));
-      else resolve(out);
-    }, "image/png");
-  });
-}
-
-function drawToClipboardCanvas(source, rotation = 0) {
-  const srcW = source.naturalWidth || source.width;
-  const srcH = source.naturalHeight || source.height;
-  if (!srcW || !srcH) throw new Error("Could not read this photo.");
-  const rot = (((Number(rotation) || 0) % 360) + 360) % 360;
-  const swap = rot === 90 || rot === 270;
-  const long = Math.max(srcW, srcH);
-  const scale = long > 2560 ? 2560 / long : 1;
-  const w = Math.max(1, Math.round(srcW * scale));
-  const h = Math.max(1, Math.round(srcH * scale));
-  const canvas = document.createElement("canvas");
-  canvas.width = swap ? h : w;
-  canvas.height = swap ? w : h;
-  const ctx = canvas.getContext("2d");
-  ctx.translate(canvas.width / 2, canvas.height / 2);
-  if (rot) ctx.rotate((rot * Math.PI) / 180);
-  ctx.drawImage(source, -w / 2, -h / 2, w, h);
-  return canvasToPng(canvas);
-}
-
-async function imageBlobForClipboard(photo) {
-  const shown = displayedPhotoImage();
-  if (shown?.complete && (shown.naturalWidth || shown.width)) {
-    return drawToClipboardCanvas(shown, photo.rotation);
-  }
-  const url = photo.file_url || photo.thumb_url || `/api/photos/${photo.id}/file`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("Could not read this photo.");
-  const blob = await res.blob();
-  const bitmap = await createImageBitmap(blob);
-  try {
-    return await drawToClipboardCanvas(bitmap, photo.rotation);
-  } finally {
-    bitmap.close?.();
-  }
-}

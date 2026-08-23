@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { api } from "../api";
 import { tip } from "../tip.js";
 import { groupWhen } from "../ages.js";
+import { clusterHash, clusterIdFrom } from "../albumPos.js";
 import { matchPeople, uniqueFirstName } from "../nameSuggest.js";
 import FamousLookup from "../components/FamousLookup.jsx";
+import ConfirmAsk from "../components/ConfirmAsk.jsx";
 import JobGauge from "../components/JobGauge.jsx";
 import NameSuggest from "../components/NameSuggest.jsx";
 import PersonPicker, { isPersonDrag, personFromDataTransfer } from "../components/PersonPicker.jsx";
 import { saveCachedPeople } from "../peopleCache.js";
+import { hidePerson, readHiddenPeople, showPerson } from "../toNameHidden.js";
 
 function clusterKey(cluster) {
   const ids = cluster.face_ids;
@@ -19,13 +22,24 @@ function clusterKey(cluster) {
 function useNearViewport(startNear, rootRef) {
   const ref = useRef(null);
   const [near, setNear] = useState(Boolean(startNear));
+  const startNearRef = useRef(startNear);
+  startNearRef.current = startNear;
+  useEffect(() => {
+    if (startNear) setNear(true);
+  }, [startNear]);
   useEffect(() => {
     const node = ref.current;
     if (!node) return undefined;
-    const io = new IntersectionObserver(([entry]) => setNear(entry.isIntersecting), {
-      root: rootRef?.current || null,
-      rootMargin: "400px 0px",
-    });
+    const io = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) setNear(true);
+        else if (!startNearRef.current) setNear(false);
+      },
+      {
+        root: rootRef?.current || null,
+        rootMargin: "400px 0px",
+      },
+    );
     io.observe(node);
     return () => io.disconnect();
   }, [rootRef]);
@@ -57,19 +71,36 @@ function readToNamePos() {
 function writeToNamePos(pos) {
   try {
     const prev = readToNamePos() || {};
-    sessionStorage.setItem(POS_KEY, JSON.stringify({ ...prev, ...pos }));
+    const next = { ...prev, ...pos };
+    if (next.activeId == null && prev.activeId != null) next.activeId = prev.activeId;
+    if (next.clusterId == null && prev.clusterId != null) next.clusterId = prev.clusterId;
+    if (next.faceId == null && prev.faceId != null) next.faceId = prev.faceId;
+    if (!(Number(next.scrollTop) > 0) && Number(prev.scrollTop) > 0 && (next.clusterId || next.faceId)) {
+      next.scrollTop = prev.scrollTop;
+    }
+    sessionStorage.setItem(POS_KEY, JSON.stringify(next));
   } catch {
     /* ignore quota */
   }
 }
 
+function wantedToNameClusterId(hash) {
+  return clusterIdFrom(hash) || Number(readToNamePos()?.clusterId) || Number(readToNamePos()?.activeId) || 0;
+}
+
 function applyToNamePos(el, pos) {
   if (!el || !pos) return false;
   const crop = pos.faceId ? el.querySelector(`[data-face-id="${pos.faceId}"]`) : null;
-  const card = pos.clusterId ? el.querySelector(`[data-cluster-id="${pos.clusterId}"]`) : null;
+  const clusterId = Number(pos.clusterId) || Number(pos.activeId) || 0;
+  const card = clusterId
+    ? el.querySelector(`[data-cluster-id="${clusterId}"]`) || document.getElementById(clusterHash(clusterId))
+    : null;
   const target = crop || card;
-  if (target) {
-    target.scrollIntoView({ block: "center", inline: "nearest" });
+  if (target && el.contains(target)) {
+    const sticky = el.querySelector(".to-name-sticky");
+    const pad = (sticky?.offsetHeight || 0) + 12;
+    const top = target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop;
+    el.scrollTop = Math.max(0, top - pad);
     return true;
   }
   if (pos.scrollTop != null && Number(pos.scrollTop) > 0) {
@@ -126,6 +157,7 @@ function clampNamedWidth(w, layoutEl) {
 }
 
 export default function Clusters({ onChange, stats }) {
+  const loc = useLocation();
   const [items, setItems] = useState([]);
   const [people, setPeople] = useState([]);
   const [err, setErr] = useState("");
@@ -134,7 +166,8 @@ export default function Clusters({ onChange, stats }) {
   const [saved, setSaved] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showCats, setShowCats] = useState([]);
-  const [activeId, setActiveId] = useState(null);
+  const restoreWanted = useRef(wantedToNameClusterId(loc.hash));
+  const [activeId, setActiveId] = useState(() => restoreWanted.current || null);
   const [catById, setCatById] = useState({});
   const groupsRef = useRef(null);
   const layoutRef = useRef(null);
@@ -144,10 +177,13 @@ export default function Clusters({ onChange, stats }) {
   const [resizingNamed, setResizingNamed] = useState(false);
   const [peopleReady, setPeopleReady] = useState(false);
   const [hasNamedHint] = useState(() => readHasNamed());
+  const [hiddenPeople, setHiddenPeople] = useState(() => readHiddenPeople());
+  const [showHiddenPeople, setShowHiddenPeople] = useState(false);
   const restoredPos = useRef(false);
   const [job, setJob] = useState(null);
   const [lookupOk, setLookupOk] = useState(true);
   const [identifyNote, setIdentifyNote] = useState("");
+  const [identifyAsk, setIdentifyAsk] = useState(false);
   const jobKey = useRef("");
 
   useEffect(() => {
@@ -238,18 +274,26 @@ export default function Clusters({ onChange, stats }) {
   }, []);
 
   useEffect(() => {
-    if (!items.length) {
-      setActiveId(null);
+    const hid = clusterIdFrom(loc.hash);
+    if (hid) restoreWanted.current = hid;
+  }, [loc.hash]);
+
+  useEffect(() => {
+    if (!items.length) return;
+    if (items.some((item) => item.id === activeId)) return;
+    const wanted = wantedToNameClusterId(loc.hash);
+    if (wanted && items.some((item) => item.id === wanted)) {
+      setActiveId(wanted);
       return;
     }
-    if (!items.some((item) => item.id === activeId)) setActiveId(items[0].id);
-  }, [items, activeId]);
+    setActiveId(items[0].id);
+  }, [items, activeId, loc.hash]);
 
   function rememberPos(extra = {}) {
     const el = groupsRef.current;
     writeToNamePos({
       scrollTop: el ? el.scrollTop : window.scrollY,
-      activeId,
+      ...(activeId ? { activeId } : {}),
       ...extra,
     });
   }
@@ -257,16 +301,28 @@ export default function Clusters({ onChange, stats }) {
   useEffect(() => {
     const el = groupsRef.current;
     if (!el) return undefined;
+    const prev = window.history.scrollRestoration;
+    try {
+      window.history.scrollRestoration = "manual";
+    } catch {
+      /* ignore */
+    }
     function onScroll() {
       writeToNamePos({
         scrollTop: el.scrollTop,
-        activeId,
+        ...(activeId ? { activeId } : {}),
       });
     }
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => {
-      onScroll();
+      const y = el.scrollTop;
+      if (y > 0) writeToNamePos({ scrollTop: y, ...(activeId ? { activeId } : {}) });
       el.removeEventListener("scroll", onScroll);
+      try {
+        window.history.scrollRestoration = prev || "auto";
+      } catch {
+        /* ignore */
+      }
     };
   }, [activeId]);
 
@@ -348,32 +404,44 @@ export default function Clusters({ onChange, stats }) {
 
   useEffect(() => {
     if (loading || !items.length || restoredPos.current) return;
-    const pos = readToNamePos();
-    if (!pos) {
+    const hashId = clusterIdFrom(loc.hash);
+    const stored = readToNamePos() || {};
+    const clusterId = hashId || Number(stored.clusterId) || Number(stored.activeId) || 0;
+    const pos = {
+      ...stored,
+      ...(clusterId ? { clusterId, activeId: clusterId } : {}),
+    };
+    if (!pos.clusterId && !pos.faceId && !(Number(pos.scrollTop) > 0)) {
       restoredPos.current = true;
       return undefined;
     }
     const el = groupsRef.current;
     if (!el) return undefined;
-    if (pos.activeId && items.some((item) => item.id === pos.activeId)) {
-      setActiveId(pos.activeId);
+    if (clusterId && items.some((item) => item.id === clusterId)) {
+      setActiveId(clusterId);
+      restoreWanted.current = clusterId;
     }
     let tries = 0;
-    let timer = 0;
+    const timers = [];
     const tryApply = () => {
-      if (applyToNamePos(el, pos) || tries >= 16) {
+      const ok = applyToNamePos(el, pos);
+      if (ok || tries >= 16) {
         restoredPos.current = true;
+        if (ok) {
+          timers.push(window.setTimeout(() => applyToNamePos(el, pos), 120));
+          timers.push(window.setTimeout(() => applyToNamePos(el, pos), 400));
+        }
         return;
       }
       tries += 1;
-      timer = window.setTimeout(tryApply, 50);
+      timers.push(window.setTimeout(tryApply, 50));
     };
     const raf = requestAnimationFrame(() => requestAnimationFrame(tryApply));
     return () => {
       cancelAnimationFrame(raf);
-      window.clearTimeout(timer);
+      timers.forEach((id) => window.clearTimeout(id));
     };
-  }, [loading, items]);
+  }, [loading, items, loc.hash]);
 
   function faceIdsOf(id) {
     const cluster = items.find((item) => item.id === id);
@@ -518,6 +586,7 @@ export default function Clusters({ onChange, stats }) {
     ((loading || items.length > 0) && (hasNamedHint || Number(stats?.people_named) > 0));
 
   async function startIdentify() {
+    setIdentifyAsk(false);
     setErr("");
     setIdentifyNote("");
     try {
@@ -534,6 +603,18 @@ export default function Clusters({ onChange, stats }) {
 
   return (
     <div className="to-name-page">
+      {identifyAsk ? (
+        <ConfirmAsk
+          title="Identify all unnamed groups?"
+          body={
+            lookupOk
+              ? "Match groups to people already in the catalog, then look remaining groups up. Auto names go to Check names. Mixed or huge groups are skipped. Files stay where they are."
+              : "Match groups to people already in the catalog. Add an xAI key or SuperGrok in Settings to also look remaining groups up. Auto names go to Check names. Files stay where they are."
+          }
+          onCancel={() => setIdentifyAsk(false)}
+          onConfirm={startIdentify}
+        />
+      ) : null}
       <div
         ref={layoutRef}
         className={`to-name-layout${hasNamed ? " has-named" : ""}${resizingNamed ? " resizing" : ""}`}
@@ -560,7 +641,7 @@ export default function Clusters({ onChange, stats }) {
                   <button
                     type="button"
                     disabled={loading}
-                    onClick={startIdentify}
+                    onClick={() => setIdentifyAsk(true)}
                     {...tip(
                       lookupOk
                         ? "Name every unnamed group that looks sure: people already in the catalog first, then AI lookup. Check names still lists auto matches. Mixed or large groups are skipped. Use AI on a group to look that one up."
@@ -613,7 +694,7 @@ export default function Clusters({ onChange, stats }) {
               people={people}
               saving={savingId === c.id}
               saveError={saveErr?.id === c.id ? saveErr.message : ""}
-              eager={i === 0}
+              eager={i === 0 || Number(c.id) === Number(restoreWanted.current)}
               active={c.id === activeId}
               category={catById[c.id] || ""}
               onCategory={(next) => setCatById((cur) => ({ ...cur, [c.id]: next }))}
@@ -664,6 +745,12 @@ export default function Clusters({ onChange, stats }) {
                 showCategoryFilter
                 categoryFilter={showCats}
                 onCategoryFilter={setShowCats}
+                hideable
+                hiddenIds={hiddenPeople}
+                showHidden={showHiddenPeople}
+                onHide={(p) => setHiddenPeople(hidePerson(p.id))}
+                onUnhide={(p) => setHiddenPeople(showPerson(p.id))}
+                onToggleHidden={() => setShowHiddenPeople((on) => !on)}
                 hint="Click to name the highlighted group, or drag onto Name this person."
                 onPick={(p) => {
                   const target = items.find((c) => c.id === activeId) || items[0];
@@ -794,6 +881,7 @@ function ClusterCard({
   return (
     <div
       ref={cardRef}
+      id={clusterHash(cluster.id)}
       data-cluster-id={cluster.id}
       className={`card cluster${active ? " active" : ""}${saveError ? " has-save-error" : ""}`}
       onPointerDown={onActivate}
@@ -826,7 +914,7 @@ function ClusterCard({
                   <Link
                     className="crop-photo"
                     to={photoTo}
-                    state={{ fullscreen: true, from: "/to-name" }}
+                    state={{ fullscreen: true, from: `/to-name#${clusterHash(cluster.id)}` }}
                     onClick={() => onOpenPhoto?.(f)}
                     {...tip("Open the whole photo. Original stays on the NAS.")}
                   >

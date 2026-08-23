@@ -10,7 +10,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from . import config
 from . import state as state_mod
-from .config import IMAGE_EXTS, THUMB_MAX
+from .config import IMAGE_EXTS, THUMB_MAX, VIEW_MAX
 from .db import connect, init_db
 from .jobs import JobPaused, pause_requested, update_job
 from .originals import (
@@ -68,7 +68,7 @@ def make_thumb(src: Path, photo_id: int, library: Path | None = None, img: Image
     dest = config.THUMB_DIR / f"{photo_id}.jpg"
     try:
         if img is None:
-            img = open_image(src)
+            img, _orig = open_preview(src, max_side=THUMB_MAX)
             img = ImageOps.exif_transpose(img)
         else:
             img = img.copy()
@@ -79,9 +79,28 @@ def make_thumb(src: Path, photo_id: int, library: Path | None = None, img: Image
         return None
 
 
+def make_view(src: Path, photo_id: int, img: Image.Image | None = None) -> Path | None:
+    """Local display JPEG so the photo page does not wait on the original NAS file."""
+    dest = config.VIEW_DIR / f"{photo_id}.jpg"
+    if dest.exists() and dest.stat().st_size > 0:
+        return dest
+    try:
+        config.VIEW_DIR.mkdir(parents=True, exist_ok=True)
+        if img is None:
+            img, _orig = open_preview(src, max_side=VIEW_MAX)
+            img = ImageOps.exif_transpose(img)
+        else:
+            img = img.copy()
+        img = img.convert("RGB")
+        img.thumbnail((VIEW_MAX, VIEW_MAX))
+        return save_image(img, dest, format="JPEG", quality=85, optimize=True)
+    except (UnidentifiedImageError, OSError, OriginalWriteError):
+        return None
+
+
 def _read_image_meta(src: Path) -> tuple[Image.Image, tuple[int, int], str | None] | None:
     try:
-        img, orig = open_preview(src, max_side=max(THUMB_MAX * 2, 1280))
+        img, orig = open_preview(src, max_side=VIEW_MAX)
         img = ImageOps.exif_transpose(img)
         taken = _exif_taken_at(img)
         return img, orig if orig[0] and orig[1] else img.size, taken
@@ -209,7 +228,7 @@ def _report_scan(job_id: int, seen: int, already: int, detail: str = "") -> None
         job_id,
         progress=seen,
         total=total,
-        message=f"Scanning {seen} of {total} photos{suffix}",
+        message=f"Checking {seen} of {total} files{suffix}",
     )
 
 
@@ -313,6 +332,7 @@ def import_folder(
                 report(path.name)
                 continue
             make_thumb(path, photo_id, library=folder, img=img)
+            make_view(path, photo_id, img=img)
             known.add(key)
             known_cf[key.casefold()] = key
             added += 1

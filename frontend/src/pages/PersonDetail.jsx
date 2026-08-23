@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import { beginPlay } from "../play.js";
 import { tip } from "../tip.js";
@@ -10,6 +10,7 @@ import FamousLookup from "../components/FamousLookup.jsx";
 import { PhotoTagRow } from "../components/PhotoTags.jsx";
 import { PHOTO_CHANGE_EVENT, showPhotoMenu } from "../photoMenu.js";
 import { patchCachedPerson } from "../peopleCache.js";
+import { clearPersonPos, personShotHash, readPersonPos, writePersonPos } from "../albumPos.js";
 
 const PERSON_CATEGORIES = [
   { id: "", label: "Not set" },
@@ -20,6 +21,7 @@ const PERSON_CATEGORIES = [
 
 export default function PersonDetail() {
   const { id } = useParams();
+  const loc = useLocation();
   const nav = useNavigate();
   const [person, setPerson] = useState(null);
   const [people, setPeople] = useState([]);
@@ -179,9 +181,35 @@ export default function PersonDetail() {
     return () => window.removeEventListener(PHOTO_CHANGE_EVENT, onChange);
   }, []);
 
+  const restoredFor = useRef("");
+  const shots = person?.shots?.length ? person.shots : person?.faces || [];
+
+  useEffect(() => {
+    if (!person?.id || !shots.length) return undefined;
+    const hash = String(loc.hash || window.location.hash || "").replace(/^#/, "");
+    const fromHash = hash.match(/^photo-tile-(\d+)$/);
+    const pos = readPersonPos();
+    let photoId = 0;
+    if (fromHash) photoId = Number(fromHash[1]);
+    else if (Number(pos?.personId) === Number(person.id)) photoId = Number(pos.photoId) || 0;
+    if (!photoId) return undefined;
+    const key = `${person.id}:${photoId}`;
+    if (restoredFor.current === key) return undefined;
+    const run = () => {
+      const tile = document.getElementById(personShotHash(photoId));
+      if (!tile) return false;
+      tile.scrollIntoView({ block: "center", inline: "nearest" });
+      restoredFor.current = key;
+      if (Number(pos?.personId) === Number(person.id)) clearPersonPos();
+      return true;
+    };
+    if (run()) return undefined;
+    const timer = window.setTimeout(run, 80);
+    return () => window.clearTimeout(timer);
+  }, [person?.id, shots.length, loc.hash]);
+
   if (!person) return <p className="hint">Loading…</p>;
 
-  const shots = person.shots?.length ? person.shots : person.faces || [];
   const cover = person.cover_url || shots[0]?.crop_url || shots[0]?.thumb_url;
 
   return (
@@ -217,6 +245,19 @@ export default function PersonDetail() {
             >
               Play person
             </button>
+            {shots.length ? (
+              <a
+                className="btn secondary"
+                href={`/api/people/${person.id}/photos.zip`}
+                {...tip("Save a zip of every photo this person is named in. Album files stay where they are.")}
+              >
+                Download photos
+              </a>
+            ) : (
+              <button type="button" className="secondary" disabled>
+                Download photos
+              </button>
+            )}
             <ViewSwitch photoId={shots[0]?.photo_id} personId={person.id} />
           </div>
         </div>
@@ -352,7 +393,7 @@ export default function PersonDetail() {
       </p>
       <div className="timeline">
         {shots.map((f) => (
-          <div key={f.id} className="timeline-shot">
+          <div key={f.id} className="timeline-shot" id={personShotHash(f.photo_id)}>
             <div
               className="timeline-shot-pic"
               onContextMenu={(event) =>
@@ -370,7 +411,8 @@ export default function PersonDetail() {
             >
             <Link
               to={`/photos/${f.photo_id}?person=${person.id}`}
-              state={{ from: `/people/${person.id}` }}
+              state={{ from: `/people/${person.id}#${personShotHash(f.photo_id)}` }}
+              onClick={() => writePersonPos({ personId: person.id, photoId: Number(f.photo_id) })}
             >
               <img
                 src={f.thumb_url || `/api/photos/${f.photo_id}/thumb`}

@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { FULLSCREEN_LABELS_EVENT, NAMETAG_EVENT, readFullscreenLabels, readNametag } from "../nametag.js";
+import {
+  FULLSCREEN_LABELS_EVENT,
+  LABEL_LAYOUT_EVENT,
+  NAMETAG_EVENT,
+  readFullscreenLabels,
+  readLabelLayout,
+  readNametag,
+} from "../nametag.js";
 import { PHOTO_CHANGE_EVENT, showPhotoMenu } from "../photoMenu.js";
 import { PhotoTagRow } from "./PhotoTags.jsx";
 
@@ -134,6 +141,20 @@ function useNametagPlacement() {
     };
   }, []);
   return place;
+}
+
+function useLabelLayout() {
+  const [layout, setLayout] = useState(() => readLabelLayout());
+  useEffect(() => {
+    const sync = () => setLayout(readLabelLayout());
+    window.addEventListener(LABEL_LAYOUT_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(LABEL_LAYOUT_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+  return layout;
 }
 
 function faceBoxStyle(face, w, h) {
@@ -368,6 +389,17 @@ function headHalo(faceRect) {
   };
 }
 
+function eyeRect(faceRect) {
+  const fw = Math.max(2, faceRect.x2 - faceRect.x1);
+  const fh = Math.max(2, faceRect.y2 - faceRect.y1);
+  return {
+    x1: faceRect.x1 - fw * 0.12,
+    y1: faceRect.y1 - fh * 0.06,
+    x2: faceRect.x2 + fw * 0.12,
+    y2: faceRect.y1 + fh * 0.72,
+  };
+}
+
 function personBlob(faceRect, bodyRect) {
   const halo = headHalo(faceRect);
   return {
@@ -389,7 +421,11 @@ function groupBounds(faceRects, bodyRects) {
   };
 }
 
-function scoreTag(rect, tagObstacles, faceRects, bodyRects, ownFace, place, preferred, outward, blockedBelow, group = null, crowd = false) {
+function coversEyes(rect, faceRect, slack = 0.12) {
+  return overlapArea(rect, eyeRect(faceRect)) > slack;
+}
+
+function scoreTag(rect, tagObstacles, faceRects, bodyRects, ownFace, place, preferred, outward, blockedBelow, group = null, crowd = false, keepOffEyes = false) {
   const ac = centerOf(ownFace);
   const tc = { x: (rect.x1 + rect.x2) / 2, y: (rect.y1 + rect.y2) / 2 };
   let score = outOfBounds(rect) * (crowd ? 240 : 90);
@@ -406,6 +442,10 @@ function scoreTag(rect, tagObstacles, faceRects, bodyRects, ownFace, place, pref
     if (area) score += area * (own ? 90 : 320);
     const halo = overlapArea(rect, headHalo(face));
     if (halo) score += halo * (own ? (crowd ? 240 : 160) : crowd ? 420 : 280);
+    if (keepOffEyes) {
+      const eyes = overlapArea(rect, eyeRect(face));
+      if (eyes) score += eyes * (own ? 900 : 640);
+    }
   }
   for (let i = 0; i < bodyRects.length; i += 1) {
     const body = bodyRects[i];
@@ -432,7 +472,11 @@ function scoreTag(rect, tagObstacles, faceRects, bodyRects, ownFace, place, pref
   if (place === outward[1]) score -= 0.8;
   if (place === "above") score -= blockedBelow ? 3.6 : 0.5;
   if (place === "below" && blockedBelow) score += 28;
-  if (place === "on") score += 28;
+  if (place === "on") score += preferred === "on" ? 2 : 28;
+  if (keepOffEyes) {
+    if (place === "on") score += 90;
+    if (place === "above") score -= 22;
+  }
   return score;
 }
 
@@ -445,9 +489,12 @@ function pinOf(face, pins) {
   return { left, top };
 }
 
-function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = null) {
-  const crowd = faces.length >= 6;
+export function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = null, layoutId = "smart") {
+  const mode = ["smart", "rows", "halo", "numbers"].includes(layoutId) ? layoutId : "smart";
+  const crowd = faces.length >= 6 || mode === "halo" || mode === "rows";
   const compactUnnamed = faces.length >= 5;
+  const numbers = mode === "numbers";
+  const keepOffEyes = !numbers;
   const faceRects = faces.map((face) => tagFaceRect(face, w, h));
   const bodyRects = faceRects.map((rect) => bodyRect(rect));
   const rows = rowMeta(faceRects);
@@ -455,9 +502,9 @@ function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = nul
   const jobs = faces
     .map((face, index) => {
       const named = !isUnknownFace(face);
-      const compact = compactUnnamed && !named;
-      const full = named ? faceLabel(face, true) : unnamedName(face, faces);
       const n = faceMark(face, faces);
+      const compact = numbers || (compactUnnamed && !named);
+      const full = named ? faceLabel(face, true) : unnamedName(face, faces);
       const label = compact ? String(n || "") : named && crowd ? shortName(full, namedLabels) : full;
       const chars = String(label || "").length;
       const tw = compact
@@ -485,18 +532,30 @@ function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = nul
 
   function pickPlace(job, tagObstacles) {
     const row = rows.get(job.index);
-    const rowPref = crowd && row?.preferred ? row.preferred : preferredPlace;
+    const rowPref = numbers
+      ? "on"
+      : mode === "rows" && row?.preferred
+        ? row.preferred
+        : keepOffEyes
+          ? "above"
+          : preferredPlace;
     const cluster = clusterAround(job.index, faceRects);
     const blockedBelow = someoneInFront(job.faceRect, faceRects, bodyRects, job.index);
-    const outward = outwardPlaces(job.faceRect, cluster, rowPref, faceRects, blockedBelow);
+    const outward = outwardPlaces(job.faceRect, cluster, rowPref, faceRects, blockedBelow).filter(
+      (side) => !keepOffEyes || side !== "on",
+    );
+    if (keepOffEyes && !outward.includes("above")) outward.unshift("above");
     const faceSize = Math.max(job.faceRect.x2 - job.faceRect.x1, job.faceRect.y2 - job.faceRect.y1);
     const maxOff = Math.max(crowd ? 3.6 : 2.8, faceSize * (crowd ? 1.15 : 0.75));
     const stagger = crowd && row && row.size >= 3 && (rowPref === "above" || rowPref === "below") ? (row.rank % 2) * 2.8 : 0;
     let best = null;
     let bestScore = Infinity;
+    let bestSafe = null;
+    let bestSafeScore = Infinity;
     for (const side of outward) {
       for (const standoff of standOffs) {
         const extra = side === "above" || side === "below" ? stagger : 0;
+        if (keepOffEyes && side === "above" && standoff < 1.4) continue;
         if (standoff + extra > maxOff + 2.2) continue;
         for (const slide of slides) {
           const body = bodyRects[job.index];
@@ -523,25 +582,34 @@ function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = nul
             blockedBelow,
             group,
             crowd,
+            keepOffEyes,
           );
+          const next = { ...job, left, top, place: side, rect, score };
           if (score < bestScore) {
             bestScore = score;
-            best = { ...job, left, top, place: side, rect, score };
+            best = next;
+          }
+          if (!keepOffEyes || !coversEyes(rect, job.faceRect)) {
+            if (score < bestSafeScore) {
+              bestSafeScore = score;
+              bestSafe = next;
+            }
           }
         }
       }
     }
-    return best;
+    return bestSafe || best;
   }
 
   function clampAnchor(left, top, tw, th, place) {
     let l = left;
     let t = top;
+    const minY = keepOffEyes && place === "above" ? -1.2 : 1.3;
     for (let i = 0; i < 5; i += 1) {
       const rect = tagRect(l, t, tw, th, place);
       if (rect.x1 < 1.3) l += 1.3 - rect.x1;
       if (rect.x2 > 98.7) l -= rect.x2 - 98.7;
-      if (rect.y1 < 1.3) t += 1.3 - rect.y1;
+      if (rect.y1 < minY) t += minY - rect.y1;
       if (rect.y2 > 98.7) t -= rect.y2 - 98.7;
     }
     return { left: l, top: t };
@@ -564,10 +632,11 @@ function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = nul
       nearBot = true;
     }
     const xSlides = [0, -job.tw * 0.45, job.tw * 0.45, -job.tw * 0.95, job.tw * 0.95, -job.tw * 1.5, job.tw * 1.5];
-    const localOff = [0.5, 1.4, 2.6, 4.0, 5.6, 7.4];
+    const localOff = keepOffEyes ? [1.6, 2.6, 4.0, 5.6, 7.4, 9.2] : [0.5, 1.4, 2.6, 4.0, 5.6, 7.4];
     const localSlide = [0, -2.2, 2.2, -4.4, 4.4, -6.8, 6.8];
     const candidates = [];
-    for (const side of ["above", "below", "left", "right"]) {
+    const localSides = keepOffEyes ? ["above"] : ["above", "below", "left", "right"];
+    for (const side of localSides) {
       for (const off of localOff) {
         for (const slide of localSlide) {
           const anchor = anchorFor(job.faceRect, side, off);
@@ -579,6 +648,15 @@ function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = nul
         }
       }
     }
+    if (keepOffEyes) {
+      const hair = job.faceRect.y1;
+      const hairOff = [1.8, 2.8, 4.0, 5.6, 7.4, 9.4];
+      for (const off of hairOff) {
+        for (const dx of xSlides) {
+          candidates.push({ place: "above", left: fx + dx, top: hair - off });
+        }
+      }
+    }
     const bandX = (y, place) => {
       for (const dx of xSlides) candidates.push({ place, left: fx + dx, top: y });
     };
@@ -586,13 +664,18 @@ function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = nul
       bandX(topY, "above");
       bandX(Math.max(2.6, topY - 3.2), "above");
     }
-    if (nearBot) {
+    if (nearBot && !keepOffEyes) {
       bandX(botY, "below");
       bandX(Math.min(96.8, botY + 3.6), "below");
     }
+    if (keepOffEyes && nearBot) {
+      bandX(Math.max(2.6, job.faceRect.y1 - Math.max(2.4, job.th + 1.2)), "above");
+    }
     const rightX = Math.min(99.1 - job.tw / 2, group.x2 + Math.max(2.2, job.tw * 0.5 + 1.4));
     const leftX = Math.max(job.tw / 2 + 0.9, group.x1 - Math.max(2.2, job.tw * 0.5 + 1.4));
-    const sideYs = [fy, fy - job.th * 1.4, fy + job.th * 1.4, fy - job.th * 2.8, fy + job.th * 2.8];
+    const sideYs = keepOffEyes
+      ? [job.faceRect.y1 - 0.8, job.faceRect.y1 - job.th * 0.9, job.faceRect.y1 - job.th * 1.8]
+      : [fy, fy - job.th * 1.4, fy + job.th * 1.4, fy - job.th * 2.8, fy + job.th * 2.8];
     if (rightX > group.x2 + 0.3) {
       for (const top of sideYs) candidates.push({ place: "right", left: rightX, top });
     }
@@ -601,6 +684,9 @@ function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = nul
     }
     let best = null;
     let bestScore = Infinity;
+    let bestSafe = null;
+    let bestSafeScore = Infinity;
+    const preferred = keepOffEyes ? "above" : nearBot ? "below" : nearTop ? "above" : "above";
     for (const cand of candidates) {
       const clamped = clampAnchor(cand.left, cand.top, job.tw, job.th, cand.place);
       const rect = tagRect(clamped.left, clamped.top, job.tw, job.th, cand.place);
@@ -611,20 +697,96 @@ function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = nul
         bodyRects,
         job.faceRect,
         cand.place,
-        nearBot ? "below" : nearTop ? "above" : cand.place,
+        preferred,
         [cand.place],
         false,
         group,
         true,
+        keepOffEyes,
       );
       score += Math.abs(clamped.left - fx) * 0.35;
-      score += Math.abs(clamped.top - fy) * 0.22;
+      if (keepOffEyes) {
+        score += Math.abs(clamped.top - job.faceRect.y1) * 0.1;
+        if (cand.place === "above") score -= 40;
+        const faceH = Math.max(2, job.faceRect.y2 - job.faceRect.y1);
+        if (clamped.top > job.faceRect.y1 + faceH * 0.12) score += 55;
+      } else {
+        score += Math.abs(clamped.top - fy) * 0.22;
+      }
+      const next = { ...job, left: clamped.left, top: clamped.top, place: cand.place, rect, score };
       if (score < bestScore) {
         bestScore = score;
-        best = { ...job, left: clamped.left, top: clamped.top, place: cand.place, rect, score };
+        best = next;
+      }
+      if (!keepOffEyes || !coversEyes(rect, job.faceRect)) {
+        if (score < bestSafeScore) {
+          bestSafeScore = score;
+          bestSafe = next;
+        }
       }
     }
-    return best;
+    return bestSafe || best;
+  }
+
+  function pickHaloSlot(job, tagObstacles) {
+    const fx = (job.faceRect.x1 + job.faceRect.x2) / 2;
+    const fy = (job.faceRect.y1 + job.faceRect.y2) / 2;
+    const gy = (group.y1 + group.y2) / 2;
+    const sky = Math.max(2.8, group.y1 - Math.max(3.2, job.th + 1.4));
+    const floor = Math.min(96.8, group.y2 + Math.max(3.6, job.th + 1.8));
+    const leftX = Math.max(job.tw / 2 + 1, group.x1 - Math.max(2.4, job.tw * 0.55 + 1.6));
+    const rightX = Math.min(99 - job.tw / 2, group.x2 + Math.max(2.4, job.tw * 0.55 + 1.6));
+    const xSlides = [0, -job.tw * 0.5, job.tw * 0.5, -job.tw, job.tw, -job.tw * 1.45, job.tw * 1.45];
+    const candidates = [];
+    const preferTop = fy <= gy + 1;
+    for (const dx of xSlides) {
+      candidates.push({ place: "above", left: fx + dx, top: sky });
+      candidates.push({ place: "below", left: fx + dx, top: floor });
+    }
+    const sideYs = [fy, fy - job.th * 1.5, fy + job.th * 1.5, fy - job.th * 3, fy + job.th * 3];
+    for (const top of sideYs) {
+      candidates.push({ place: "left", left: leftX, top });
+      candidates.push({ place: "right", left: rightX, top });
+    }
+    let best = null;
+    let bestScore = Infinity;
+    let bestSafe = null;
+    let bestSafeScore = Infinity;
+    for (const cand of candidates) {
+      const clamped = clampAnchor(cand.left, cand.top, job.tw, job.th, cand.place);
+      const rect = tagRect(clamped.left, clamped.top, job.tw, job.th, cand.place);
+      let score = scoreTag(
+        rect,
+        tagObstacles,
+        faceRects,
+        bodyRects,
+        job.faceRect,
+        cand.place,
+        preferTop ? "above" : "below",
+        [cand.place],
+        false,
+        group,
+        true,
+        keepOffEyes,
+      );
+      const inner = { x1: group.x1 + 2, y1: group.y1 + 3, x2: group.x2 - 2, y2: group.y2 - 2.4 };
+      score += overlapArea(rect, inner) * 380;
+      if (preferTop && cand.place === "above") score -= 18;
+      if (!preferTop && cand.place === "below") score -= 18;
+      score += Math.abs(clamped.left - fx) * 0.22;
+      const next = { ...job, left: clamped.left, top: clamped.top, place: cand.place, rect, score };
+      if (score < bestScore) {
+        bestScore = score;
+        best = next;
+      }
+      if (!keepOffEyes || !coversEyes(rect, job.faceRect)) {
+        if (score < bestSafeScore) {
+          bestSafeScore = score;
+          bestSafe = next;
+        }
+      }
+    }
+    return bestSafe || best;
   }
 
   const placed = [];
@@ -633,12 +795,23 @@ function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = nul
     const pin = pinOf(job.face, pins);
     if (!pin) continue;
     const rect = tagRect(pin.left, pin.top, job.tw, job.th, "manual");
+    if (keepOffEyes) {
+      const fh = Math.max(2, job.faceRect.y2 - job.faceRect.y1);
+      const hit = {
+        x1: job.faceRect.x1 - Math.max(job.tw, 8) * 0.4,
+        y1: job.faceRect.y1 - job.th * 0.15,
+        x2: job.faceRect.x2 + Math.max(job.tw, 8) * 0.4,
+        y2: job.faceRect.y1 + fh * 0.78,
+      };
+      if (coversEyes(rect, job.faceRect) || overlapArea(rect, hit) > 0.12) continue;
+    }
     placed.push({ ...job, left: pin.left, top: pin.top, place: "manual", rect });
     pinnedIds.add(job.face.id);
   }
   const nRows = jobs[0] ? rows.get(jobs[0].index)?.rows || 1 : 1;
   const freeJobs = jobs.filter((job) => !pinnedIds.has(job.face.id));
-  const usePerimeter = crowd;
+  const usePerimeter = mode === "smart" && crowd;
+  const useHalo = mode === "halo";
   const minFaceY = Math.min(...faceRects.map((r) => r.y1));
   const maxFaceY = Math.max(...faceRects.map((r) => r.y2));
   const medH =
@@ -647,10 +820,18 @@ function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = nul
   const botY = Math.min(94.8, Math.max(maxFaceY + Math.max(8, medH * 1.35), group.y2 + 4.2));
 
   function placeCrowdJob(job, obstacles) {
+    if (useHalo) return pickHaloSlot(job, obstacles) || pickPlace(job, obstacles);
     return pickCrowdSlot(job, obstacles) || pickPlace(job, obstacles);
   }
 
-  if (usePerimeter) {
+  if (numbers) {
+    freeJobs.forEach((job) => {
+      const anchor = anchorFor(job.faceRect, "on", 0);
+      const clamped = clampAnchor(anchor.left, anchor.top, job.tw, job.th, "on");
+      const rect = tagRect(clamped.left, clamped.top, job.tw, job.th, "on");
+      placed.push({ ...job, left: clamped.left, top: clamped.top, place: "on", rect });
+    });
+  } else if (usePerimeter || useHalo) {
     const ordered = [...freeJobs].sort((a, b) => {
       const ac = centerOf(a.faceRect);
       const bc = centerOf(b.faceRect);
@@ -673,8 +854,8 @@ function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = nul
   }
 
   const free = placed.filter((item) => item.place !== "manual");
-  for (let pass = 0; pass < (crowd ? 3 : 2); pass += 1) {
-    if (usePerimeter) {
+  if (!numbers) for (let pass = 0; pass < (crowd ? 3 : 2); pass += 1) {
+    if (usePerimeter || useHalo) {
       const ordered = [...free].sort((a, b) => {
         const ac = centerOf(a.faceRect);
         const bc = centerOf(b.faceRect);
@@ -704,7 +885,7 @@ function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = nul
     }
   }
 
-  if (usePerimeter) {
+  if (usePerimeter || useHalo) {
     for (let pass = 0; pass < 10; pass += 1) {
       let moved = false;
       for (let i = 0; i < placed.length; i += 1) {
@@ -718,6 +899,7 @@ function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = nul
           const clamped = clampAnchor(a.left, nextTop, a.tw, a.th, a.place);
           const rect = tagRect(clamped.left, clamped.top, a.tw, a.th, a.place);
           if (overlapArea(rect, headHalo(a.faceRect)) > 1.2) continue;
+          if (keepOffEyes && coversEyes(rect, a.faceRect)) continue;
           const hitsOtherFace = faceRects.some((face) => {
             const own = Math.abs(face.x1 - a.faceRect.x1) < 0.01 && Math.abs(face.y1 - a.faceRect.y1) < 0.01;
             return !own && overlapArea(rect, headHalo(face)) > 0.6;
@@ -781,8 +963,10 @@ export default function LabeledPhoto({
   selecting,
   selectingBusy,
   onRegionSelect,
+  priority,
 }) {
   const place = useNametagPlacement();
+  const labelLayout = useLabelLayout();
   const [labelsOn, setLabelsOn] = useState(() => readFullscreenLabels());
   const [rotation, setRotation] = useState(() => Number(photo.rotation) || 0);
   useEffect(() => {
@@ -827,6 +1011,7 @@ export default function LabeledPhoto({
   const overlay = overlayTags === undefined ? labelsOn : !!overlayTags;
   const [dragPin, setDragPin] = useState(null);
   const [localPins, setLocalPins] = useState({});
+  const [honorSavedPins, setHonorSavedPins] = useState(() => readLabelLayout() !== "smart");
   const drag = useRef(null);
   const skipClick = useRef(false);
   const pick = useRef(null);
@@ -835,22 +1020,34 @@ export default function LabeledPhoto({
   useEffect(() => {
     setLocalPins({});
     setDragPin(null);
+    setHonorSavedPins(readLabelLayout() !== "smart");
   }, [photo.id]);
+  useEffect(() => {
+    function onLayout() {
+      setLocalPins({});
+      setDragPin(null);
+      setHonorSavedPins(false);
+    }
+    window.addEventListener(LABEL_LAYOUT_EVENT, onLayout);
+    return () => window.removeEventListener(LABEL_LAYOUT_EVENT, onLayout);
+  }, []);
   const pins = useMemo(() => {
     const out = {};
-    for (const f of faces) {
-      if (f.tag_x == null || f.tag_y == null) continue;
-      const left = Number(f.tag_x);
-      const top = Number(f.tag_y);
-      if (Number.isFinite(left) && Number.isFinite(top)) out[f.id] = { left, top };
+    if (honorSavedPins) {
+      for (const f of faces) {
+        if (f.tag_x == null || f.tag_y == null) continue;
+        const left = Number(f.tag_x);
+        const top = Number(f.tag_y);
+        if (Number.isFinite(left) && Number.isFinite(top)) out[f.id] = { left, top };
+      }
     }
     Object.assign(out, localPins);
     if (dragPin) out[dragPin.id] = { left: dragPin.left, top: dragPin.top };
     return out;
-  }, [faces, localPins, dragPin]);
+  }, [faces, localPins, dragPin, honorSavedPins]);
   const tagGroups = useMemo(
-    () => (overlay ? layoutTags(faces, w, h, place, Boolean(showUnnamed || showHidden), pins) : []),
-    [overlay, faces, w, h, place, showUnnamed, showHidden, pins],
+    () => (overlay ? layoutTags(faces, w, h, place, Boolean(showUnnamed || showHidden), pins, labelLayout) : []),
+    [overlay, faces, w, h, place, showUnnamed, showHidden, pins, labelLayout],
   );
   const taggedIds = useMemo(() => {
     const ids = new Set();
@@ -1036,6 +1233,8 @@ export default function LabeledPhoto({
       <img
         src={src}
         alt={photo.filename || ""}
+        fetchPriority={priority ? "high" : undefined}
+        decoding="async"
         style={maxHeight && !fit ? { maxHeight } : undefined}
         onError={(e) => {
           if (fallbackSrc && e.currentTarget.src !== fallbackSrc) e.currentTarget.src = fallbackSrc;

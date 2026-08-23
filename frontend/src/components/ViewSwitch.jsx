@@ -1,5 +1,30 @@
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { requestFolderIndex } from "../folders.js";
 import { tip } from "../tip.js";
+
+export function FolderViewLink({ children, ...rest }) {
+  const loc = useLocation();
+  const nav = useNavigate();
+  const search = new URLSearchParams(loc.search);
+  const onFolderPage =
+    loc.pathname === "/photos" && search.get("by") !== "person" && search.get("by") !== "tag";
+  return (
+    <NavLink
+      to="/photos"
+      {...rest}
+      onClick={(event) => {
+        rest.onClick?.(event);
+        if (event.defaultPrevented) return;
+        if (!onFolderPage) return;
+        event.preventDefault();
+        if (loc.hash || loc.search) nav("/photos", { replace: true });
+        requestFolderIndex();
+      }}
+    >
+      {children}
+    </NavLink>
+  );
+}
 
 function photoHref(photoId, personId) {
   if (photoId) {
@@ -34,13 +59,12 @@ export default function ViewSwitch({ photoId, personId }) {
         >
           Faces in DB View
         </NavLink>
-        <NavLink
-          to="/photos"
+        <FolderViewLink
           className={() => (folderActive ? "active" : undefined)}
-          {...tip("Full photos grouped by album folder.")}
+          {...tip("Full photos grouped by album folder. Click again to see every folder.")}
         >
           Folder View
-        </NavLink>
+        </FolderViewLink>
         <NavLink
           to={photoHref(photoId, personId)}
           className={() => (personActive ? "active" : undefined)}

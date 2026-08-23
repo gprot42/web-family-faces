@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { tip } from "../tip.js";
 
 export const PERSON_DRAG_TYPE = "application/x-photosort-person";
@@ -42,11 +42,18 @@ export default function PersonPicker({
   showCategoryFilter,
   categoryFilter,
   onCategoryFilter,
+  hideable = false,
+  hiddenIds = [],
+  showHidden = false,
+  onHide,
+  onUnhide,
+  onToggleHidden,
 }) {
   const [q, setQ] = useState("");
   const [localCats, setLocalCats] = useState([]);
   const selected = categoryFilter || localCats;
   const setSelected = onCategoryFilter || setLocalCats;
+  const hidden = useMemo(() => new Set((hiddenIds || []).map(Number)), [hiddenIds]);
   const list = useMemo(
     () => (people || []).filter((p) => !p.unknown_name),
     [people],
@@ -55,14 +62,19 @@ export default function PersonPicker({
     if (!selected.length) return list;
     return list.filter((p) => selected.includes(p.category || ""));
   }, [list, selected]);
+  const visible = useMemo(() => {
+    if (!hideable || showHidden) return byCategory;
+    return byCategory.filter((p) => !hidden.has(Number(p.id)));
+  }, [byCategory, hideable, showHidden, hidden]);
   const matches = useMemo(() => {
     const parts = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    if (!parts.length) return byCategory;
-    return byCategory.filter((p) => {
+    if (!parts.length) return visible;
+    return visible.filter((p) => {
       const name = (p.name || "").toLowerCase();
       return parts.every((part) => name.includes(part));
     });
-  }, [byCategory, q]);
+  }, [visible, q]);
+  const hiddenCount = hideable ? byCategory.filter((p) => hidden.has(Number(p.id))).length : 0;
 
   function toggleCat(id) {
     setSelected((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
@@ -106,40 +118,90 @@ export default function PersonPicker({
       ) : null}
       <div className="person-tiles-scroll">
       <div className="person-tiles" role="list">
-        {matches.map((p) => (
-          <button
-            key={p.id}
-            type="button"
-            className="person-tile"
-            role="listitem"
-            disabled={disabled}
-            aria-label={p.name}
-            draggable={!disabled}
-            onClick={() => onPick(p)}
-            onDragStart={(e) => {
-              const payload = JSON.stringify({ id: p.id, name: p.name });
-              e.dataTransfer.setData(PERSON_DRAG_TYPE, payload);
-              e.dataTransfer.setData("application/json", payload);
-              e.dataTransfer.setData("text/plain", `person:${p.id}:${p.name}`);
-              e.dataTransfer.effectAllowed = "copy";
-              const img = e.currentTarget.querySelector("img");
-              if (img) e.dataTransfer.setDragImage(img, 24, 24);
-            }}
-            {...tip(hint || `This group is ${p.name}. Drag onto Name this person, or click.`)}
-          >
-            {p.cover_url ? (
-              <img src={p.cover_url} alt="" decoding="async" />
-            ) : (
-              <span className="person-picker-gap" />
-            )}
-            <span className="person-tile-name">{p.name}</span>
-          </button>
-        ))}
+        {matches.map((p) => {
+          const isHidden = hidden.has(Number(p.id));
+          const tile = (
+            <button
+              type="button"
+              className="person-tile"
+              role={hideable ? undefined : "listitem"}
+              disabled={disabled}
+              aria-label={p.name}
+              draggable={!disabled}
+              onClick={() => onPick(p)}
+              onDragStart={(e) => {
+                const payload = JSON.stringify({ id: p.id, name: p.name });
+                e.dataTransfer.setData(PERSON_DRAG_TYPE, payload);
+                e.dataTransfer.setData("application/json", payload);
+                e.dataTransfer.setData("text/plain", `person:${p.id}:${p.name}`);
+                e.dataTransfer.effectAllowed = "copy";
+                const img = e.currentTarget.querySelector("img");
+                if (img) e.dataTransfer.setDragImage(img, 24, 24);
+              }}
+              {...tip(hint || `This group is ${p.name}. Drag onto Name this person, or click.`)}
+            >
+              {p.cover_url ? (
+                <img src={p.cover_url} alt="" decoding="async" />
+              ) : (
+                <span className="person-picker-gap" />
+              )}
+              <span className="person-tile-name">{p.name}</span>
+            </button>
+          );
+          if (!hideable) {
+            return <Fragment key={p.id}>{tile}</Fragment>;
+          }
+          return (
+            <div
+              key={p.id}
+              className={`person-tile-wrap${isHidden ? " is-hidden" : ""}`}
+              role="listitem"
+            >
+              {tile}
+              <button
+                type="button"
+                className="person-tile-x"
+                disabled={disabled}
+                aria-label={isHidden ? `Show ${p.name} in tagging` : `Hide ${p.name} from tagging`}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (isHidden) onUnhide?.(p);
+                  else onHide?.(p);
+                }}
+                {...tip(
+                  isHidden
+                    ? `Show ${p.name} in this tagging list again. They stay in Faces in DB View.`
+                    : `Hide ${p.name} from this tagging list. They stay in Faces in DB View.`,
+                )}
+              >
+                {isHidden ? "Show" : "×"}
+              </button>
+            </div>
+          );
+        })}
       </div>
       </div>
+      {hideable && hiddenCount ? (
+        <button
+          type="button"
+          className="secondary person-picker-hidden"
+          onClick={() => onToggleHidden?.()}
+          {...tip("People you hid with ×. They are still in Faces in DB View.")}
+        >
+          {showHidden
+            ? "Hide them again"
+            : hiddenCount === 1
+              ? "1 hidden from tagging"
+              : `${hiddenCount} hidden from tagging`}
+        </button>
+      ) : null}
       {q.trim() && matches.length === 0 ? <p className="hint">No name matches “{q.trim()}”.</p> : null}
       {!q.trim() && selected.length && matches.length === 0 ? (
         <p className="hint">No one marked {selected.map((id) => CATEGORIES.find((c) => c.id === id)?.label).filter(Boolean).join(" or ")} yet.</p>
+      ) : null}
+      {hideable && !showHidden && hiddenCount && !q.trim() && !selected.length && matches.length === 0 ? (
+        <p className="hint">Everyone here is hidden from tagging. Show them below.</p>
       ) : null}
     </div>
   );

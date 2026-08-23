@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from . import thread_limits  # noqa: F401
+
 import time
 from pathlib import Path
 
@@ -20,44 +22,76 @@ from .util import embedding_to_bytes, now_iso
 
 _analyzer = None
 _analyzer_error: str | None = None
-_scene_stats_cache: dict[int, tuple[float, float]] = {}
+_scene_stats_cache: dict[int, tuple[float, float, float, float, float]] = {}
 _SCENE_STATS_CACHE_MAX = 256
 
 
 def analyzer_status() -> dict:
+    from . import adaface as adaface_mod
+
     return {
         "ready": _analyzer is not None,
         "error": _analyzer_error,
         "model": "insightface buffalo_l",
+        "fallback": "adaface ir18",
+        "fallback_status": adaface_mod.status(),
     }
 
 
-def _cap_onnx_threads() -> None:
-    """buffalo_l loads several ONNX models; each defaults to a core-count pool."""
+def _cap_session_options(so) -> None:
     try:
+        so.intra_op_num_threads = 1
+        so.inter_op_num_threads = 1
         import onnxruntime as ort
-        from insightface.model_zoo.model_zoo import ModelRouter
-    except Exception:
-        return
-    if getattr(ModelRouter.get_model, "_photosort_capped", False):
-        return
-    try:
-        opts = ort.SessionOptions()
-        opts.intra_op_num_threads = 2
-        opts.inter_op_num_threads = 1
+
         sequential = getattr(ort, "ExecutionMode", None)
         if sequential is not None:
-            opts.execution_mode = sequential.ORT_SEQUENTIAL
+            so.execution_mode = sequential.ORT_SEQUENTIAL
+    except Exception:
+        pass
+
+
+def _cap_onnx_threads() -> None:
+    """buffalo_l loads several ONNX models; each defaults to a core-count pool.
+
+    Keep InferenceSession as a class. Replacing it with a function breaks
+    InsightFace (`class PickableInferenceSession(onnxruntime.InferenceSession)`).
+    """
+    try:
+        import onnxruntime as ort
     except Exception:
         return
-    orig = ModelRouter.get_model
+    if getattr(ort.InferenceSession, "_photosort_capped", False):
+        return
+    if not isinstance(ort.InferenceSession, type):
+        return
+    orig_init = ort.InferenceSession.__init__
 
-    def capped(self, **kwargs):
-        kwargs.setdefault("sess_options", opts)
-        return orig(self, **kwargs)
+    def capped_init(self, *args, **kwargs):
+        so = kwargs.get("sess_options")
+        if so is None:
+            so = ort.SessionOptions()
+            kwargs["sess_options"] = so
+        _cap_session_options(so)
+        return orig_init(self, *args, **kwargs)
 
-    capped._photosort_capped = True
-    ModelRouter.get_model = capped
+    ort.InferenceSession.__init__ = capped_init
+    ort.InferenceSession._photosort_capped = True
+    try:
+        from insightface.model_zoo.model_zoo import ModelRouter
+
+        get_model = ModelRouter.get_model
+
+        def capped_get(self, **kwargs):
+            if kwargs.get("sess_options") is None:
+                so = ort.SessionOptions()
+                _cap_session_options(so)
+                kwargs["sess_options"] = so
+            return get_model(self, **kwargs)
+
+        ModelRouter.get_model = capped_get
+    except Exception:
+        pass
 
 
 def get_analyzer():
@@ -73,7 +107,7 @@ def get_analyzer():
             name="buffalo_l",
             root=str(MODEL_DIR),
             providers=["CPUExecutionProvider"],
-            provider_options=[{"intra_op_num_threads": 2, "inter_op_num_threads": 1}],
+            provider_options=[{"intra_op_num_threads": 1, "inter_op_num_threads": 1}],
         )
         app.prepare(ctx_id=0, det_size=(640, 640))
         _analyzer = app
@@ -282,6 +316,26 @@ def _orange_gold_mask(arr: np.ndarray, *, sat_min: float = 0.28) -> np.ndarray:
     )
 
 
+def _sand_mask(arr: np.ndarray) -> np.ndarray:
+    """Beige sand: modest chroma, R slightly above G above B. Not pink skin or gold leaf."""
+    r = arr[:, :, 0].astype(np.float32)
+    g = arr[:, :, 1].astype(np.float32)
+    b = arr[:, :, 2].astype(np.float32)
+    chroma = np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)
+    hsv = np.asarray(Image.fromarray(arr.astype(np.uint8)).convert("HSV"), dtype=np.float32)
+    sat = hsv[:, :, 1] / 255.0
+    return (
+        (chroma >= 10)
+        & (chroma <= 48)
+        & (r > g)
+        & (r > b + 6)
+        & (g >= b)
+        & ((r - g) <= 22)
+        & (sat >= 0.12)
+        & (sat <= 0.38)
+    )
+
+
 def _edge_strength(arr: np.ndarray) -> float:
     r = arr[:, :, 0].astype(np.float32)
     g = arr[:, :, 1].astype(np.float32)
@@ -292,8 +346,10 @@ def _edge_strength(arr: np.ndarray) -> float:
     return float(np.abs(gray[1:, :] - gray[:-1, :]).mean())
 
 
-def _scene_stats(photo_path: Path | str | None, photo_id: int | None) -> tuple[float, float] | None:
-    """Gold-metal fraction and gray-stone fraction of the surrounding photo."""
+def _scene_stats(
+    photo_path: Path | str | None, photo_id: int | None
+) -> tuple[float, float, float, float, float] | None:
+    """Gold, gray, colour, beige-sand, and cool-hue fractions of the surrounding photo."""
     if photo_id is not None and int(photo_id) in _scene_stats_cache:
         return _scene_stats_cache[int(photo_id)]
     img = None
@@ -322,7 +378,12 @@ def _scene_stats(photo_path: Path | str | None, photo_id: int | None) -> tuple[f
     gold_n = float(_orange_gold_mask(arr, sat_min=0.35).mean())
     gray_n = float((chroma < 20).mean())
     color_n = float((chroma >= 12).mean())
-    stats = (gold_n, gray_n, color_n)
+    sand_n = float(_sand_mask(arr).mean())
+    hsv = np.asarray(Image.fromarray(arr.astype(np.uint8)).convert("HSV"), dtype=np.float32)
+    hue = hsv[:, :, 0] * (360.0 / 255.0)
+    sat = hsv[:, :, 1] / 255.0
+    cool_n = float(((hue >= 80) & (hue <= 260) & (chroma >= 12) & (sat >= 0.12)).mean())
+    stats = (gold_n, gray_n, color_n, sand_n, cool_n)
     if photo_id is not None:
         if len(_scene_stats_cache) >= _SCENE_STATS_CACHE_MAX:
             _scene_stats_cache.clear()
@@ -351,14 +412,16 @@ def looks_like_statue(
     photo_path: Path | str | None = None,
     photo_id: int | None = None,
 ) -> bool:
-    """Bronze, gold, and stone statues: metal/gray color, little real skin.
+    """Bronze, gold, stone, and sand statues: metal/gray/beige, little real skin.
 
     Gold Buddhas read as "skin" if we only test R>G>B. Treat yellow metal
     separately. Orange gold-leaf (temple statues) needs a gold object in a
     mixed-colour photo so tungsten portraits are not hidden. Black-and-white
     family prints are skipped unless the surrounding photo is clearly colour
     (gray stone in a colour shot). A bronze head tight-cropped against blue
-    sky is mostly colour, so gray-share alone is not enough.
+    sky is mostly colour, so gray-share alone is not enough. Sand sculptures
+    are beige like skin, so they need a mixed-colour scene (sky/plants) and
+    must not look like a sepia print of a real person.
     """
     try:
         img = Image.open(crop_path).convert("RGB")
@@ -494,6 +557,27 @@ def looks_like_statue(
                 scene_gold, scene_gray = stats[0], stats[1]
                 if 0.10 <= scene_gold <= 0.22 and scene_gray >= 0.40:
                     return True
+    # Sand sculpture / sand art: the crop is grainy beige, not pink skin.
+    # Require a mixed-colour scene (sky, plants) so sepia family prints and
+    # tungsten portraits stay named. Crop-only calls stay False.
+    sand = (
+        (chroma >= 10)
+        & (chroma <= 48)
+        & (r > g)
+        & (r > b + 6)
+        & (g >= b)
+        & ((r - g) <= 22)
+        & (sat >= 0.12)
+        & (sat <= 0.38)
+    )
+    pink = (r > g + 24) & (r > b + 20)
+    chroma_s = float(chroma.std())
+    if float(sand.mean()) >= 0.62 and float(pink.mean()) < 0.12 and 4.0 <= chroma_s <= 12.0:
+        stats = _scene_stats(photo_path, photo_id)
+        if stats is not None:
+            scene_sand, scene_cool = stats[3], stats[4]
+            if scene_cool >= 0.22 and scene_sand >= 0.18:
+                return True
     return False
 
 
@@ -706,7 +790,7 @@ def scan_photo(conn, photo_row, analyzer) -> int:
     return count
 
 
-def scan_pending(job_id: int, limit: int | None = None) -> dict:
+def scan_pending(job_id: int, limit: int | None = None, since: str | None = None) -> dict:
     conn = connect()
     init_db(conn)
     photos = []
@@ -714,12 +798,16 @@ def scan_pending(job_id: int, limit: int | None = None) -> dict:
     faces_found = 0
     scan_err: Exception | None = None
     try:
-        sql = "SELECT * FROM photos WHERE scanned_at IS NULL AND IFNULL(hidden, 0) = 0 ORDER BY id"
-        params: tuple = ()
+        sql = "SELECT * FROM photos WHERE scanned_at IS NULL AND IFNULL(hidden, 0) = 0"
+        params: list = []
+        if since:
+            sql += " AND created_at >= ?"
+            params.append(since)
+        sql += " ORDER BY id"
         if limit:
             sql += " LIMIT ?"
-            params = (limit,)
-        photos = conn.execute(sql, params).fetchall()
+            params.append(limit)
+        photos = conn.execute(sql, tuple(params)).fetchall()
         if not photos:
             update_job(
                 job_id,
@@ -755,10 +843,10 @@ def scan_pending(job_id: int, limit: int | None = None) -> dict:
                 continue
             found = scan_photo(conn, photo, analyzer)
             faces_found += found
-            if i % 250 == 0:
+            if i % 2000 == 0:
                 from . import cluster as cluster_mod
 
-                cluster_mod.run_clustering(sweep=False)
+                cluster_mod.try_run_clustering(only_unclustered=True)
             now = time.monotonic()
             if now - last_report >= 0.4 or i == len(photos):
                 last_report = now
@@ -840,6 +928,13 @@ def add_manual_face(photo_id: int, x1: float, y1: float, x2: float, y2: float) -
             if hit:
                 return _reuse_face(conn, hit)
             quality = _quality(det_score, det_box)
+            user_min = min(box[2] - box[0], box[3] - box[1])
+            det_min = min(det_box[2] - det_box[0], det_box[3] - det_box[1])
+            # Add a face is the user pointing at someone. A weak/tiny detector
+            # hit (sleeping baby, profile) must not replace their box.
+            if quality != "ok" or det_min < max(MIN_FACE_PX, user_min * 0.4):
+                det_box, det_score, blob, age, sex = box, 0.99, None, None, None
+                quality = "ok" if user_min >= MIN_FACE_PX else "unidentifiable"
         else:
             det_box, det_score, blob, age, sex = box, 0.99, None, None, None
             quality = "ok" if min(det_box[2] - det_box[0], det_box[3] - det_box[1]) >= MIN_FACE_PX else "unidentifiable"
@@ -936,8 +1031,9 @@ def _detect_in_user_box(
 ):
     try:
         analyzer = get_analyzer()
-    except Exception as exc:
-        raise ValueError("The face model is not ready yet. Wait a few seconds and try again.") from exc
+    except Exception:
+        # User already drew the box. Keep that crop even if buffalo_l is still loading.
+        return None
     h, w = image.shape[:2]
     scale_x = sx if sx else 1.0
     scale_y = sy if sy else 1.0

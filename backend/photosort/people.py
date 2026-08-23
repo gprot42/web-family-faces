@@ -10,13 +10,13 @@ from typing import Any
 
 import numpy as np
 
-from .config import CHILD_AGE, CLUSTER_PREVIEW_LIMIT, CROP_DIR, ELDER_AGE, TEEN_AGE
+from .config import CHILD_AGE, CLUSTER_PREVIEW_LIMIT, CROP_DIR, CROP_PAD, ELDER_AGE, TEEN_AGE
 from .db import connect, init_db
 from .originals import drop_preview_rows, preview_path_sql
 from .util import bytes_to_embedding, l2_normalize, now_iso
 
-_COVER_CANDIDATES = 20
-_COVER_RECENT = 8
+_COVER_CANDIDATES = 64
+_COVER_RECENT = 16
 _COVER_LARGE = 8
 
 
@@ -34,6 +34,43 @@ def age_band(age: float | None) -> str:
 
 UNKNOWN_NAME = "Unknown name of person"
 PERSON_CATEGORIES = ("family", "work", "other")
+
+
+def _named_visible_sql(face_alias: str = "f", photo_alias: str = "ph") -> str:
+    """Faces named as this person on a real album photo: include blurry manual tags."""
+    return (
+        f"{face_alias}.person_id IS NOT NULL"
+        f" AND IFNULL({face_alias}.assigned_how, '') != 'junk'"
+        f" AND IFNULL({photo_alias}.hidden, 0) = 0"
+        f" AND {preview_path_sql(f'{photo_alias}.path')}"
+    )
+
+
+def _named_people_stats(conn) -> dict[int, dict[str, Any]]:
+    """Photo counts match the person page: named faces, one shot per picture."""
+    rows = conn.execute(
+        f"""
+        SELECT f.person_id, f.id, f.photo_id, f.det_score, f.age_est, ph.path, ph.taken_at, ph.sha256
+        FROM faces f
+        JOIN photos ph ON ph.id = f.photo_id
+        WHERE {_named_visible_sql()}
+        """
+    ).fetchall()
+    by_person: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_person.setdefault(int(row["person_id"]), []).append(dict(row))
+    out: dict[int, dict[str, Any]] = {}
+    for pid, faces in by_person.items():
+        taken = [f["taken_at"] for f in faces if f.get("taken_at")]
+        ages = [float(f["age_est"]) for f in faces if f.get("age_est") is not None]
+        out[pid] = {
+            "face_count": len(display_faces(faces)),
+            "first_seen": min(taken) if taken else None,
+            "last_seen": max(taken) if taken else None,
+            "age_min": min(ages) if ages else None,
+            "age_max": max(ages) if ages else None,
+        }
+    return out
 
 
 _PROTECTED_HOW = frozenset({"manual", "unknown_name", "merge"})
@@ -70,6 +107,18 @@ def _person_has_distinct_box(claimed: dict[int, list[Any]], person_id: int, box:
     return not any(_box_iou(box, other) >= _SAME_FACE_IOU for other in existing)
 
 
+def _cover_crop_box(face: Any) -> tuple[float, float, float, float]:
+    """Padded square used as the Faces in DB View cover, not just the detector box."""
+    x1, y1 = float(face["x1"] or 0), float(face["y1"] or 0)
+    x2, y2 = float(face["x2"] or 0), float(face["y2"] or 0)
+    bw = max(1.0, x2 - x1)
+    bh = max(1.0, y2 - y1)
+    cx = (x1 + x2) / 2.0
+    cy = (y1 + y2) / 2.0
+    half = max(bw, bh) * (1.0 + 2.0 * CROP_PAD) / 2.0
+    return cx - half, cy - half, cx + half, cy + half
+
+
 def _occlusion(face: Any, others: list[Any] | None, *, crowd: bool = True) -> float:
     """0 = clear view, 1 = another face covers this one."""
     others = others or []
@@ -79,8 +128,23 @@ def _occlusion(face: Any, others: list[Any] | None, *, crowd: bool = True) -> fl
     fcy = (fy1 + fy2) / 2.0
     penalty = 0.0
     fid = int(face["id"])
-    for other in others:
+    try:
+        self_pid = int(face["person_id"]) if face["person_id"] is not None else None
+    except (KeyError, TypeError):
+        self_pid = None
+
+    def _other_is_self(other: Any) -> bool:
         if int(other["id"]) == fid:
+            return True
+        if self_pid is None:
+            return False
+        try:
+            return other["person_id"] is not None and int(other["person_id"]) == self_pid
+        except (KeyError, TypeError):
+            return False
+
+    for other in others:
+        if _other_is_self(other):
             continue
         inter = _box_inter(face, other)
         other_area = _face_area(other)
@@ -96,6 +160,41 @@ def _occlusion(face: Any, others: list[Any] | None, *, crowd: bool = True) -> fl
         # Someone standing in front: their head sits in the lower half of this crop.
         if fx1 < ocx < fx2 and ocy > fcy and float(other["y1"] or 0) < fy2:
             penalty = max(penalty, min(1.0, 0.55 * other_area / area))
+    px1, py1, px2, py2 = _cover_crop_box(face)
+    pw = max(1.0, px2 - px1)
+    ph = max(1.0, py2 - py1)
+    for other in others:
+        if _other_is_self(other):
+            continue
+        ox1, oy1 = float(other["x1"] or 0), float(other["y1"] or 0)
+        ox2, oy2 = float(other["x2"] or 0), float(other["y2"] or 0)
+        oh = max(1.0, oy2 - oy1)
+        ow = max(1.0, ox2 - ox1)
+        # Detector boxes sit on the face, so hair and forehead sit above y1
+        # and still show in the padded cover crop.
+        oy1 -= 0.28 * oh
+        ox1 -= 0.20 * ow
+        ox2 += 0.20 * ow
+        ocx = (ox1 + ox2) / 2.0
+        ocy = (oy1 + oy2) / 2.0
+        ix1, iy1 = max(px1, ox1), max(py1, oy1)
+        ix2, iy2 = min(px2, ox2), min(py2, oy2)
+        inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+        if inter <= 0:
+            continue
+        crop_frac = inter / (pw * ph)
+        in_crop = px1 < ocx < px2 and py1 < ocy < py2
+        lower = ocy >= py1 + 0.42 * ph
+        if in_crop and lower:
+            penalty = max(penalty, 0.85)
+        elif in_crop:
+            penalty = max(penalty, 0.45)
+        elif lower and crop_frac >= 0.02:
+            penalty = max(penalty, min(1.0, 0.5 + 2.0 * crop_frac))
+        elif crop_frac >= 0.04:
+            # Neighbor whose centre sits just outside the pad still shows in the crop
+            # (group-shot shoulder / cap on the right of a portrait).
+            penalty = max(penalty, 0.45)
     extras = max(0, len(others) - 1)
     if crowd and extras:
         penalty = min(1.0, penalty + min(0.22, 0.03 * extras))
@@ -108,7 +207,7 @@ def _faces_on_photos(conn, photo_ids: list[int]) -> dict[int, list[Any]]:
     marks = ",".join("?" * len(photo_ids))
     rows = conn.execute(
         f"""
-        SELECT id, photo_id, x1, y1, x2, y2 FROM faces
+        SELECT id, photo_id, person_id, x1, y1, x2, y2 FROM faces
         WHERE photo_id IN ({marks})
           AND quality = 'ok'
           AND IFNULL(assigned_how, '') != 'junk'
@@ -121,16 +220,96 @@ def _faces_on_photos(conn, photo_ids: list[int]) -> dict[int, list[Any]]:
     return out
 
 
-_look_cache: dict[tuple[str, int], tuple[float, float, float]] = {}
+_look_cache: dict[tuple[str, int], tuple[float, float, float, float, float, float, float]] = {}
 
 
-def _crop_look_scores(face_id: int) -> tuple[float, float, float]:
-    """(color 0-1, lit 0-1, view 0-1) from one crop read. Missing crops stay neutral."""
+def _smile_from_small(arr: np.ndarray) -> float:
+    """1 = visible teeth/smile in the mouth band, 0 = closed mouth. 32x32 RGB."""
+    if arr.shape[0] < 24 or arr.shape[1] < 24:
+        return 0.0
+    band = arr[17:25, 6:26].astype(np.float32)
+    r, g, b = band[:, :, 0], band[:, :, 1], band[:, :, 2]
+    luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    chroma = np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)
+    teeth = (luma >= 160) & (chroma <= 48)
+    row_frac = teeth.mean(axis=1)
+    best_row = float(row_frac.max()) if row_frac.size else 0.0
+    mid_teeth = float(teeth[:, 4:16].mean()) if teeth.size else 0.0
+    width = 0.0
+    if bool(teeth.any()):
+        xs = np.where(teeth)[1]
+        width = (float(xs.max()) - float(xs.min()) + 1.0) / max(1, band.shape[1])
+    raw = 0.35 * best_row + 0.55 * mid_teeth + 0.10 * min(width, 0.7)
+    # Ignore faint teeth-from-a-squint; a real grin has a wide bright mouth band.
+    if best_row >= 0.28 and mid_teeth >= 0.08:
+        return min(1.0, raw)
+    return 0.0
+
+
+def _grown_from_small(arr: np.ndarray) -> float:
+    """1 = adult lower face (beard/shadow on the chin), 0 = child or a dark collar."""
+    if arr.shape[0] < 24 or arr.shape[1] < 24:
+        return 0.0
+    a = arr.astype(np.float32)
+    luma = 0.2126 * a[:, :, 0] + 0.7152 * a[:, :, 1] + 0.0722 * a[:, :, 2]
+    mid = float(luma[12:20, 10:22].mean())
+    chin = luma[22:29, 12:20]
+    lower = luma[22:31, :]
+    if chin.size == 0 or lower.size == 0:
+        return 0.0
+    chin_m = float(chin.mean())
+    chin_dark = float((chin < mid - 15).mean())
+    lower_dark = float((lower < mid - 15).mean())
+    if mid - chin_m >= 22 and 0.25 <= lower_dark <= 0.55 and chin_dark >= 0.45:
+        return 1.0
+    return 0.0
+
+
+def _front_from_small(arr: np.ndarray) -> float:
+    """1 = looking at the camera, 0 = profile or turned away."""
+    if arr.shape[0] < 24 or arr.shape[1] < 24:
+        return 0.45
+    luma = 0.2126 * arr[:, :, 0] + 0.7152 * arr[:, :, 1] + 0.0722 * arr[:, :, 2]
+    band = luma[7:15, :]
+    if band.shape[1] >= 29:
+        left_min = float(band[:, 3:14].min())
+        right_min = float(band[:, 18:29].min())
+        if abs(left_min - right_min) >= 80 and max(left_min, right_min) >= 120:
+            return 0.0
+    inner = luma[:, 8:24]
+    if inner.shape[1] < 16:
+        return 1.0
+    left = inner[:, :8]
+    right = np.fliplr(inner[:, 8:16])
+    diff = float(np.mean(np.abs(left.astype(np.float32) - right.astype(np.float32))))
+    if diff >= 58:
+        return 0.0
+    if diff >= 48:
+        return 0.4
+    return 1.0
+
+
+def _sharp_from_gray(gray: np.ndarray) -> float:
+    """1 = in-focus crop, 0 = smear. Laplacian variance on a 64x64 luma grid."""
+    if gray.size < 16:
+        return 0.0
+    g = np.pad(gray.astype(np.float32), 1, mode="edge")
+    lap = g[:-2, 1:-1] + g[2:, 1:-1] + g[1:-1, :-2] + g[1:-1, 2:] - 4.0 * g[1:-1, 1:-1]
+    var = float(lap.var())
+    if var >= 520:
+        return 1.0
+    if var >= 220:
+        return 0.35
+    return 0.0
+
+
+def _crop_look_scores(face_id: int) -> tuple[float, float, float, float, float, float, float]:
+    """(color, lit, view, smile, sharp, grown, front) 0-1 from one crop read. Missing crops stay neutral."""
     path = CROP_DIR / f"{int(face_id)}.jpg"
     try:
         mtime = path.stat().st_mtime_ns
     except OSError:
-        return 0.5, 0.5, 0.45
+        return 0.5, 0.5, 0.45, 0.0, 0.5, 0.0, 0.45
     key = (str(path), mtime)
     cached = _look_cache.get(key)
     if cached:
@@ -140,11 +319,15 @@ def _crop_look_scores(face_id: int) -> tuple[float, float, float]:
 
         img = Image.open(path)
         img.load()
-        small = img.convert("RGB").resize((32, 32), Image.Resampling.BILINEAR)
+        rgb = img.convert("RGB")
+        small = rgb.resize((32, 32), Image.Resampling.BILINEAR)
+        mid = rgb.resize((64, 64), Image.Resampling.BILINEAR)
         img.close()
         raw = small.tobytes()
+        arr = np.asarray(small, dtype=np.uint8)
+        mid_arr = np.asarray(mid, dtype=np.float32)
     except Exception:
-        return 0.5, 0.5, 0.45
+        return 0.5, 0.5, 0.45, 0.0, 0.5, 0.0, 0.45
     n = max(1, len(raw) // 3)
     colorful = 0
     luma = []
@@ -177,7 +360,18 @@ def _crop_look_scores(face_id: int) -> tuple[float, float, float]:
         lit = 1.0
         bright = 0.7 + 0.3 * (1.0 - abs(mean - 140) / 110.0)
     view = 0.7 * bright + 0.3 * min(1.0, std / 48.0)
-    scores = (color, lit, view)
+    gray64 = 0.2126 * mid_arr[:, :, 0] + 0.7152 * mid_arr[:, :, 1] + 0.0722 * mid_arr[:, :, 2]
+    sharp = _sharp_from_gray(gray64)
+    clip = float(sum(1 for p in luma if p >= 242) / n)
+    if clip >= 0.18:
+        lit = 0.0
+        sharp = 0.0
+    elif clip >= 0.08:
+        lit = min(lit, 0.4)
+    front = _front_from_small(arr)
+    smile = _smile_from_small(arr) if sharp and clip < 0.10 and front >= 0.25 else 0.0
+    grown = _grown_from_small(arr)
+    scores = (color, lit, view, smile, sharp, grown, front)
     _look_cache[key] = scores
     if len(_look_cache) > 8000:
         for old in list(_look_cache)[:2000]:
@@ -321,7 +515,9 @@ def _cover_rank(
     looks_sex: str = "",
     name_hit: float = 0.0,
 ) -> tuple[float, ...]:
-    looks = looks_sex or _row_sex(row)
+    row_s = _row_sex(row)
+    # Detector sex that already matches the name beats a noisy embedding split.
+    looks = row_s if (want_sex and row_s == want_sex) else (looks_sex or row_s)
     if want_sex:
         if looks == want_sex:
             sex_match = 1.0
@@ -335,8 +531,61 @@ def _cover_rank(
     unobscured = 1.0 if blocked < 0.28 else 0.0
     det = float(row["det_score"] or 0)
     size = min(1.0, (_face_area(row) ** 0.5) / 160.0)
-    color, lit, view = _crop_look_scores(int(row["id"]))
-    return (unobscured, color, lit, sex_match, name_hit, 1.0 - blocked, view, det, size)
+    color, lit, view, smile, sharp, grown, front = _crop_look_scores(int(row["id"]))
+    if want_sex != "M":
+        grown = 0.0
+    return (
+        unobscured,
+        color,
+        front,
+        sharp,
+        sex_match,
+        grown,
+        _cover_freshness(row),
+        lit,
+        smile,
+        name_hit,
+        1.0 - blocked,
+        view,
+        det,
+        size,
+    )
+
+
+def _cover_freshness(row: Any) -> float:
+    """Prefer recent camera originals over old prints and dated scans."""
+    try:
+        w = float(row["width"] or 0)
+        h = float(row["height"] or 0)
+    except (KeyError, TypeError, ValueError):
+        w = h = 0.0
+    mp = (w * h) / 1_000_000.0
+    if mp >= 20:
+        pixels = 1.0
+    elif mp >= 12:
+        pixels = 0.7
+    elif mp >= 8:
+        pixels = 0.4
+    else:
+        pixels = 0.15
+    try:
+        taken = row["taken_at"]
+    except (KeyError, TypeError):
+        taken = None
+    year = str(taken or "")[:4]
+    if year.isdigit():
+        age = datetime.now().year - int(year)
+        if age <= 2:
+            when = 1.0
+        elif age >= 12:
+            when = 0.0
+        else:
+            when = max(0.0, 1.0 - (age - 2) / 10.0)
+        if mp < 12:
+            when *= 0.4
+    else:
+        when = 0.45
+    return 0.55 * when + 0.45 * pixels
 
 
 def _sex_centroids(conn, person_ids: list[int]) -> dict[int, dict[str, Any]]:
@@ -411,9 +660,41 @@ def _looks_sex(row: Any, means: dict[str, Any] | None, emb_by_id: dict[int, Any]
     return ""
 
 
-def _best_cover_ids(
+def _rank_cover_rows(
+    cands: list[Any],
+    neighbors: dict[int, list[Any]],
+    want: str,
+    means: Any,
+    emb_by_id: dict[int, Any],
+    named_ids: set[int],
+    *,
+    prefer_clear: bool = True,
+) -> list[Any]:
+    pool = list(cands)
+    if prefer_clear:
+        clear = [
+            row
+            for row in pool
+            if _occlusion(row, neighbors.get(int(row["photo_id"])), crowd=False) < 0.28
+        ]
+        if clear:
+            pool = clear
+    return sorted(
+        pool,
+        key=lambda row, n=neighbors, w=want, m=means: _cover_rank(
+            row,
+            n.get(int(row["photo_id"])),
+            w,
+            _looks_sex(row, m, emb_by_id) if means else "",
+            1.0 if int(row["id"]) in named_ids else 0.0,
+        ),
+        reverse=True,
+    )
+
+
+def _load_cover_candidates(
     conn, person_ids: list[int] | None = None, *, scan_embeddings: bool = True
-) -> dict[int, int]:
+) -> tuple[dict[int, list[Any]], dict[int, list[Any]], dict[int, str], dict[int, Any], dict[int, Any], set[int]]:
     extra = ""
     params: list[Any] = []
     if person_ids:
@@ -435,8 +716,9 @@ def _best_cover_ids(
               {extra}
             GROUP BY f.person_id
         )
-        SELECT person_id, id, photo_id, det_score, x1, y1, x2, y2, sex_est FROM (
+        SELECT person_id, id, photo_id, det_score, x1, y1, x2, y2, sex_est, taken_at, width, height FROM (
             SELECT f.person_id, f.id, f.photo_id, f.det_score, f.x1, f.y1, f.x2, f.y2, f.sex_est,
+                   ph.taken_at, ph.width, ph.height,
                    ROW_NUMBER() OVER (
                        PARTITION BY f.person_id
                        ORDER BY CASE
@@ -480,7 +762,8 @@ def _best_cover_ids(
         by_person.setdefault(int(row["person_id"]), []).append(row)
     named = conn.execute(
         f"""
-        SELECT f.person_id, f.id, f.photo_id, f.det_score, f.x1, f.y1, f.x2, f.y2, f.sex_est
+        SELECT f.person_id, f.id, f.photo_id, f.det_score, f.x1, f.y1, f.x2, f.y2, f.sex_est,
+               ph.taken_at, ph.width, ph.height
         FROM faces f
         JOIN photos ph ON ph.id = f.photo_id
         JOIN people p ON p.id = f.person_id
@@ -521,30 +804,133 @@ def _best_cover_ids(
             vec = bytes_to_embedding(row["embedding"])
             if vec is not None:
                 emb_by_id[int(row["id"])] = vec
+    return by_person, neighbors, names, centroids, emb_by_id, named_ids
+
+
+def _best_cover_ids(
+    conn, person_ids: list[int] | None = None, *, scan_embeddings: bool = True
+) -> dict[int, int]:
+    by_person, neighbors, names, centroids, emb_by_id, named_ids = _load_cover_candidates(
+        conn, person_ids, scan_embeddings=scan_embeddings
+    )
     picked: dict[int, int] = {}
     for pid, cands in by_person.items():
         want = _name_sex(names.get(pid, "")) or _majority_sex(cands)
-        means = centroids.get(pid)
-        pool = list(cands)
-        clear = [
-            row
-            for row in pool
-            if _occlusion(row, neighbors.get(int(row["photo_id"])), crowd=False) < 0.28
-        ]
-        if clear:
-            pool = clear
-        best = max(
-            pool,
-            key=lambda row, n=neighbors, w=want, m=means: _cover_rank(
-                row,
-                n.get(int(row["photo_id"])),
-                w,
-                _looks_sex(row, m, emb_by_id) if means else "",
-                1.0 if int(row["id"]) in named_ids else 0.0,
-            ),
+        ranked = _rank_cover_rows(
+            cands, neighbors, want, centroids.get(pid), emb_by_id, named_ids, prefer_clear=True
         )
-        picked[pid] = int(best["id"])
+        if ranked:
+            picked[pid] = int(ranked[0]["id"])
     return picked
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _valid_pinned_covers(conn, pinned: dict[int, int]) -> dict[int, int]:
+    """Keep a stored cover only while that face still belongs to this person."""
+    ids = [fid for fid in pinned.values() if fid]
+    if not ids:
+        return {}
+    marks = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"""
+        SELECT f.id, f.person_id FROM faces f
+        JOIN photos ph ON ph.id = f.photo_id
+        WHERE f.id IN ({marks})
+          AND f.quality = 'ok'
+          AND IFNULL(f.assigned_how, '') != 'junk'
+          AND IFNULL(ph.hidden, 0) = 0
+          AND {preview_path_sql("ph.path")}
+        """,
+        ids,
+    ).fetchall()
+    by_face = {int(row["id"]): int(row["person_id"]) for row in rows}
+    return {pid: fid for pid, fid in pinned.items() if by_face.get(fid) == pid}
+
+
+def _apply_cover_choice(
+    conn, people: list[dict[str, Any]], auto: dict[int, int], fallback: dict[int, int]
+) -> None:
+    pinned: dict[int, int] = {}
+    for person in people:
+        pin = _int_or_none(person.get("cover_face_id"))
+        if pin:
+            pinned[int(person["id"])] = pin
+    valid = _valid_pinned_covers(conn, pinned)
+    for person in people:
+        pid = int(person["id"])
+        person["cover_face_id"] = valid.get(pid) or auto.get(pid) or fallback.get(pid)
+
+
+def advance_person_cover(person_id: int) -> dict[str, Any] | None:
+    """Pin the next-ranked cover crop for Faces in DB View. Repeats wrap around."""
+    conn = connect()
+    init_db(conn)
+    try:
+        row = conn.execute("SELECT * FROM people WHERE id = ?", (int(person_id),)).fetchone()
+        if not row:
+            return None
+        pid = int(person_id)
+        by_person, neighbors, names, centroids, emb_by_id, named_ids = _load_cover_candidates(
+            conn, [pid], scan_embeddings=False
+        )
+        cands = by_person.get(pid) or []
+        want = _name_sex(names.get(pid, "")) or _majority_sex(cands)
+        ranked = _rank_cover_rows(
+            cands, neighbors, want, centroids.get(pid), emb_by_id, named_ids, prefer_clear=False
+        )
+        ids = [int(item["id"]) for item in ranked]
+        if not ids:
+            fallback = _fallback_cover_ids(conn, [pid]).get(pid)
+            if fallback:
+                ids = [int(fallback)]
+        if not ids:
+            return get_person(pid)
+        cur = _int_or_none(row["cover_face_id"] if "cover_face_id" in row.keys() else None)
+        if cur not in ids:
+            auto = _best_cover_ids(conn, [pid], scan_embeddings=False).get(pid)
+            cur = auto if auto in ids else ids[0]
+        nxt = ids[(ids.index(cur) + 1) % len(ids)]
+        conn.execute("UPDATE people SET cover_face_id = ? WHERE id = ?", (nxt, pid))
+        conn.commit()
+    finally:
+        conn.close()
+    return get_person(person_id)
+
+
+def _fallback_cover_ids(conn, person_ids: list[int] | None = None) -> dict[int, int]:
+    """Any named crop when the colour/occlusion picker has no ok face."""
+    extra = ""
+    params: list[Any] = []
+    if person_ids:
+        extra = "AND f.person_id IN (" + ",".join("?" * len(person_ids)) + ")"
+        params = [int(pid) for pid in person_ids]
+    rows = conn.execute(
+        f"""
+        SELECT person_id, id FROM (
+            SELECT f.person_id, f.id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY f.person_id
+                       ORDER BY CASE f.quality WHEN 'ok' THEN 0 ELSE 1 END,
+                                f.det_score DESC, f.id
+                   ) AS rn
+            FROM faces f
+            JOIN photos ph ON ph.id = f.photo_id
+            WHERE {_named_visible_sql()}
+              {extra}
+        ) ranked
+        WHERE rn = 1
+        """,
+        params,
+    ).fetchall()
+    return {int(row["person_id"]): int(row["id"]) for row in rows}
 
 
 def normalize_category(value: Any) -> str:
@@ -822,38 +1208,18 @@ def _list_people_covers_lite() -> list[dict[str, Any]]:
     init_db(conn)
     try:
         people = [dict(r) for r in conn.execute("SELECT * FROM people ORDER BY name COLLATE NOCASE").fetchall()]
-        covers = {
-            int(r["person_id"]): r
-            for r in conn.execute(
-                f"""
-                SELECT person_id, cnt FROM (
-                    SELECT f.person_id,
-                           COUNT(*) OVER (PARTITION BY f.person_id) AS cnt,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY f.person_id
-                               ORDER BY f.det_score DESC, f.id
-                           ) AS rn
-                    FROM faces f
-                    JOIN photos ph ON ph.id = f.photo_id
-                    WHERE f.person_id IS NOT NULL
-                      AND f.quality = 'ok'
-                      AND IFNULL(f.assigned_how, '') != 'junk'
-                      AND IFNULL(ph.hidden, 0) = 0
-                      AND {preview_path_sql("ph.path")}
-                ) ranked
-                WHERE rn = 1
-                """
-            ).fetchall()
-        }
+        stats = _named_people_stats(conn)
         best_cover = _best_cover_ids(conn, scan_embeddings=False)
+        fallback = _fallback_cover_ids(conn)
         out: list[dict[str, Any]] = []
         for person in people:
-            info = covers.get(int(person["id"]))
+            pid = int(person["id"])
+            info = stats.get(pid)
             if not info:
                 continue
-            person["face_count"] = int(info["cnt"] or 0)
-            person["cover_face_id"] = best_cover.get(int(person["id"]))
+            person["face_count"] = int(info["face_count"] or 0)
             out.append(person)
+        _apply_cover_choice(conn, out, best_cover, fallback)
         return out
     finally:
         conn.close()
@@ -865,40 +1231,22 @@ def _list_people_covers() -> list[dict[str, Any]]:
     init_db(conn)
     try:
         people = [dict(r) for r in conn.execute("SELECT * FROM people ORDER BY name COLLATE NOCASE").fetchall()]
-        covers = {
-            int(r["person_id"]): r
-            for r in conn.execute(
-                f"""
-                SELECT f.person_id,
-                       COUNT(*) AS face_count,
-                       MIN(ph.taken_at) AS first_seen,
-                       MAX(ph.taken_at) AS last_seen,
-                       MIN(f.age_est) AS age_min,
-                       MAX(f.age_est) AS age_max
-                FROM faces f
-                JOIN photos ph ON ph.id = f.photo_id
-                WHERE f.person_id IS NOT NULL
-                  AND f.quality = 'ok'
-                  AND IFNULL(f.assigned_how, '') != 'junk'
-                  AND IFNULL(ph.hidden, 0) = 0
-                  AND {preview_path_sql("ph.path")}
-                GROUP BY f.person_id
-                """
-            ).fetchall()
-        }
+        stats = _named_people_stats(conn)
         best_cover = _best_cover_ids(conn)
+        fallback = _fallback_cover_ids(conn)
         out: list[dict[str, Any]] = []
         for person in people:
-            info = covers.get(int(person["id"]))
+            pid = int(person["id"])
+            info = stats.get(pid)
             if not info:
                 continue
             person["face_count"] = int(info["face_count"] or 0)
-            person["cover_face_id"] = best_cover.get(int(person["id"]))
             person["first_seen"] = info["first_seen"]
             person["last_seen"] = info["last_seen"]
             person["age_min"] = info["age_min"]
             person["age_max"] = info["age_max"]
             out.append(person)
+        _apply_cover_choice(conn, out, best_cover, fallback)
         return out
     finally:
         conn.close()
@@ -910,19 +1258,21 @@ def _folder_people_stats(wanted: str) -> dict[int, dict[str, Any]]:
     conn = connect()
     init_db(conn)
     neighbors: dict[int, list[Any]] = {}
+    pinned_rows: list[Any] = []
     try:
         rows = conn.execute(
-            """
-            SELECT f.person_id, f.id, f.photo_id, f.det_score, f.x1, f.y1, f.x2, f.y2, f.age_est, f.sex_est, ph.path, ph.taken_at
+            f"""
+            SELECT f.person_id, f.id, f.photo_id, f.det_score, f.x1, f.y1, f.x2, f.y2,
+                   f.age_est, f.sex_est, f.quality, ph.path, ph.taken_at, ph.sha256
             FROM faces f
             JOIN photos ph ON ph.id = f.photo_id
-            WHERE f.person_id IS NOT NULL
-              AND f.quality = 'ok'
-              AND IFNULL(f.assigned_how, '') != 'junk'
-              AND IFNULL(ph.hidden, 0) = 0
+            WHERE {_named_visible_sql()}
             """
         ).fetchall()
         neighbors = _faces_on_photos(conn, list({int(r["photo_id"]) for r in rows}))
+        pinned_rows = conn.execute(
+            "SELECT id, cover_face_id FROM people WHERE cover_face_id IS NOT NULL"
+        ).fetchall()
     finally:
         conn.close()
     stats: dict[int, dict[str, Any]] = {}
@@ -934,7 +1284,6 @@ def _folder_people_stats(wanted: str) -> dict[int, dict[str, Any]]:
         item = stats.get(pid)
         if item is None:
             item = {
-                "face_count": 0,
                 "cover_face_id": int(row["id"]),
                 "first_seen": row["taken_at"],
                 "last_seen": row["taken_at"],
@@ -942,8 +1291,7 @@ def _folder_people_stats(wanted: str) -> dict[int, dict[str, Any]]:
                 "age_max": row["age_est"],
             }
             stats[pid] = item
-        item["face_count"] += 1
-        covers.setdefault(pid, []).append(row)
+        covers.setdefault(pid, []).append(dict(row))
         if row["taken_at"] and (not item["first_seen"] or row["taken_at"] < item["first_seen"]):
             item["first_seen"] = row["taken_at"]
         if row["taken_at"] and (not item["last_seen"] or row["taken_at"] > item["last_seen"]):
@@ -956,22 +1304,40 @@ def _folder_people_stats(wanted: str) -> dict[int, dict[str, Any]]:
                 item["age_max"] = age
     for pid, item in stats.items():
         cands = covers.get(pid) or []
-        if cands:
-            want = _majority_sex(cands)
-            pool = [row for row in cands if _row_sex(row) == want] if want else list(cands)
-            if not pool:
-                pool = list(cands)
-            top_det = sorted(
-                pool, key=lambda row: (float(row["det_score"] or 0), _face_area(row)), reverse=True
-            )[:_COVER_CANDIDATES]
-            top_large = sorted(pool, key=_face_area, reverse=True)[:_COVER_LARGE]
-            pool = list({int(row["id"]): row for row in [*top_det, *top_large]}.values())
-            item["cover_face_id"] = int(
-                max(
-                    pool,
-                    key=lambda row: _cover_rank(row, neighbors.get(int(row["photo_id"])), want),
-                )["id"]
-            )
+        item["face_count"] = len(display_faces(cands)) if cands else 0
+        if not cands:
+            continue
+        ok = [row for row in cands if str(row["quality"] or "") == "ok"]
+        pool_src = ok or list(cands)
+        want = _majority_sex(pool_src)
+        pool = [row for row in pool_src if _row_sex(row) == want] if want else list(pool_src)
+        if not pool:
+            pool = list(pool_src)
+        top_det = sorted(
+            pool, key=lambda row: (float(row["det_score"] or 0), _face_area(row)), reverse=True
+        )[:_COVER_CANDIDATES]
+        top_large = sorted(pool, key=_face_area, reverse=True)[:_COVER_LARGE]
+        pool = list({int(row["id"]): row for row in [*top_det, *top_large]}.values())
+        item["cover_face_id"] = int(
+            max(
+                pool,
+                key=lambda row: _cover_rank(row, neighbors.get(int(row["photo_id"])), want),
+            )["id"]
+        )
+    pinned = {
+        int(row["id"]): _int_or_none(row["cover_face_id"])
+        for row in pinned_rows
+    }
+    pinned = {pid: fid for pid, fid in pinned.items() if fid and pid in stats}
+    if pinned:
+        conn = connect()
+        try:
+            valid = _valid_pinned_covers(conn, pinned)
+        finally:
+            conn.close()
+        for pid, fid in valid.items():
+            if any(int(row["id"]) == fid for row in (covers.get(pid) or [])):
+                stats[pid]["cover_face_id"] = fid
     return stats
 
 
@@ -1016,6 +1382,7 @@ def get_person(person_id: int) -> dict[str, Any] | None:
             FROM faces f
             JOIN photos ph ON ph.id = f.photo_id
             WHERE f.person_id = ?
+              AND IFNULL(f.assigned_how, '') != 'junk'
               AND IFNULL(ph.hidden, 0) = 0
             ORDER BY ph.taken_at IS NULL, ph.taken_at, f.age_est IS NULL, f.age_est
             """,
@@ -1029,10 +1396,90 @@ def get_person(person_id: int) -> dict[str, Any] | None:
             face["tags"] = tag_map.get(int(face["photo_id"]), [])
         person["faces"] = face_dicts
         person["shots"] = display_faces(person["faces"])
-        person["face_count"] = len(person["faces"])
+        person["face_count"] = len(person["shots"])
+        covers = _best_cover_ids(conn, [int(person_id)], scan_embeddings=False)
+        fallback = _fallback_cover_ids(conn, [int(person_id)])
+        _apply_cover_choice(conn, [person], covers, fallback)
         return person
     finally:
         conn.close()
+
+
+def person_zip_filename(name: str) -> str:
+    text = re.sub(r"[^\w]+", "-", (name or "").strip(), flags=re.UNICODE)
+    text = text.strip("-") or "person"
+    return f"{text[:60]}-photos.zip"
+
+
+def unique_zip_name(path: Path, photo_id: int, used: set[str]) -> str:
+    raw = path.name or f"photo-{int(photo_id)}"
+    name = re.sub(r"[\\/]+", "_", raw).lstrip(".")
+    if not name or name in {".", ".."}:
+        name = f"photo-{int(photo_id)}"
+    if name not in used:
+        used.add(name)
+        return name
+    stem = Path(name).stem
+    suffix = Path(name).suffix
+    alt = f"{stem}-{int(photo_id)}{suffix}"
+    used.add(alt)
+    return alt
+
+
+def list_person_download_entries(person_id: int) -> dict[str, Any] | None:
+    """Original files for the pictures shown on this person page, one per photo."""
+    conn = connect()
+    init_db(conn)
+    try:
+        row = conn.execute("SELECT id, name FROM people WHERE id = ?", (int(person_id),)).fetchone()
+        if not row:
+            return None
+        faces = conn.execute(
+            """
+            SELECT f.id, f.photo_id, f.det_score, ph.path, ph.taken_at, ph.sha256
+            FROM faces f
+            JOIN photos ph ON ph.id = f.photo_id
+            WHERE f.person_id = ?
+              AND IFNULL(f.assigned_how, '') != 'junk'
+              AND IFNULL(ph.hidden, 0) = 0
+            ORDER BY ph.taken_at IS NULL, ph.taken_at, f.age_est IS NULL, f.age_est
+            """,
+            (int(person_id),),
+        ).fetchall()
+        shots = display_faces(drop_preview_rows([dict(f) for f in faces]))
+        used: set[str] = set()
+        entries: list[tuple[Path, str]] = []
+        missing = 0
+        for shot in shots:
+            src = Path(str(shot.get("path") or ""))
+            if not src.is_file():
+                missing += 1
+                continue
+            entries.append((src, unique_zip_name(src, int(shot["photo_id"]), used)))
+        return {
+            "name": row["name"],
+            "filename": person_zip_filename(row["name"]),
+            "entries": entries,
+            "missing": missing,
+            "total": len(shots),
+        }
+    finally:
+        conn.close()
+
+
+def write_person_photo_zip(person_id: int, dest: Path) -> dict[str, Any] | None:
+    """Copy named originals into dest. Album files are only read."""
+    from zipfile import ZIP_STORED, ZipFile
+
+    listing = list_person_download_entries(person_id)
+    if listing is None:
+        return None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with ZipFile(dest, "w", compression=ZIP_STORED, allowZip64=True) as zf:
+        for src, arcname in listing["entries"]:
+            zf.write(src, arcname)
+    listing["path"] = dest
+    return listing
 
 
 def update_person(person_id: int, *, sync_sidecars: bool = True, **fields: Any) -> dict[str, Any] | None:
@@ -1182,6 +1629,31 @@ def unassign_photo_names(photo_id: int, *, sync_sidecars: bool = True) -> int:
     n = 0
     for fid in ids:
         n += unassign_face_and_copies(fid, sync_sidecars=False)
+    if ids and sync_sidecars:
+        threading.Thread(target=_sync_sidecars_for_faces, args=(ids,), daemon=True).start()
+    return n
+
+
+def junk_unnamed_on_photo(photo_id: int, *, sync_sidecars: bool = True) -> int:
+    """Hide every unnamed face on this picture. Named people stay."""
+    conn = connect()
+    init_db(conn)
+    try:
+        ids = [
+            int(row["id"])
+            for row in conn.execute(
+                """
+                SELECT id FROM faces
+                WHERE photo_id = ?
+                  AND person_id IS NULL
+                  AND IFNULL(assigned_how, '') != 'junk'
+                """,
+                (int(photo_id),),
+            )
+        ]
+    finally:
+        conn.close()
+    n = junk_faces(ids, sync_sidecars=False)
     if ids and sync_sidecars:
         threading.Thread(target=_sync_sidecars_for_faces, args=(ids,), daemon=True).start()
     return n
@@ -1574,40 +2046,66 @@ def visible_unnamed_summary() -> dict[str, Any]:
         conn.close()
 
 
+_name_folders_cache: tuple[int, list[dict[str, Any]]] | None = None
+
+
+def _path_parent(path: str) -> str:
+    text = str(path or "").replace("\\", "/").rstrip("/")
+    cut = text.rfind("/")
+    return text[:cut] if cut > 0 else text
+
+
+def _path_name(path: str) -> str:
+    text = str(path or "").replace("\\", "/").rstrip("/")
+    cut = text.rfind("/")
+    return text[cut + 1 :] if cut >= 0 else text
+
+
 def list_name_folders() -> list[dict[str, Any]]:
     """Indexed folders with how many named faces they still have."""
-    from .originals import is_preview_path
-
+    global _name_folders_cache
     conn = connect()
     init_db(conn)
     try:
-        photos = conn.execute("SELECT id, path, hidden FROM photos").fetchall()
-        counts: dict[str, dict[str, int]] = {}
-        photo_folder: dict[int, str] = {}
+        n = int(conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0])
+        cached = _name_folders_cache
+        if cached and cached[0] == n:
+            return cached[1]
+        photos = conn.execute(
+            f"""
+            SELECT id, path FROM photos
+            WHERE IFNULL(hidden, 0) = 0
+              AND {preview_path_sql("path")}
+            """
+        ).fetchall()
+        named = {
+            int(row["photo_id"]): int(row["n"])
+            for row in conn.execute(
+                """
+                SELECT photo_id, COUNT(*) AS n
+                FROM faces
+                WHERE person_id IS NOT NULL
+                GROUP BY photo_id
+                """
+            ).fetchall()
+        }
+        counts: dict[str, dict[str, Any]] = {}
         for row in photos:
-            if int(row["hidden"] or 0):
-                continue
-            if is_preview_path(row["path"]):
-                continue
-            parent = str(Path(row["path"]).parent)
-            name = Path(parent).name or folder_of(row["path"])
-            photo_folder[int(row["id"])] = parent
-            bucket = counts.setdefault(
-                parent, {"folder": name, "path": parent, "photos": 0, "named_faces": 0}
-            )
+            parent = _path_parent(row["path"])
+            bucket = counts.get(parent)
+            if bucket is None:
+                bucket = {
+                    "folder": _path_name(parent) or folder_of(row["path"]),
+                    "path": parent,
+                    "photos": 0,
+                    "named_faces": 0,
+                }
+                counts[parent] = bucket
             bucket["photos"] += 1
-        for row in conn.execute(
-            """
-            SELECT photo_id, COUNT(*) AS n
-            FROM faces
-            WHERE person_id IS NOT NULL
-            GROUP BY photo_id
-            """
-        ).fetchall():
-            folder = photo_folder.get(int(row["photo_id"]))
-            if folder and folder in counts:
-                counts[folder]["named_faces"] += int(row["n"])
-        return sorted(counts.values(), key=lambda r: (r["folder"].lower(), r["path"].lower()))
+            bucket["named_faces"] += named.get(int(row["id"]), 0)
+        items = sorted(counts.values(), key=lambda r: (r["folder"].lower(), r["path"].lower()))
+        _name_folders_cache = (n, items)
+        return items
     finally:
         conn.close()
 
@@ -1629,18 +2127,48 @@ def _album_subdirs(path: Path) -> list[Path]:
         return []
 
 
-def list_albums_under(folders: list[str] | None = None) -> list[dict[str, Any]]:
+def _albums_from_indexed(indexed: list[dict[str, Any]], roots: list[Path]) -> list[dict[str, Any]]:
+    """Indexed albums under roots, with group_path from the file path. No disk walk."""
+    prefixes = sorted((str(root).rstrip("/") for root in roots), key=len, reverse=True)
+    out: list[dict[str, Any]] = []
+    for item in indexed:
+        path = str(item.get("path") or "").replace("\\", "/").rstrip("/")
+        if not path:
+            continue
+        matched = next((prefix for prefix in prefixes if path == prefix or path.startswith(f"{prefix}/")), None)
+        if matched is None:
+            continue
+        row = dict(item)
+        rest = path[len(matched) :].lstrip("/")
+        parts = [part for part in rest.split("/") if part]
+        if len(parts) >= 2:
+            row["group"] = parts[0]
+            row["group_path"] = f"{matched}/{parts[0]}"
+        else:
+            row["group"] = ""
+            row["group_path"] = ""
+        out.append(row)
+    return out
+
+
+def list_albums_under(folders: list[str] | None = None, *, disk: bool = True) -> list[dict[str, Any]]:
     """Albums under the selected folders, including ones not imported yet.
 
     A folder that itself contains albums is expanded so those nested albums
     show up. Photo counts include files in nested subfolders of that album.
     Preview-size copies (1024 x 768) are skipped.
+    disk=False skips walking the NAS so a deep album link can open from the catalog.
     """
     from .originals import is_preview_path
 
     roots = [Path(item).expanduser() for item in (folders or []) if str(item or "").strip()]
     if not roots:
         return list_name_folders()
+    if not disk:
+        return sorted(
+            _albums_from_indexed(list_name_folders(), roots),
+            key=lambda r: ((r.get("group") or r["folder"]).lower(), r["path"].lower()),
+        )
 
     albums: list[tuple[Path, Path | None]] = []
     groups_for: dict[str, Path | None] = {}

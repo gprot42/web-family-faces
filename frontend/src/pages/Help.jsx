@@ -20,10 +20,15 @@ export default function Help() {
           <p>
             On the home page click <strong>Choose folders</strong>. The app connects the Synology
             NAS (Finder may ask for the login once). Open or tick the albums you want.{" "}
-            <strong>Find Known Faces</strong> starts on its own for each new album.
+            <strong>Find Known Faces</strong> starts on its own for each new album. On Folder View,{" "}
+            <strong>Find Known Faces in new folders</strong> lists those albums first so you can
+            confirm.
           </p>
           <p>
-            The app reads photos, finds known faces, and groups people who look the same. It never
+            The app reads photos, finds known faces, and groups people who look the same. If the
+            first model is unsure, a second local model (AdaFace) tries the same face on this
+            machine. A name is applied only when that second look is sure and does not disagree
+            with the first. Those names still appear under Check names. It never
             moves or rewrites the files. A later run only looks at new photos. In{" "}
             <Link to="/settings">Settings</Link> you can turn on <strong>Auto-update listed
             folders</strong> so new files on those albums or the NAS are picked up in the
@@ -59,13 +64,18 @@ export default function Help() {
               sure it is.
             </li>
             <li>
-              <strong>Identify all</strong> on To name matches groups to people already in the
+              <strong>Identify all</strong> on To name asks Yes or No, then matches groups to people already in the
               catalog, then looks remaining groups up. Only very sure names are applied (about 80%+
               for someone already in the catalog, 90%+ for a new public figure). Catalog
               matches still appear under Check names. Use <strong>AI</strong> on a group to look
               that one up without waiting for the batch.
             </li>
             <li><strong>Not a person</strong> is for statues, paintings, or objects. They stay hidden, and similar ones are ignored later.</li>
+            <li>
+              On To name, <strong>×</strong> on a named face in the right-hand list hides them from
+              tagging. They stay in Faces in DB View. <strong>Hidden from tagging</strong> shows
+              them again.
+            </li>
             <li>
               <Link to="/review">Check names</Link> lists faces the matcher attached on its own.
               Keep the right ones. Not this person sends a face back to To name.
@@ -83,10 +93,14 @@ export default function Help() {
           <p>
             <Link to="/people">Faces in DB View</Link> is the catalog of faces you have identified.
             Those identities are stored in the local database, not written onto the photos.
-            Folder View is the albums. Click a face to open that person. Use <strong>Search</strong> in
+            Folder View is the albums. Click a face to open that person. Right-click a face and choose{" "}
+            <strong>Find a better photo</strong> to try the next cover; right-click again for another.
+            Use <strong>Search</strong> in
             the bottom right to find someone by name, or upload a snapshot to match a face already
-            in the catalog. A child and an 80-year-old will usually be two cards — only join them if
-            you are sure they are the same person.
+            in the catalog. On a person page, <strong>Download photos</strong> saves a zip of every
+            picture they are named in; the album files stay where they are. A child and an
+            80-year-old will usually be two cards — only join them if you are sure they are the same
+            person.
           </p>
         </section>
 
@@ -107,7 +121,8 @@ export default function Help() {
           <h2>Leftovers</h2>
           <p>
             Anything still unnamed can be finished in <Link to="/photos">Folder View</Link>. Open a
-            picture, click a face, pick a name. In <Link to="/settings">Settings</Link> you can put
+            picture, click a face, pick a name. Right-click an album to rename it in Folder View;
+            the folder on disk is not renamed. In <Link to="/settings">Settings</Link> you can put
             the name on the person, above the head, or below the body.{" "}
             <Link to="/photos?by=person">View by person</Link> keeps each named person in their own list
             so two people are not mixed together. Right-click a photo and add a <strong>tag</strong>
@@ -131,15 +146,17 @@ export default function Help() {
           <div>
             <strong>Re-identify faces</strong> matches unnamed people against the catalog: closest
             named photos, several examples of each person, and people already named in that album.
-            On a group or class photo it stays strict and will not copy one name onto every face.
-            Names you removed with <strong>Remove name</strong> stay off. If everyone on the photo
-            is already named, it returns immediately. Use{" "}
-            <strong>Add a face</strong> if someone was missed. <strong>Undo names</strong> takes
-            those auto-matches back if too many are wrong. Names you typed stay. Hidden “not a
-            person” faces are left alone.
+            If InsightFace is not sure, AdaFace (a second local model) retries the same face.
+            On a class photo it will not copy one name onto every face.
+            Faces whose names you removed are tried again. If everyone on the photo is already
+            named, it returns immediately. Use <strong>Add a face</strong> if someone was missed.
+            <strong>Undo names</strong> takes those auto-matches back if too many are wrong. Names
+            you typed stay. On a group photo, faces hidden as “not a person” are put back in the
+            unnamed pool so they can be named.
           </div>
           <div>
-            <strong>Sharpen</strong> asks Grok Imagine for a crisper 2K preview of this picture.
+            <strong>Sharpen</strong> asks Grok Imagine for a crisper 2K preview of this picture,
+            with extra clarity on faces.
             Zoom still goes to <strong>400%</strong> on that preview. Toggle{" "}
             <strong>Show original</strong> any time. The NAS original is never overwritten;
             the preview lives only in the app’s data folder. Needs an xAI key or SuperGrok in
@@ -156,8 +173,18 @@ export default function Help() {
           <div><kbd>u</kbd> unassign</div>
           <div><kbd>j</kbd> / <kbd>k</kbd> next / previous face</div>
           <div><kbd>l</kbd> hide or show name labels on the picture</div>
+          <div>
+            <strong>Smart</strong> (then Rows, Halo, Numbers) tries another way to place names on a
+            crowded photo. Smart parks numbers and names above the head, not on the eyes. Rows puts
+            the back row above and the front row below. Halo parks names around the group. Numbers
+            puts a number on each face; the full name stays in the list. Names you dragged stay put.
+          </div>
           <div><kbd>←</kbd> / <kbd>→</kbd> previous / next photo. Name fields are not auto-selected, so the arrows keep changing pictures.</div>
-          <div>Right-click a photo to copy it, rotate it, add a tag, add a face, re-identify unnamed faces, sharpen a temporary Grok preview, change it with a Grok prompt, remove a named person or an unnamed face, or delete it from the catalog. The original file stays where it is.</div>
+          <div>
+            <strong>Remove unnamed</strong> hides every unnamed face on this photo as not a person.
+            Named people stay. Undo puts the boxes back. Other photos are not changed.
+          </div>
+          <div>Right-click a photo to copy it, rotate it, add a tag, add a face, re-identify unnamed faces, sharpen a temporary Grok preview, change it with a Grok prompt, remove a named person or an unnamed face, remove all unnamed faces, or delete it from the catalog. <strong>Copy photo</strong> includes the name tags when they are shown on the picture. The original file stays where it is.</div>
           <div>
             <strong>Add a note</strong> on a photo is about the picture. <strong>Add a tag</strong> is
             a short label (Christmas, school, 2018): right-click the photo, type in Add a tag, press
@@ -169,7 +196,8 @@ export default function Help() {
           <div>Click the photo for fullscreen · drag the dotted handle on the options bar to move it · Hide labels / Show labels on the picture (<kbd>l</kbd>) · ← → other photos · <kbd>+</kbd> / <kbd>−</kbd> or pinch to zoom · <kbd>0</kbd> or click to fit · any other key or click to exit</div>
           <div>
             <strong>Play album</strong> or <strong>Play person</strong> walks the pictures in date
-            order, names on. <kbd>space</kbd> pause · <kbd>esc</kbd> exit
+            order, 2.5 seconds each (change this in Settings). <kbd>space</kbd> pause · <kbd>esc</kbd> exit.
+            <strong> Download photos</strong> on a person page saves those pictures as a zip.
           </div>
         </div>
       </section>
@@ -195,7 +223,7 @@ export default function Help() {
           </li>
           <li>Thumbnails and face crops live under the app <code>data/</code> folder, not in the album.</li>
           <li>
-            <strong>Check photos unchanged</strong> re-hashes every indexed file and reports
+            <strong>Check photos unchanged</strong> asks first, then re-hashes every indexed file and reports
             unchanged / changed / missing.
           </li>
           <li>

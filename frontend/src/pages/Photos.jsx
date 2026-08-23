@@ -1,16 +1,18 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import { addedFolderPaths, folderIsIndexed, folderLabel, photoInFolders, readImportFolders, writeImportFolders } from "../folders.js";
+import { ALL_FOLDERS_EVENT, addedFolderPaths, folderDisplayName, folderIsIndexed, folderLabel, FOLDER_TITLE_MAX, isFolderStarred, normalizeFolderPath, photoInFolders, readFolderTitles, readImportFolders, readStarredFolders, setFolderTitle, toggleStarredFolder, writeFolderTitles, writeImportFolders, writeStarredFolders } from "../folders.js";
 import { PHOTO_CHANGE_EVENT } from "../photoMenu.js";
 import JobGauge from "../components/JobGauge.jsx";
 import { beginPlay } from "../play.js";
 import { tip } from "../tip.js";
 import ViewSwitch from "../components/ViewSwitch.jsx";
 import LabeledPhoto from "../components/LabeledPhoto.jsx";
-import NamesToggle from "../components/NamesToggle.jsx";
+import NamesToggle, { usePhotoLabels } from "../components/NamesToggle.jsx";
 import FolderPicker from "../components/FolderPicker.jsx";
+import ConfirmAsk from "../components/ConfirmAsk.jsx";
 import { photoTagHref, tagHref } from "../components/PhotoTags.jsx";
+import { clearAlbumPos, readAlbumPos, writeAlbumPos } from "../albumPos.js";
 
 function folderOf(path) {
   const parts = (path || "").split("/").filter(Boolean);
@@ -31,6 +33,24 @@ function folderAnchor(name) {
 }
 
 const FOLDER_SEL_KEY = "photosort-folder-sel";
+const FOLDER_CATALOG_KEY = "photosort-folder-catalog-v1";
+
+function loadCachedCatalog() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(FOLDER_CATALOG_KEY) || "null");
+    return Array.isArray(raw?.items) ? raw.items : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCachedCatalog(items) {
+  try {
+    localStorage.setItem(FOLDER_CATALOG_KEY, JSON.stringify({ items: items || [] }));
+  } catch {
+    /* private mode or quota */
+  }
+}
 
 function readFolderSel() {
   try {
@@ -94,6 +114,152 @@ function catalogTree(catalog) {
   return { ungrouped: leaves, groups };
 }
 
+function folderYear(name) {
+  const s = String(name || "").trim();
+  const head = s.match(/^(19|20)\d{2}(?=\s*[-.–]\s*|\.\s+)/);
+  if (head) return head[0];
+  const tail = s.match(/_(19|20)\d{2}$/);
+  return tail ? tail[0].slice(1) : "";
+}
+
+function folderShortName(name, year) {
+  if (!year) return String(name || "");
+  const stripped = String(name || "")
+    .replace(new RegExp(`^${year}(?:\\s*[-.–]\\s*|\\.\\s+)`), "")
+    .replace(new RegExp(`_${year}$`), "")
+    .trim();
+  return stripped || String(name || "");
+}
+
+function folderIndex(tree, needle, starredPaths, titles) {
+  const q = String(needle || "").trim().toLowerCase();
+  const shown = (path, fallback) => folderDisplayName(path, fallback, titles);
+  const match = (name, path) => {
+    if (!q) return true;
+    const hay = `${name || ""} ${shown(path, name)}`.toLowerCase();
+    return hay.includes(q);
+  };
+  const starredList = (starredPaths || []).map(normalizeFolderPath).filter((path) => path && path !== "/");
+  const starredSet = new Set(starredList);
+  const order = new Map(starredList.map((path, i) => [path, i]));
+  const entries = [];
+  const seen = new Set();
+  function addEntry(item) {
+    if (!item?.key || seen.has(item.key)) return;
+    seen.add(item.key);
+    entries.push(item);
+  }
+  for (const group of tree.groups || []) {
+    if (!match(group.name, group.path)) continue;
+    addEntry({
+      key: normalizeFolderPath(group.path),
+      name: group.name,
+      year: folderYear(group.name),
+      photos: group.total,
+      albums: group.albums.length,
+      kind: "group",
+      group,
+    });
+  }
+  for (const album of tree.ungrouped || []) {
+    if (!match(album.folder, album.path)) continue;
+    addEntry({
+      key: normalizeFolderPath(album.path),
+      name: album.folder,
+      year: folderYear(album.folder),
+      photos: album.photos,
+      albums: 0,
+      kind: "album",
+      album,
+    });
+  }
+  const packed = entries.map((item) => {
+    const year = item.year;
+    const label = shown(item.key, item.name);
+    return { ...item, title: folderShortName(label, year) };
+  });
+  const starred = packed.filter((item) => starredSet.has(item.key));
+  for (const group of tree.groups || []) {
+    for (const album of group.albums || []) {
+      const key = normalizeFolderPath(album.path);
+      if (!starredSet.has(key) || !match(album.folder, album.path) || starred.some((item) => item.key === key)) continue;
+      const year = folderYear(album.folder);
+      starred.push({
+        key,
+        name: album.folder,
+        year,
+        photos: album.photos,
+        albums: 0,
+        kind: "album",
+        album,
+        title: folderShortName(shown(key, album.folder), year),
+      });
+    }
+  }
+  starred.sort((a, b) => (order.get(a.key) ?? 0) - (order.get(b.key) ?? 0) || a.title.localeCompare(b.title));
+  const buckets = new Map();
+  for (const item of packed) {
+    const year = item.year || "Other";
+    if (!buckets.has(year)) buckets.set(year, []);
+    buckets.get(year).push(item);
+  }
+  const years = [...buckets.keys()].sort((a, b) => {
+    if (a === "Other") return 1;
+    if (b === "Other") return -1;
+    return Number(b) - Number(a);
+  });
+  for (const year of years) {
+    buckets.get(year).sort((a, b) => a.title.localeCompare(b.title) || a.name.localeCompare(b.name));
+  }
+  const decades = [];
+  const decadeSeen = new Set();
+  for (const year of years) {
+    const label = year === "Other" ? "Other" : `${Math.floor(Number(year) / 10) * 10}s`;
+    if (decadeSeen.has(label)) continue;
+    decadeSeen.add(label);
+    decades.push({ label, year });
+  }
+  return {
+    starred,
+    years: years.map((year) => ({ year, items: buckets.get(year) })),
+    decades,
+  };
+}
+
+function FolderStarButton({ name, starred, onToggle }) {
+  return (
+    <button
+      type="button"
+      className="folder-star"
+      aria-pressed={starred}
+      aria-label={starred ? `Remove star from ${name}` : `Star ${name}`}
+      onPointerDown={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onToggle();
+      }}
+      {...tip(starred ? "Stop listing this folder at the top." : "Keep this folder at the top of Folder View.")}
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path
+          d="M12 3.1 14.7 9h6.6l-5.3 4 2 6.6L12 16.2 5.9 19.6l2-6.6-5.3-4h6.6L12 3.1z"
+          fill={starred ? "currentColor" : "none"}
+          stroke="currentColor"
+          strokeWidth="1.7"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
+  );
+}
+
+function countLabel(n, word) {
+  const value = Number(n) || 0;
+  return `${value.toLocaleString()} ${word}${value === 1 ? "" : "s"}`;
+}
+
 function fileStem(name) {
   return (name || "").replace(/\.[^.]+$/, "").toLowerCase();
 }
@@ -109,7 +275,7 @@ function preferLargerCopy(photos) {
   return [...best.values()];
 }
 
-const ALBUM_PAGE = 36;
+const ALBUM_PAGE = 50;
 
 async function loadAllPhotos(params = {}, onPage) {
   const page = 500;
@@ -144,36 +310,37 @@ export default function Photos() {
 
 function FolderPhotos() {
   const nav = useNavigate();
+  const loc = useLocation();
   const [data, setData] = useState({ items: [], total: 0 });
   const [albumPhotos, setAlbumPhotos] = useState({});
   const [q, setQ] = useState("");
   const [unidentified, setUnidentified] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [importing, setImporting] = useState(false);
   const [job, setJob] = useState(null);
   const [resetting, setResetting] = useState(false);
   const [resetNote, setResetNote] = useState("");
   const [saved, setSaved] = useState(() => readImportFolders());
   const [picker, setPicker] = useState(false);
+  const [scanConfirm, setScanConfirm] = useState(null);
+  const [resetAsk, setResetAsk] = useState(null);
   const [scanErr, setScanErr] = useState("");
-  const [catalog, setCatalog] = useState(null);
+  const [catalog, setCatalog] = useState(() => {
+    const cached = loadCachedCatalog();
+    return cached.length ? cached : null;
+  });
+  const [loading, setLoading] = useState(() => !loadCachedCatalog().length);
   const savedAtPickerOpen = useRef(saved);
   const albumPhotosRef = useRef({});
   const loadingAlbums = useRef(false);
   const [openPaths, setOpenPaths] = useState([]);
+  const openPathsRef = useRef([]);
+  openPathsRef.current = openPaths;
   const [activeFolder, setActiveFolder] = useState("");
   const [activePath, setActivePath] = useState("");
   const [folderQuery, setFolderQuery] = useState("");
-
-  useEffect(() => {
-    const sel = readFolderSel();
-    if (!sel?.path) return undefined;
-    setActiveFolder(sel.folder || "");
-    setActivePath(sel.group || sel.path);
-    setOpenPaths([sel.path]);
-    fetchAlbum(sel.path).catch(() => {});
-    return undefined;
-  }, []);
+  const [starredFolders, setStarredFolders] = useState(readStarredFolders);
+  const [folderTitles, setFolderTitles] = useState(readFolderTitles);
+  const [folderMenu, setFolderMenu] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -208,6 +375,10 @@ function FolderPhotos() {
     const batch = await api.photos({ q, unidentified, folder: [path], offset: 0, limit });
     const next = { items: preferLargerCopy(batch.items || []), total: batch.total || 0, path };
     setAlbumPhotos((cur) => {
+      const prev = cur[path];
+      if ((prev?.items?.length || 0) >= (next.items?.length || 0) && prev?.path === path) {
+        return cur;
+      }
       const merged = { ...cur, [path]: next };
       albumPhotosRef.current = merged;
       return merged;
@@ -241,14 +412,30 @@ function FolderPhotos() {
         return;
       }
       loadingAlbums.current = true;
-      setLoading(true);
+      if (!(catalog || []).length) setLoading(true);
       try {
-        const listed = await api.nameFolders(saved);
+        const indexed = await api.nameFolders();
         if (cancelled) return;
-        const albums = listed.items || [];
-        setCatalog(albums);
-        const wanted = albums.filter((album) => album.path && album.photos > 0);
-        if (q || unidentified) {
+        const indexedItems = indexed.items || [];
+        if (indexedItems.length) {
+          setCatalog(indexedItems);
+          saveCachedCatalog(indexedItems);
+          setLoading(false);
+          setData({
+            items: [],
+            total: indexedItems.reduce((n, album) => n + (album.photos || 0), 0),
+          });
+        }
+      } catch {
+        /* keep cached albums while the full catalog loads */
+      }
+      if (q || unidentified) {
+        try {
+          const listed = await api.nameFolders(saved);
+          if (cancelled) return;
+          const albums = listed.items || [];
+          setCatalog(albums);
+          saveCachedCatalog(albums);
           const next = await loadAllPhotos({ q, unidentified, folder: saved }, (partial) => {
             if (!cancelled) {
               setData(partial);
@@ -256,15 +443,30 @@ function FolderPhotos() {
             }
           });
           if (!cancelled) setData(next);
-        } else {
-          setData({ items: [], total: wanted.reduce((n, album) => n + (album.photos || 0), 0) });
+        } catch {
+          if (!cancelled) setCatalog((cur) => cur || []);
+        } finally {
+          loadingAlbums.current = false;
+          if (!cancelled) setLoading(false);
         }
-      } catch {
-        if (!cancelled) setCatalog([]);
-      } finally {
-        loadingAlbums.current = false;
-        if (!cancelled) setLoading(false);
+        return;
       }
+      loadingAlbums.current = false;
+      if (!cancelled) setLoading(false);
+      api
+        .nameFolders(saved, { disk: true })
+        .then((listed) => {
+          if (cancelled) return;
+          const albums = listed.items || [];
+          if (!albums.length) return;
+          setCatalog(albums);
+          saveCachedCatalog(albums);
+          setData({
+            items: [],
+            total: albums.filter((album) => album.path && album.photos > 0).reduce((n, album) => n + (album.photos || 0), 0),
+          });
+        })
+        .catch(() => {});
     }
     load();
     return () => {
@@ -290,10 +492,11 @@ function FolderPhotos() {
         const listed = await api.nameFolders(saved);
         const albums = listed.items || [];
         setCatalog(albums);
-        for (const album of albums) {
-          if (!album.path || !(album.photos > 0)) continue;
-          const prev = albumPhotosRef.current[album.path];
-          if (!prev || prev.total !== album.photos) fetchAlbum(album.path);
+        saveCachedCatalog(albums);
+        for (const path of openPathsRef.current) {
+          if (!path) continue;
+          const prev = albumPhotosRef.current[path];
+          if (!prev) fetchAlbum(path);
         }
       } catch {
         /* ignore */
@@ -397,49 +600,62 @@ function FolderPhotos() {
     });
   }
 
+  function showAllFolders() {
+    appliedSel.current = "";
+    setActiveFolder("");
+    setActivePath("");
+    setOpenPaths([]);
+    setFolderQuery("");
+    writeFolderSel(null);
+    writeFolderHash("");
+    const path = window.location.pathname;
+    const search = window.location.search;
+    const hash = window.location.hash;
+    if (path !== "/photos" || search || hash) nav("/photos", { replace: true });
+  }
+
   function selectFromLocation(treeNow) {
     if (q || unidentified) return;
     if (!treeNow.groups.length && !treeNow.ungrouped.length) return;
-    const raw = window.location.hash.replace(/^#/, "");
-    const savedSel = readFolderSel();
-    const wanted = raw || savedSel?.hash || "";
+    const wanted = (loc.hash || window.location.hash).replace(/^#/, "");
     const albums = [...treeNow.ungrouped, ...treeNow.groups.flatMap((item) => item.albums)];
-    if (wanted) {
-      const group = treeNow.groups.find((item) => folderAnchor(item.name) === wanted);
-      if (group) {
-        if (appliedSel.current === wanted && activePath === group.path) return;
-        openGroup(group);
-        return;
+    if (!wanted) {
+      if (appliedSel.current || activeFolder || activePath || openPaths.length) {
+        appliedSel.current = "";
+        setActiveFolder("");
+        setActivePath("");
+        setOpenPaths([]);
       }
-      const album = albums.find(
-        (item) => folderAnchor(item.folder) === wanted || folderAnchor(`${item.group || ""}--${item.folder}`) === wanted,
-      );
-      if (album) {
-        if (appliedSel.current === wanted && activeFolder === album.folder) return;
-        openAlbum(album);
-        return;
-      }
-      if (savedSel?.path) {
-        const byPath = albums.find((item) => item.path === savedSel.path);
-        if (byPath) {
-          openAlbum(byPath);
-          return;
-        }
-        const groupByPath = treeNow.groups.find((item) => item.path === savedSel.path);
-        if (groupByPath) {
-          openGroup(groupByPath);
-          return;
-        }
-      }
+      return;
     }
-    if (appliedSel.current) return;
-    if (treeNow.groups[0]) openGroup(treeNow.groups[0]);
-    else if (treeNow.ungrouped[0]) openAlbum(treeNow.ungrouped[0]);
+    const group = treeNow.groups.find((item) => folderAnchor(item.name) === wanted);
+    if (group) {
+      if (appliedSel.current === wanted && activePath === group.path) return;
+      openGroup(group);
+      return;
+    }
+    const album = albums.find(
+      (item) => folderAnchor(item.folder) === wanted || folderAnchor(`${item.group || ""}--${item.folder}`) === wanted,
+    );
+    if (album) {
+      if (appliedSel.current === wanted && activeFolder === album.folder) return;
+      openAlbum(album);
+      return;
+    }
+    showAllFolders();
   }
 
   useEffect(() => {
     selectFromLocation(tree);
-  }, [tree, q, unidentified]);
+  }, [tree, q, unidentified, loc.hash, loc.pathname]);
+
+  useEffect(() => {
+    function onAllFolders() {
+      showAllFolders();
+    }
+    window.addEventListener(ALL_FOLDERS_EVENT, onAllFolders);
+    return () => window.removeEventListener(ALL_FOLDERS_EVENT, onAllFolders);
+  }, []);
 
   useEffect(() => {
     function onHash() {
@@ -454,10 +670,39 @@ function FolderPhotos() {
     };
   }, [tree, q, unidentified]);
 
+  const restoredFor = useRef("");
+
   useEffect(() => {
-    if (!activeFolder) return undefined;
-    const id = folderAnchor(activeFolder);
-    const run = () => document.getElementById(id)?.scrollIntoView({ block: "start" });
+    if (!activeFolder) {
+      restoredFor.current = "";
+      return undefined;
+    }
+    const hash = folderAnchor(activeFolder);
+    const pos = readAlbumPos();
+    const restore = pos?.hash === hash ? pos : null;
+    const restoreId = restore?.photoId ? Number(restore.photoId) : 0;
+
+    if (restore?.path && restoreId) {
+      const have = albumPhotosRef.current[restore.path]?.items || [];
+      const found = have.some((p) => Number(p.id) === restoreId);
+      const want = Math.min(500, Math.max(ALBUM_PAGE, Number(restore.count) || 0));
+      if (!found && want > have.length) fetchAlbum(restore.path, want);
+    }
+
+    if (restoreId) {
+      const tile = document.getElementById(`photo-tile-${restoreId}`);
+      if (tile) {
+        tile.scrollIntoView({ block: "center", inline: "nearest" });
+        restoredFor.current = hash;
+        clearAlbumPos();
+        return undefined;
+      }
+      document.getElementById(hash)?.scrollIntoView({ block: "start" });
+      return undefined;
+    }
+
+    if (restoredFor.current === hash) return undefined;
+    const run = () => document.getElementById(hash)?.scrollIntoView({ block: "start" });
     run();
     const t = window.setTimeout(run, 80);
     const t2 = window.setTimeout(run, 400);
@@ -465,7 +710,7 @@ function FolderPhotos() {
       window.clearTimeout(t);
       window.clearTimeout(t2);
     };
-  }, [activeFolder, openPaths]);
+  }, [activeFolder, openPaths, albumPhotos]);
 
   const shown = (catalog || []).reduce((n, album) => n + (album.photos || 0), 0) || groups.reduce((n, [, photos]) => n + photos.length, 0);
   const libName = saved.length
@@ -500,14 +745,22 @@ function FolderPhotos() {
     }
   }
 
+  function requestScan(paths) {
+    const list = (paths || pending).filter(Boolean);
+    if (!list.length) {
+      setPicker(true);
+      return;
+    }
+    setScanConfirm(list);
+  }
+
+  function askResetMatching(folder) {
+    setResetAsk(folder || true);
+  }
+
   async function resetMatching(folder) {
     const all = !folder;
-    const okGo = window.confirm(
-      all
-        ? "Clear auto-matched names in every folder? Names you typed stay. Photo files are not changed."
-        : `Clear auto-matched names in “${folder}”? Names you typed stay. Photo files are not changed.`,
-    );
-    if (!okGo) return;
+    setResetAsk(null);
     setResetting(true);
     setResetNote("");
     try {
@@ -530,11 +783,75 @@ function FolderPhotos() {
     }
   }
 
-  const folderNeedle = folderQuery.trim().toLowerCase();
-  const folderShown = (name) =>
-    !folderNeedle || String(name || "").toLowerCase().includes(folderNeedle);
-  const visibleGroups = tree.groups.filter((group) => folderShown(group.name));
-  const visibleUngrouped = tree.ungrouped.filter((album) => folderShown(album.folder));
+  const index = useMemo(
+    () => folderIndex(tree, folderQuery, starredFolders, folderTitles),
+    [tree, folderQuery, starredFolders, folderTitles],
+  );
+
+  function albumLabel(path, fallback) {
+    return folderDisplayName(path, fallback, folderTitles);
+  }
+
+  function openFolderMenu(event, path, name) {
+    if (!path) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setFolderMenu({ x: event.clientX, y: event.clientY, path, name });
+  }
+
+  function saveFolderName(path, original, draft) {
+    const cleaned = String(draft || "").trim();
+    const next = setFolderTitle(path, cleaned === String(original || "").trim() ? "" : cleaned, folderTitles);
+    writeFolderTitles(next);
+    setFolderTitles(next);
+  }
+
+  function toggleStar(path) {
+    setStarredFolders((cur) => {
+      const next = toggleStarredFolder(path, cur);
+      writeStarredFolders(next);
+      return next;
+    });
+  }
+
+  function folderTile(item, { showYear = false } = {}) {
+    const active =
+      item.kind === "group"
+        ? activePath === item.group.path
+        : activePath === item.album.path || openPaths.includes(item.album.path);
+    const starred = isFolderStarred(item.key, starredFolders);
+    const year = showYear ? item.year : "";
+    const meta = `${countLabel(item.photos, "photo")}${item.albums > 1 ? ` · ${countLabel(item.albums, "album")}` : ""}`;
+    const label = year ? `${year}. ${item.title}. ${meta}` : `${item.title}. ${meta}`;
+    return (
+      <a
+        key={item.key}
+        className={`folder-tile${active ? " active" : ""}${starred ? " starred" : ""}`}
+        href={`#${folderAnchor(item.name)}`}
+        aria-label={label}
+        onContextMenu={(event) => openFolderMenu(event, item.key, item.name)}
+        onClick={(event) => {
+          event.preventDefault();
+          if (item.kind === "group") openGroup(item.group);
+          else openAlbum(item.album);
+        }}
+        {...tip(
+          item.kind === "group"
+            ? `Show the ${item.albums} albums inside ${item.name}.`
+            : `Show photos in ${item.name}.`,
+        )}
+      >
+        <span className="folder-tile-top">
+          <span className="folder-tile-name">
+            {year ? <span className="folder-tile-year">{year}</span> : null}
+            {item.title}
+          </span>
+          <FolderStarButton name={item.name} starred={starred} onToggle={() => toggleStar(item.key)} />
+        </span>
+        <span className="folder-tile-meta">{meta}</span>
+      </a>
+    );
+  }
 
   return (
     <div className="folder-photos">
@@ -544,9 +861,11 @@ function FolderPhotos() {
           <h1>Folder View</h1>
           <p className="lede">
             Full photos, grouped by the folder they live in.{" "}
-            {loading
-              ? "Loading photos…"
-              : `${shown} photo${shown === 1 ? "" : "s"} in ${groups.length} folder${groups.length === 1 ? "" : "s"}${libName ? ` from ${libName}` : ""}.`}
+            {loading && !(catalog || []).length
+              ? "Loading folders…"
+              : activeFolder
+                ? `${shown} photo${shown === 1 ? "" : "s"} in ${groups.length} folder${groups.length === 1 ? "" : "s"}${libName ? ` from ${libName}` : ""}.`
+                : `Choose a folder to see photos.${libName ? ` ${libName}.` : ""}`}
             {shown !== data.total && !loading && (q || unidentified)
               ? ` ${data.total} match this filter.`
               : ""}{" "}
@@ -611,8 +930,8 @@ function FolderPhotos() {
             type="button"
             className="secondary"
             disabled={importing || !pending.length}
-            onClick={() => scanFolders(pending)}
-            {...tip("Read albums that are not in the catalog yet. Already scanned albums stay as they are. Files are not moved.")}
+            onClick={() => requestScan(pending)}
+            {...tip("Show the albums that are not in the catalog yet, then confirm. Already scanned albums stay as they are. Files are not moved.")}
           >
             {importing
               ? "Finding known faces…"
@@ -640,7 +959,7 @@ function FolderPhotos() {
           type="button"
           className="secondary"
           disabled={resetting || loading || !groups.length}
-          onClick={() => resetMatching()}
+          onClick={() => askResetMatching()}
           {...tip("Undo auto-matched names in every folder. Names you typed stay. Photos are not changed.")}
         >
           {resetting ? "Resetting…" : "Reset matching"}
@@ -648,6 +967,26 @@ function FolderPhotos() {
       </div>
       {scanErr ? <p className="error">{scanErr}</p> : null}
       {resetNote ? <p className="hint" style={{ marginTop: -8, marginBottom: 16 }}>{resetNote}</p> : null}
+      {scanConfirm ? (
+        <ScanConfirm
+          paths={scanConfirm}
+          titles={folderTitles}
+          onCancel={() => setScanConfirm(null)}
+          onConfirm={() => {
+            const list = scanConfirm;
+            setScanConfirm(null);
+            scanFolders(list);
+          }}
+        />
+      ) : null}
+      {resetAsk ? (
+        <ConfirmAsk
+          title={resetAsk === true ? "Reset matching in every folder?" : `Reset matching in “${resetAsk}”?`}
+          body="Clear auto-matched names. Names you typed stay. Photo files are not changed."
+          onCancel={() => setResetAsk(null)}
+          onConfirm={() => resetMatching(resetAsk === true ? undefined : resetAsk)}
+        />
+      ) : null}
       {picker ? (
         <FolderPicker
           selected={saved}
@@ -659,7 +998,7 @@ function FolderPhotos() {
             setSaved(next);
             if (opts.scan) {
               const added = addedFolderPaths(next, savedAtPickerOpen.current);
-              if (added.length && !importing) scanFolders(added);
+              if (added.length && !importing) requestScan(added);
             }
           }}
         />
@@ -685,8 +1024,8 @@ function FolderPhotos() {
               type="button"
               className="ghost"
               disabled={importing}
-              onClick={() => scanFolders(pending)}
-              {...tip("Read these albums and show them here. Already scanned albums stay as they are.")}
+              onClick={() => requestScan(pending)}
+              {...tip("Show these albums, then confirm. Already scanned albums stay as they are.")}
             >
               {importing ? "Finding known faces…" : "Find Known Faces"}
             </button>
@@ -712,6 +1051,7 @@ function FolderPhotos() {
               <AlbumBlock
                 key={meta?.path || folder}
                 folder={folder}
+                label={meta?.path ? albumLabel(meta.path, folder) : folder}
                 photos={photos}
                 meta={meta}
                 current={activeFolder === folder}
@@ -724,7 +1064,12 @@ function FolderPhotos() {
                     : photos;
                   beginPlay(nav, all, { kind: "album", title: folder, from: "/photos" });
                 }}
-                onReset={() => resetMatching(folder)}
+                onReset={() => askResetMatching(folder)}
+                onRename={
+                  meta?.path
+                    ? (event) => openFolderMenu(event, meta.path, folder)
+                    : undefined
+                }
                 onNeed={() => {
                   if (meta?.path && !photos.length) fetchAlbum(meta.path);
                 }}
@@ -733,84 +1078,97 @@ function FolderPhotos() {
             ))
         : (
         <>
-          {!tree.groups.length && !tree.ungrouped.length && openPaths[0] ? (
-            <AlbumBlock
-              folder={activeFolder || "Album"}
-              photos={albumPhotos[openPaths[0]]?.items || []}
-              meta={{
-                path: openPaths[0],
-                total: albumPhotos[openPaths[0]]?.total,
-              }}
-              current
-              resetting={resetting}
-              onPlay={async () => {
-                const all = preferLargerCopy(
-                  (await loadAllPhotos({ folder: [openPaths[0]] })).items || [],
-                );
-                beginPlay(nav, all, { kind: "album", title: activeFolder || "Album", from: "/photos" });
-              }}
-              onReset={() => resetMatching(activeFolder)}
-              onNeed={() => fetchAlbum(openPaths[0])}
-              onMore={() =>
-                fetchAlbum(
-                  openPaths[0],
-                  Math.min((albumPhotos[openPaths[0]]?.total || 0) + ALBUM_PAGE, 500),
-                )
-              }
-            />
-          ) : null}
-          {tree.groups.length || tree.ungrouped.length > 1 ? (
+          {tree.groups.length || tree.ungrouped.length ? (
             <>
-              <details className="folder-filter folder-filter-fold">
-                <summary>
-                  Folders
-                  {activeFolder ? <span className="hint"> · {activeFolder}</span> : null}
-                </summary>
-                <input
-                  type="search"
-                  value={folderQuery}
-                  onChange={(e) => setFolderQuery(e.target.value)}
-                  placeholder="Find a folder"
-                  aria-label="Find a folder"
-                />
-                <div className="person-chips" role="navigation" aria-label="Folders">
-                {visibleGroups.map((group) => (
-                  <a
-                    key={group.path}
-                    className={`person-chip${activePath === group.path ? " active" : ""}`}
-                    href={`#${folderAnchor(group.name)}`}
-                    aria-current={activePath === group.path ? "true" : undefined}
+              {activeFolder ? (
+                <div className="folder-now">
+                  <Link
+                    to="/photos"
+                    className="secondary"
                     onClick={(event) => {
                       event.preventDefault();
-                      openGroup(group);
+                      showAllFolders();
                     }}
-                    {...tip(`Show the ${group.albums.length} albums inside ${group.name}.`)}
+                    {...tip("Show every album. Folder View always starts here.")}
                   >
-                    {group.name}
-                    <span className="hint">
-                      {" "}
-                      · {group.total} · {group.albums.length} albums
-                    </span>
-                  </a>
-                ))}
-                {visibleUngrouped.map((album) => (
-                  <a
-                    key={album.path}
-                    className={`person-chip${activePath === album.path ? " active" : ""}`}
-                    href={`#${folderAnchor(album.folder)}`}
-                    aria-current={activePath === album.path ? "true" : undefined}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      openAlbum(album);
-                    }}
-                    {...tip(`Show photos in ${album.folder}.`)}
+                    All folders
+                  </Link>
+                  <span
+                    className="hint"
+                    onContextMenu={(event) => openFolderMenu(event, activePath, activeFolder)}
                   >
-                    {album.folder}
-                    <span className="hint"> · {album.photos}</span>
-                  </a>
-                ))}
+                    {albumLabel(activePath, activeFolder)}
+                  </span>
+                  {activePath ? (
+                    <FolderStarButton
+                      name={activeFolder}
+                      starred={isFolderStarred(openPaths.length === 1 ? openPaths[0] : activePath, starredFolders)}
+                      onToggle={() => toggleStar(openPaths.length === 1 ? openPaths[0] : activePath)}
+                    />
+                  ) : null}
                 </div>
-              </details>
+              ) : (
+                <div className="folder-index">
+                  <div className="folder-index-tools">
+                    <input
+                      type="search"
+                      value={folderQuery}
+                      onChange={(e) => setFolderQuery(e.target.value)}
+                      placeholder="Find a folder"
+                      aria-label="Find a folder"
+                    />
+                    {index.starred.length || index.decades.length > 1 ? (
+                      <nav className="folder-decade-nav" aria-label="Jump to starred albums or a decade">
+                        {index.starred.length ? (
+                          <a className="starred-jump" href="#starred-folders">
+                            Starred
+                          </a>
+                        ) : null}
+                        {index.decades.map((decade) => (
+                          <a key={decade.label} href={`#year-${decade.year}`}>
+                            {decade.label}
+                          </a>
+                        ))}
+                      </nav>
+                    ) : null}
+                  </div>
+                  {index.starred.length ? (
+                    <section id="starred-folders" className="folder-year folder-starred">
+                      <h2>
+                        <span className="folder-starred-title">
+                          <svg className="folder-starred-mark" viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                              d="M12 3.1 14.7 9h6.6l-5.3 4 2 6.6L12 16.2 5.9 19.6l2-6.6-5.3-4h6.6L12 3.1z"
+                              fill="currentColor"
+                            />
+                          </svg>
+                          Starred
+                        </span>
+                        <span className="hint"> · {countLabel(index.starred.length, "album")}</span>
+                      </h2>
+                      <p className="folder-starred-lede">Albums kept at the top of Folder View.</p>
+                      <div className="folder-index-grid">
+                        {index.starred.map((item) => folderTile(item, { showYear: true }))}
+                      </div>
+                    </section>
+                  ) : null}
+                  {index.years.map((row) => (
+                    <section key={row.year} id={`year-${row.year}`} className="folder-year">
+                      <h2>
+                        {row.year === "Other" ? "Other albums" : row.year}
+                        <span className="hint">
+                          {" "}
+                          · {countLabel(row.items.length, "album")}
+                        </span>
+                      </h2>
+                      <div className="folder-index-grid">{row.items.map(folderTile)}</div>
+                    </section>
+                  ))}
+                  {folderQuery.trim() && !index.starred.length && !index.years.length ? (
+                    <p className="hint">No folder matches “{folderQuery.trim()}”.</p>
+                  ) : null}
+                </div>
+              )}
               {tree.groups
                 .filter((group) => activePath === group.path)
                 .map((group) => (
@@ -823,15 +1181,23 @@ function FolderPhotos() {
                     {group.albums.map((album) => (
                       <a
                         key={album.path}
-                        className={`person-chip${activeFolder === album.folder ? " active" : ""}`}
+                        className={`person-chip${activeFolder === album.folder ? " active" : ""}${
+                          isFolderStarred(album.path, starredFolders) ? " starred" : ""
+                        }`}
                         href={`#${folderAnchor(album.folder)}`}
+                        onContextMenu={(event) => openFolderMenu(event, album.path, album.folder)}
                         onClick={(event) => {
                           event.preventDefault();
                           openAlbum(album, group);
                         }}
-                        {...tip(`Show photos in ${album.folder}.`)}
+                        {...tip(`Show photos in ${albumLabel(album.path, album.folder)}.`)}
                       >
-                        {album.folder}
+                        <FolderStarButton
+                          name={albumLabel(album.path, album.folder)}
+                          starred={isFolderStarred(album.path, starredFolders)}
+                          onToggle={() => toggleStar(album.path)}
+                        />
+                        {albumLabel(album.path, album.folder)}
                         <span className="hint"> · {album.photos}</span>
                       </a>
                     ))}
@@ -871,6 +1237,7 @@ function FolderPhotos() {
                 {showMixed ? (
                   <AlbumBlock
                     folder={group.name}
+                    label={albumLabel(group.path, group.name)}
                     photos={loadedGroup.items || []}
                     meta={{ path: group.path, total: loadedGroup.total || group.total }}
                     current
@@ -879,9 +1246,10 @@ function FolderPhotos() {
                     resetting={resetting}
                     onPlay={async () => {
                       const all = preferLargerCopy((await loadAllPhotos({ folder: [group.path] })).items || []);
-                      beginPlay(nav, all, { kind: "album", title: group.name, from: "/photos" });
+                      beginPlay(nav, all, { kind: "album", title: albumLabel(group.path, group.name), from: "/photos" });
                     }}
-                    onReset={() => resetMatching(group.name)}
+                    onReset={() => askResetMatching(group.name)}
+                    onRename={(event) => openFolderMenu(event, group.path, group.name)}
                     onNeed={() => {
                       if (!(loadedGroup.items || []).length) fetchAlbum(group.path);
                     }}
@@ -893,6 +1261,7 @@ function FolderPhotos() {
                 {viewingWhole && !showMixed && rootTotal > 0 ? (
                   <AlbumBlock
                     folder={group.name}
+                    label={albumLabel(group.path, group.name)}
                     photos={rootPhotos}
                     meta={{ path: group.path, total: rootTotal }}
                     current={activeFolder === group.name}
@@ -903,9 +1272,10 @@ function FolderPhotos() {
                         group.path,
                         preferLargerCopy((await loadAllPhotos({ folder: [group.path] })).items || []),
                       );
-                      beginPlay(nav, all, { kind: "album", title: group.name, from: "/photos" });
+                      beginPlay(nav, all, { kind: "album", title: albumLabel(group.path, group.name), from: "/photos" });
                     }}
-                    onReset={() => resetMatching(group.name)}
+                    onReset={() => askResetMatching(group.name)}
+                    onRename={(event) => openFolderMenu(event, group.path, group.name)}
                     onNeed={() => {
                       if (!(loadedGroup.items || []).length) fetchAlbum(group.path);
                     }}
@@ -920,6 +1290,7 @@ function FolderPhotos() {
                     <AlbumBlock
                       key={album.path}
                       folder={album.folder}
+                      label={albumLabel(album.path, album.folder)}
                       photos={loaded.items || []}
                       meta={{ path: album.path, total: loaded.total || album.photos }}
                       current={activeFolder === album.folder}
@@ -927,9 +1298,10 @@ function FolderPhotos() {
                       resetting={resetting}
                       onPlay={async () => {
                         const all = preferLargerCopy((await loadAllPhotos({ folder: [album.path] })).items || []);
-                        beginPlay(nav, all, { kind: "album", title: album.folder, from: "/photos" });
+                        beginPlay(nav, all, { kind: "album", title: albumLabel(album.path, album.folder), from: "/photos" });
                       }}
-                      onReset={() => resetMatching(album.folder)}
+                      onReset={() => askResetMatching(album.folder)}
+                      onRename={(event) => openFolderMenu(event, album.path, album.folder)}
                       onNeed={() => {
                         if (!(loaded.items || []).length) fetchAlbum(album.path);
                       }}
@@ -950,6 +1322,7 @@ function FolderPhotos() {
                 <AlbumBlock
                   key={album.path}
                   folder={album.folder}
+                  label={albumLabel(album.path, album.folder)}
                   photos={loaded.items || []}
                   meta={{ path: album.path, total: loaded.total || album.photos }}
                   current={activePath === album.path}
@@ -960,9 +1333,10 @@ function FolderPhotos() {
                   resetting={resetting}
                   onPlay={async () => {
                     const all = preferLargerCopy((await loadAllPhotos({ folder: [album.path] })).items || []);
-                    beginPlay(nav, all, { kind: "album", title: album.folder, from: "/photos" });
+                    beginPlay(nav, all, { kind: "album", title: albumLabel(album.path, album.folder), from: "/photos" });
                   }}
-                  onReset={() => resetMatching(album.folder)}
+                  onReset={() => askResetMatching(album.folder)}
+                  onRename={(event) => openFolderMenu(event, album.path, album.folder)}
                   onNeed={() => {
                     if (!(loaded.items || []).length) fetchAlbum(album.path);
                   }}
@@ -972,11 +1346,24 @@ function FolderPhotos() {
             })}
         </>
       )}
+      {folderMenu ? (
+        <FolderRenameMenu
+          menu={folderMenu}
+          current={albumLabel(folderMenu.path, folderMenu.name)}
+          original={folderMenu.name}
+          onClose={() => setFolderMenu(null)}
+          onSave={(draft) => {
+            saveFolderName(folderMenu.path, folderMenu.name, draft);
+            setFolderMenu(null);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
 
-function AlbumBlock({ folder, photos, meta, current, onSelect, resetting, onPlay, onReset, onNeed, onMore, anchor = true }) {
+function AlbumBlock({ folder, label, photos, meta, current, onSelect, resetting, onPlay, onReset, onNeed, onMore, onRename, anchor = true }) {
+  const [labelsOn] = usePhotoLabels();
   const ref = useRef(null);
   useEffect(() => {
     if (photos.length || !meta?.path) return undefined;
@@ -998,6 +1385,7 @@ function AlbumBlock({ folder, photos, meta, current, onSelect, resetting, onPlay
     return () => io.disconnect();
   }, [meta?.path, photos.length]);
   const total = meta?.total || photos.length;
+  const shown = label || folder;
   return (
     <section
       ref={ref}
@@ -1005,20 +1393,21 @@ function AlbumBlock({ folder, photos, meta, current, onSelect, resetting, onPlay
       id={anchor ? folderAnchor(folder) : undefined}
       onClick={() => onSelect?.()}
     >
-      <header className="album-head">
+      <header className="album-head" onContextMenu={onRename}>
         <div className="album-head-copy">
           <p className="eyebrow">Album</p>
-          <h2>{folder}</h2>
+          <h2>{shown}</h2>
           <p className="album-head-count">
             {total} photo{total === 1 ? "" : "s"}
           </p>
         </div>
         <div className="album-head-actions">
+          <NamesToggle />
           <button
             type="button"
             className="secondary"
             onClick={onPlay}
-            {...tip(`Play ${folder} in date order, names on. Fullscreen.`)}
+            {...tip(`Play ${shown} in date order. Fullscreen.`)}
           >
             Play
           </button>
@@ -1027,7 +1416,7 @@ function AlbumBlock({ folder, photos, meta, current, onSelect, resetting, onPlay
             className="ghost"
             disabled={resetting}
             onClick={onReset}
-            {...tip(`Undo auto-matched names in ${folder}. Names you typed stay.`)}
+            {...tip(`Undo auto-matched names in ${shown}. Names you typed stay.`)}
           >
             Reset matching
           </button>
@@ -1048,13 +1437,23 @@ function AlbumBlock({ folder, photos, meta, current, onSelect, resetting, onPlay
             <div
               className="label-card"
               key={p.id}
+              id={`photo-tile-${p.id}`}
               style={{ "--tile-ar": tileAr }}
+              onClick={() =>
+                writeAlbumPos({
+                  hash: folderAnchor(folder),
+                  photoId: Number(p.id),
+                  path: meta?.path || "",
+                  count: photos.length,
+                })
+              }
             >
               <LabeledPhoto
                 photo={p}
                 src={p.thumb_url}
                 to={photoLink(p.id)}
-                toState={{ fullscreen: true, from: "/photos" }}
+                toState={{ fullscreen: true, from: `/photos#${folderAnchor(folder)}` }}
+                overlayTags={labelsOn}
               />
               <div className="photo-caption">
                 {p.taken_at ? p.taken_at.slice(0, 10) : p.filename}
@@ -1408,6 +1807,123 @@ function PhotoByTag({ tagFilter }) {
             <p className="hint">No photos have this tag yet.</p>
           )}
         </section>
+      ) : null}
+    </div>
+  );
+}
+
+const MENU_PAD = 8;
+
+function ScanConfirm({ paths, titles, onCancel, onConfirm }) {
+  const n = (paths || []).length;
+  return (
+    <ConfirmAsk
+      title={n === 1 ? "Find Known Faces in this folder?" : `Find Known Faces in ${n} folders?`}
+      body="Read photos that are not in the catalog yet. Already scanned albums stay as they are. Files stay where they are."
+      onCancel={onCancel}
+      onConfirm={onConfirm}
+    >
+      <ul className="scan-confirm-list">
+        {(paths || []).map((path) => {
+          const name = folderDisplayName(path, folderLabel(path), titles);
+          const disk = folderLabel(path);
+          return (
+            <li key={path}>
+              <strong>{name}</strong>
+              {name !== disk ? <div className="hint">{disk}</div> : null}
+              <div className="hint" title={path}>{path}</div>
+            </li>
+          );
+        })}
+      </ul>
+    </ConfirmAsk>
+  );
+}
+
+function FolderRenameMenu({ menu, current, original, onClose, onSave }) {
+  const box = useRef(null);
+  const input = useRef(null);
+  const [draft, setDraft] = useState(current || original || "");
+  const custom = Boolean(String(current || "").trim() && String(current).trim() !== String(original || "").trim());
+
+  useEffect(() => {
+    function insideMenu(event) {
+      if (!box.current) return false;
+      if (event?.target && box.current.contains(event.target)) return true;
+      return false;
+    }
+    function hide(event) {
+      if (event?.type === "keydown") {
+        if (event.key !== "Escape") return;
+        onClose();
+        return;
+      }
+      if (insideMenu(event)) return;
+      onClose();
+    }
+    window.addEventListener("pointerdown", hide, true);
+    window.addEventListener("keydown", hide);
+    window.addEventListener("scroll", hide, true);
+    return () => {
+      window.removeEventListener("pointerdown", hide, true);
+      window.removeEventListener("keydown", hide);
+      window.removeEventListener("scroll", hide, true);
+    };
+  }, [onClose]);
+
+  useLayoutEffect(() => {
+    if (!box.current) return;
+    const r = box.current.getBoundingClientRect();
+    let left = menu.x;
+    let top = menu.y;
+    if (left + r.width > window.innerWidth - MENU_PAD) left = window.innerWidth - r.width - MENU_PAD;
+    if (top + r.height > window.innerHeight - MENU_PAD) top = window.innerHeight - r.height - MENU_PAD;
+    if (left < MENU_PAD) left = MENU_PAD;
+    if (top < MENU_PAD) top = MENU_PAD;
+    box.current.style.left = `${left}px`;
+    box.current.style.top = `${top}px`;
+    input.current?.focus();
+    input.current?.select();
+  }, [menu]);
+
+  function submit() {
+    onSave(draft);
+  }
+
+  return (
+    <div
+      ref={box}
+      className="photo-menu"
+      role="menu"
+      aria-label="Rename album"
+      onPointerDown={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <div className="photo-menu-note">Rename in Folder View. The folder on disk is not renamed.</div>
+      <input
+        ref={input}
+        className="photo-menu-input"
+        type="text"
+        maxLength={FOLDER_TITLE_MAX}
+        value={draft}
+        placeholder={original || "Album name"}
+        aria-label="Album name"
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            e.stopPropagation();
+            submit();
+          }
+        }}
+      />
+      <button type="button" role="menuitem" onClick={submit}>
+        Save name
+      </button>
+      {custom ? (
+        <button type="button" role="menuitem" onClick={() => onSave("")}>
+          Use folder name
+        </button>
       ) : null}
     </div>
   );

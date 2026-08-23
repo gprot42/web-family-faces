@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = Path(os.environ.get("PHOTOSORT_DATA", ROOT / "data")).resolve()
 DB_PATH = DATA_DIR / "photosort.db"
 THUMB_DIR = DATA_DIR / "thumbs"
+VIEW_DIR = DATA_DIR / "views"
 CROP_DIR = DATA_DIR / "crops"
 MODEL_DIR = DATA_DIR / "models"
 BACKUP_DIR = DATA_DIR / "backups"
@@ -73,6 +74,7 @@ RAW_EXTS = {
 IMAGE_EXTS = PILLOW_EXTS | RAW_EXTS
 
 THUMB_MAX = 640
+VIEW_MAX = 1600
 CROP_SIZE = 384
 CROP_PAD = 0.32
 
@@ -139,5 +141,5 @@ def xai_api_key() -> str:
 
 
 def ensure_dirs() -> None:
-    for path in (DATA_DIR, THUMB_DIR, CROP_DIR, MODEL_DIR, BACKUP_DIR, SHARPEN_DIR, IMAGINE_DIR):
+    for path in (DATA_DIR, THUMB_DIR, VIEW_DIR, CROP_DIR, MODEL_DIR, BACKUP_DIR, SHARPEN_DIR, IMAGINE_DIR):
         path.mkdir(parents=True, exist_ok=True)

@@ -14,6 +14,7 @@ def _db(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", path)
     monkeypatch.setattr(config, "DATA_DIR", data)
     monkeypatch.setattr(config, "THUMB_DIR", data / "thumbs")
+    monkeypatch.setattr(config, "VIEW_DIR", data / "views")
     monkeypatch.setattr(config, "CROP_DIR", data / "crops")
     monkeypatch.setattr(config, "BACKUP_DIR", data / "backups")
     monkeypatch.setattr(db, "DB_PATH", path)
@@ -22,6 +23,7 @@ def _db(tmp_path, monkeypatch):
     monkeypatch.setattr(catalog, "BACKUP_DIR", data / "backups")
     (data / "backups").mkdir()
     (data / "thumbs").mkdir()
+    (data / "views").mkdir()
     conn = connect()
     init_db(conn)
     conn.execute(
@@ -97,7 +99,7 @@ def test_list_albums_under_includes_unscanned_children(tmp_path, monkeypatch):
     (root / "1997 - Market").mkdir(parents=True)
     (root / "1998 - Harbor 2").mkdir()
     (root / "1994 - Trip 1024 x 768").mkdir()
-    items = list_albums_under([str(root)])
+    items = list_albums_under([str(root)], disk=True)
     names = [row["folder"] for row in items]
     assert names == ["1997 - Market", "1998 - Harbor 2"]
     by_name = {row["folder"]: row for row in items}
@@ -137,6 +139,30 @@ def test_list_albums_under_expands_nested_scan_sets(tmp_path, monkeypatch):
     assert by_path[str(nested / "Loose Photos")]["group_path"] == str(nested)
     assert by_path[str(root / "1997 - Market")]["group"] in ("", None)
     assert by_path[str(root / "1997 - Market")]["photos"] == 0
+
+
+def test_list_albums_under_db_skips_disk_and_groups_nested(tmp_path, monkeypatch):
+    from photosort.people import list_albums_under
+    from photosort.util import now_iso
+
+    _db(tmp_path, monkeypatch)
+    root = tmp_path / "Photo_Collection"
+    nested = root / "Scanned_Album_1998_Apr"
+    (nested / "Loose Photos").mkdir(parents=True)
+    (root / "1997 - Market").mkdir()
+    conn = connect()
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        (str(nested / "Loose Photos" / "a.jpg"), "n1", 100, 100, now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    items = list_albums_under([str(root)], disk=False)
+    by_path = {row["path"]: row for row in items}
+    assert str(nested / "Loose Photos") in by_path
+    assert str(root / "1997 - Market") not in by_path
+    assert by_path[str(nested / "Loose Photos")]["group"] == "Scanned_Album_1998_Apr"
+    assert by_path[str(nested / "Loose Photos")]["photos"] == 1
 
 
 def test_path_in_folder_includes_nested_scan_sets():
@@ -354,6 +380,35 @@ def test_photo_lite_skips_suggestions(tmp_path, monkeypatch):
     assert lite["faces"][0]["suggestions"] == []
 
 
+def test_photo_view_is_cached_display_jpeg(tmp_path, monkeypatch):
+    import io
+
+    from PIL import Image
+
+    _db(tmp_path, monkeypatch)
+    src = tmp_path / "big.jpg"
+    Image.new("RGB", (2400, 1600), (40, 80, 20)).save(src, "JPEG")
+    conn = connect()
+    conn.execute(
+        "UPDATE photos SET path = ?, width = 2400, height = 1600 WHERE id = 1",
+        (str(src),),
+    )
+    conn.commit()
+    conn.close()
+    client = TestClient(app)
+    lite = client.get("/api/photos/1", params={"lite": "true"}).json()
+    assert lite["view_url"].endswith("/api/photos/1/view")
+    resp = client.get("/api/photos/1/view")
+    assert resp.status_code == 200
+    assert "jpeg" in (resp.headers.get("content-type") or "")
+    assert "max-age" in (resp.headers.get("cache-control") or "")
+    view = Image.open(io.BytesIO(resp.content))
+    assert max(view.size) <= 1600
+    again = client.get("/api/photos/1/view")
+    assert again.status_code == 200
+    assert again.content == resp.content
+
+
 def test_pipeline_should_resume_after_interrupted_job(tmp_path, monkeypatch):
     from photosort import pipeline as pipeline_mod
     from photosort.jobs import create_job, update_job
@@ -436,6 +491,17 @@ def test_resume_latest_restarts_paused_pipeline(tmp_path, monkeypatch):
     result = pipeline_mod.resume_latest()
     assert started == ["pipeline"]
     assert result["type"] == "pipeline"
+
+
+def test_should_resume_does_not_start_from_unscanned_backlog(tmp_path, monkeypatch):
+    from photosort import pipeline as pipeline_mod
+
+    _db(tmp_path, monkeypatch)
+    album = tmp_path / "heirlooms"
+    album.mkdir()
+    pipeline_mod.remember_folders([album])
+    assert pipeline_mod.pending_scan_count() >= 1
+    assert pipeline_mod.should_resume() is False
 
 
 def test_paused_job_does_not_autoresume(tmp_path, monkeypatch):
@@ -545,7 +611,7 @@ def test_run_pipeline_can_skip_face_scan(tmp_path, monkeypatch):
     album.mkdir()
     scanned = []
     monkeypatch.setattr(pipeline_mod.importer, "import_folder", lambda *a, **k: {"added": 1})
-    monkeypatch.setattr(faces_mod, "scan_pending", lambda job_id: scanned.append(job_id))
+    monkeypatch.setattr(faces_mod, "scan_pending", lambda job_id, **k: scanned.append(job_id))
     pipeline_mod.run_pipeline(1, [album], scan=False)
     assert scanned == []
     pipeline_mod.run_pipeline(2, [album], scan=True)
@@ -566,13 +632,29 @@ def test_run_pipeline_auto_update_skips_scan_when_caught_up(tmp_path, monkeypatc
     album.mkdir()
     scanned = []
     monkeypatch.setattr(pipeline_mod.importer, "import_folder", lambda *a, **k: {"added": 0})
-    monkeypatch.setattr(faces_mod, "scan_pending", lambda job_id: scanned.append(job_id))
+    monkeypatch.setattr(faces_mod, "scan_pending", lambda job_id, **k: scanned.append(job_id))
     pipeline_mod.run_pipeline(
         create_job("pipeline"), [album], scan=True, faces_if_new_only=True
     )
     assert scanned == []
     pipeline_mod.run_pipeline(create_job("pipeline"), [album], scan=True)
     assert len(scanned) == 1
+
+
+def test_auto_update_does_not_scan_old_unscanned_backlog(tmp_path, monkeypatch):
+    from photosort import pipeline as pipeline_mod, faces as faces_mod
+    from photosort.jobs import create_job
+
+    _db(tmp_path, monkeypatch)
+    album = tmp_path / "heirlooms"
+    album.mkdir()
+    scanned = []
+    monkeypatch.setattr(pipeline_mod.importer, "import_folder", lambda *a, **k: {"added": 0})
+    monkeypatch.setattr(faces_mod, "scan_pending", lambda job_id, **k: scanned.append(job_id))
+    pipeline_mod.run_pipeline(
+        create_job("pipeline"), [album], scan=True, faces_if_new_only=True
+    )
+    assert scanned == []
 
 
 def test_should_resume_skips_code_crash(tmp_path, monkeypatch):

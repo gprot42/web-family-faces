@@ -28,6 +28,9 @@ NN_VOTE_K = 64
 NN_TOP_SAMPLES = 3
 # Class photos and groups: one person is almost never in the frame twice.
 CROWD_PHOTO_FACES = 8
+# AdaFace is a second space. A few named photos per person is enough to retry
+# a miss; filling every named crop would stall Re-identify for minutes.
+ADA_EXEMPLARS_PER_PERSON = 3
 SAME_FACE_IOU = 0.45
 # Same gathering: name an occluded face from people named on nearby frames.
 NEARBY_SECONDS = 5 * 60
@@ -40,6 +43,8 @@ VOTE_MIN_SIM = 0.32
 _GALLERY_SEED_HOW = ("manual", "sidecar", "merge", "split", "unknown_name")
 _gallery_cache: dict[str, Any] | None = None
 _gallery_stamp: tuple[Any, ...] | None = None
+_ada_gallery_cache: dict[str, Any] | None = None
+_ada_gallery_stamp: tuple[Any, ...] | None = None
 _statue_cache: dict[str, Any] | None = None
 _statue_cache_stamp: tuple[Any, ...] | None = None
 
@@ -154,6 +159,193 @@ def load_named_gallery(conn=None) -> dict[str, Any]:
             conn.close()
 
 
+def _ada_stamp(conn) -> tuple[Any, ...]:
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS n, IFNULL(MAX(f.id), 0) AS mx,
+               IFNULL(SUM(CASE WHEN f.embedding_ada IS NOT NULL THEN 1 ELSE 0 END), 0) AS na
+        FROM faces f
+        JOIN people p ON p.id = f.person_id
+        WHERE f.person_id IS NOT NULL
+          AND IFNULL(f.assigned_how, '') NOT IN ('junk', 'auto', 'cleared')
+        """
+    ).fetchone()
+    return (str(config_mod.DB_PATH), int(row["n"]), int(row["mx"]), int(row["na"]))
+
+
+def _ada_fill_exemplars(conn) -> int:
+    """AdaFace vectors for a few named photos per person, not the whole catalog."""
+    from .adaface import embedding_for_face
+    from .people import UNKNOWN_NAME
+
+    rows = conn.execute(
+        """
+        WITH ranked AS (
+          SELECT f.id, f.embedding_ada,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY f.person_id
+                   ORDER BY
+                     CASE WHEN p.cover_face_id IS NOT NULL AND f.id = p.cover_face_id THEN 0 ELSE 1 END,
+                     CASE WHEN IFNULL(f.assigned_how, '') IN
+                          ('manual', 'sidecar', 'merge', 'split', 'unknown_name') THEN 0 ELSE 1 END,
+                     IFNULL(f.det_score, 0) DESC,
+                     f.id
+                 ) AS rn
+          FROM faces f
+          JOIN people p ON p.id = f.person_id
+          WHERE f.person_id IS NOT NULL
+            AND IFNULL(f.assigned_how, '') NOT IN ('junk', 'auto', 'cleared')
+            AND IFNULL(p.name, '') != ?
+            AND IFNULL(p.name, '') NOT LIKE ?
+        )
+        SELECT id FROM ranked
+        WHERE rn <= ? AND embedding_ada IS NULL
+        """,
+        (UNKNOWN_NAME, UNKNOWN_NAME + " %", ADA_EXEMPLARS_PER_PERSON),
+    ).fetchall()
+    wrote = 0
+    for i, row in enumerate(rows, start=1):
+        try:
+            if embedding_for_face(conn, int(row["id"])) is not None:
+                wrote += 1
+        except Exception:
+            continue
+        if i % 20 == 0:
+            conn.commit()
+    if wrote:
+        conn.commit()
+    return wrote
+
+
+def load_ada_gallery(conn=None, *, fill: bool = False) -> dict[str, Any]:
+    """Named AdaFace vectors. Built only from confirmed names, like ArcFace."""
+    global _ada_gallery_cache, _ada_gallery_stamp
+    own = conn is None
+    if own:
+        conn = connect()
+        init_db(conn)
+    try:
+        if fill:
+            wrote = _ada_fill_exemplars(conn)
+            if wrote:
+                _ada_gallery_cache = None
+                _ada_gallery_stamp = None
+        stamp = _ada_stamp(conn)
+        if _ada_gallery_cache is not None and _ada_gallery_stamp == stamp:
+            return _ada_gallery_cache
+        rows = conn.execute(
+            """
+            SELECT f.id, f.person_id, p.name, f.embedding_ada, f.assigned_how
+            FROM faces f
+            JOIN people p ON p.id = f.person_id
+            WHERE f.person_id IS NOT NULL
+              AND f.embedding_ada IS NOT NULL
+              AND IFNULL(f.assigned_how, '') NOT IN ('junk', 'auto', 'cleared')
+            """
+        ).fetchall()
+        by_person: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        names: dict[int, str] = {}
+        for row in rows:
+            if is_unknown_name(row["name"]):
+                continue
+            vec = bytes_to_embedding(row["embedding_ada"])
+            if vec is None:
+                continue
+            pid = int(row["person_id"])
+            names[pid] = row["name"]
+            by_person[pid].append(
+                {
+                    "id": int(row["id"]),
+                    "vec": l2_normalize(vec),
+                    "how": str(row["assigned_how"] or ""),
+                }
+            )
+        vecs: list[np.ndarray] = []
+        pids: list[int] = []
+        face_ids: list[int] = []
+        for pid, faces in by_person.items():
+            seeds = [f for f in faces if f["how"] in _GALLERY_SEED_HOW]
+            keep = list(seeds) if seeds else list(faces)
+            for face in keep:
+                vecs.append(face["vec"])
+                pids.append(pid)
+                face_ids.append(face["id"])
+        if not vecs:
+            gallery = {
+                "matrix": None,
+                "person_ids": np.zeros(0, dtype=np.int64),
+                "face_ids": np.zeros(0, dtype=np.int64),
+                "names": {},
+            }
+        else:
+            gallery = {
+                "matrix": np.stack(vecs).astype(np.float32, copy=False),
+                "person_ids": np.asarray(pids, dtype=np.int64),
+                "face_ids": np.asarray(face_ids, dtype=np.int64),
+                "names": names,
+            }
+        _ada_gallery_cache = gallery
+        _ada_gallery_stamp = stamp
+        return gallery
+    finally:
+        if own:
+            conn.close()
+
+
+def _ada_auto_person(
+    conn,
+    row,
+    arc_ranked: list[dict[str, Any]],
+    ada_gallery: dict[str, Any],
+    *,
+    high: float,
+    margin: float,
+    aggressive: bool,
+    folder_people: set[int],
+    nearby_people: set[int],
+    medium: float,
+    claimed: dict[int, list[Any]] | None = None,
+) -> dict[str, Any] | None:
+    """AdaFace name only when it is sure and ArcFace does not disagree."""
+    if ada_gallery.get("matrix") is None:
+        return None
+    from .adaface import embedding_for_face
+
+    vec = None
+    if "embedding_ada" in row.keys():
+        vec = bytes_to_embedding(row["embedding_ada"])
+    if vec is None:
+        vec = embedding_for_face(conn, int(row["id"]))
+    if vec is None:
+        return None
+    ranked = rank_people_nn(vec, ada_gallery, limit=8, exclude_face_ids={int(row["id"])})
+    ranked = _drop_sex_mismatch(
+        ranked,
+        row["sex_est"] if "sex_est" in row.keys() else None,
+        _probe_age_for_sex(row),
+    )
+    if claimed:
+        ranked = _ranked_without_claimed(ranked, claimed, row)
+    if not ranked:
+        return None
+    if not _should_auto_assign(
+        ranked,
+        high,
+        margin,
+        aggressive=aggressive,
+        folder_people=folder_people,
+        nearby_people=nearby_people,
+    ):
+        return None
+    ada_pid = int(ranked[0]["person_id"])
+    if arc_ranked:
+        arc = arc_ranked[0]
+        if int(arc["person_id"]) != ada_pid and float(arc["similarity"]) >= medium:
+            return None
+    ranked[0]["band"] = "adaface"
+    return ranked[0]
+
+
 def _statue_stamp(conn) -> tuple[Any, ...]:
     row = conn.execute(
         """
@@ -244,9 +436,12 @@ def matches_known_statue(
 
 
 def _invalidate_galleries() -> None:
-    global _gallery_cache, _gallery_stamp, _statue_cache, _statue_cache_stamp
+    global _gallery_cache, _gallery_stamp, _ada_gallery_cache, _ada_gallery_stamp
+    global _statue_cache, _statue_cache_stamp
     _gallery_cache = None
     _gallery_stamp = None
+    _ada_gallery_cache = None
+    _ada_gallery_stamp = None
     _statue_cache = None
     _statue_cache_stamp = None
 
@@ -563,7 +758,11 @@ def _ranked_without_claimed(
         for item in ranked
         if not _already_on_photo(claimed, int(item["person_id"]), box)
     ]
-    return kept or ranked
+    if kept:
+        return kept
+    # Same person already occupies another box. Allow it only when this crop is
+    # almost certainly that face (duplicate detection), not a classmate at 0.48.
+    return [item for item in ranked if float(item.get("similarity") or 0) >= MATCH_HIGH]
 
 
 def _person_ids_in_folder(conn, photo_id: int) -> set[int]:
@@ -649,6 +848,36 @@ def _face_count_on_photo(conn, photo_id: int, cache: dict[int, int]) -> int:
             or 0
         )
     return cache[pid]
+
+
+def _detected_face_count(conn, photo_id: int, cache: dict[int, int]) -> int:
+    """Every detector box, including hidden ones. Used to skip statue junk in groups."""
+    pid = int(photo_id)
+    if pid not in cache:
+        cache[pid] = int(
+            conn.execute(
+                "SELECT COUNT(*) AS n FROM faces WHERE photo_id = ?",
+                (pid,),
+            ).fetchone()["n"]
+            or 0
+        )
+    return cache[pid]
+
+
+def _probe_age_for_sex(row: Any) -> Any:
+    """InsightFace often ages kids in group shots as adults. Trust the box size."""
+    age = row["age_est"] if "age_est" in row.keys() else None
+    try:
+        face_h = abs(float(row["y2"] or 0) - float(row["y1"] or 0))
+        photo_h = float(row["height"] or 0)
+    except (TypeError, ValueError, KeyError):
+        return age
+    if photo_h >= 400 and face_h > 0 and face_h / photo_h <= 0.14:
+        try:
+            return min(float(age), 12.0) if age is not None else 12.0
+        except (TypeError, ValueError):
+            return 12.0
+    return age
 
 
 def _sex_ok(
@@ -861,6 +1090,17 @@ def _should_auto_assign(
         return True
     if mean3 >= 0.44 and mean_gap >= 0.06 and sim >= 0.42:
         return True
+    # Vintage scans and childhood photos: several named examples of one person
+    # agree even when the single closest crop is only ~0.42.
+    if (
+        vote_leader
+        and votes >= 5
+        and votes - votes_b >= 2
+        and sim >= 0.40
+        and mean3 >= 0.38
+        and mean_gap >= 0.05
+    ):
+        return True
     if in_album and sim >= 0.44 and gap >= 0.05:
         return True
     if in_album and sim >= 0.46 and (not nxt or int(nxt["person_id"]) not in folder_people):
@@ -877,6 +1117,7 @@ def match_unknown(
     include_cleared: bool = False,
     margin: float = MATCH_MARGIN,
     aggressive: bool = False,
+    strict_crowd: bool = True,
 ) -> dict:
     named: list[int] = []
     assigned: list[dict[str, Any]] = []
@@ -885,6 +1126,7 @@ def match_unknown(
     init_db(conn)
     try:
         gallery = load_named_gallery(conn)
+        ada_gallery = load_ada_gallery(conn)
         rescued = rescue_hidden_named_faces(
             conn,
             photo_id=photo_id,
@@ -898,7 +1140,8 @@ def match_unknown(
         blocked = "('junk')" if include_cleared else "('junk', 'cleared')"
         quality_ok = "('ok', 'unidentifiable')" if aggressive else "('ok')"
         sql = f"""
-            SELECT f.id, f.photo_id, f.cluster_id, f.embedding, f.sex_est, f.age_est, f.x1, f.y1, f.x2, f.y2, ph.path
+            SELECT f.id, f.photo_id, f.cluster_id, f.embedding, f.embedding_ada, f.sex_est, f.age_est,
+                   f.x1, f.y1, f.x2, f.y2, ph.path, ph.width, ph.height
             FROM faces f
             JOIN photos ph ON ph.id = f.photo_id
             WHERE f.person_id IS NULL
@@ -930,11 +1173,17 @@ def match_unknown(
         if job_id:
             update_job(job_id, total=len(rows), message=f"Matching {len(rows)} unknown faces")
         auto = int(rescued.get("auto_assigned") or 0)
+        ada_n = 0
+        ada_filled = False
         suggested = 0
         use_nn = gallery.get("matrix") is not None
         centroids = None if use_nn else all_person_centroids(conn)
         folder_people: set[int] = set()
-        crowd = photo_id is not None and len(rows) >= CROWD_PHOTO_FACES
+        crowd = (
+            strict_crowd
+            and photo_id is not None
+            and len(rows) >= CROWD_PHOTO_FACES
+        )
         if aggressive and photo_id is not None and not crowd:
             folder_people = _person_ids_in_folder(conn, int(photo_id))
         claimed_by_photo: dict[int, dict[int, list[Any]]] = {}
@@ -946,6 +1195,7 @@ def match_unknown(
         use_margin = MATCH_MARGIN if crowd else margin
         nearby_by_photo: dict[int, set[int]] = {}
         face_count_cache: dict[int, int] = {}
+        detected_count_cache: dict[int, int] = {}
         from .config import CROP_DIR
         from .faces import looks_like_statue
 
@@ -957,7 +1207,13 @@ def match_unknown(
             crop = CROP_DIR / f"{int(row['id'])}.jpg"
             photo_path = row["path"] if "path" in row.keys() else None
             row_photo_id = int(row["photo_id"]) if "photo_id" in row.keys() and row["photo_id"] else None
-            if _hide_as_statue(crop, photo_path, row_photo_id, vec, statue_gallery, row["id"]):
+            grouped = (
+                row_photo_id is not None
+                and _detected_face_count(conn, row_photo_id, detected_count_cache) >= 4
+            )
+            if not grouped and _hide_as_statue(
+                crop, photo_path, row_photo_id, vec, statue_gallery, row["id"]
+            ):
                 _mark_face_junk(conn, row["id"])
                 continue
             ranked = (
@@ -968,7 +1224,7 @@ def match_unknown(
             ranked = _drop_sex_mismatch(
                 ranked,
                 row["sex_est"] if "sex_est" in row.keys() else None,
-                row["age_est"] if "age_est" in row.keys() else None,
+                _probe_age_for_sex(row),
             )
             if not ranked:
                 continue
@@ -982,7 +1238,14 @@ def match_unknown(
                 continue
             top = ranked[0]
             pid = int(top["person_id"])
-            row_crowd = crowd if photo_id is not None else _face_count_on_photo(conn, row_photo, face_count_cache) >= CROWD_PHOTO_FACES
+            row_crowd = (
+                crowd
+                if photo_id is not None
+                else (
+                    strict_crowd
+                    and _face_count_on_photo(conn, row_photo, face_count_cache) >= CROWD_PHOTO_FACES
+                )
+            )
             nearby: set[int] = set()
             if not row_crowd:
                 nearby = nearby_by_photo.get(row_photo) or set()
@@ -997,34 +1260,63 @@ def match_unknown(
                 folder_people=folder_people,
                 nearby_people=nearby,
             )
+            hit = top if can_auto else None
+            via_ada = False
+            if hit is None:
+                if ada_gallery.get("matrix") is None and not ada_filled:
+                    ada_gallery = load_ada_gallery(conn, fill=True)
+                    ada_filled = True
+                if ada_gallery.get("matrix") is not None:
+                    hit = _ada_auto_person(
+                        conn,
+                        row,
+                        ranked,
+                        ada_gallery,
+                        high=use_high,
+                        margin=use_margin,
+                        aggressive=use_aggressive and not row_crowd,
+                        folder_people=folder_people,
+                        nearby_people=nearby,
+                        medium=medium,
+                        claimed=claimed,
+                    )
+                    via_ada = hit is not None
+                    if via_ada:
+                        pid = int(hit["person_id"])
             if row["cluster_id"] is not None and int(row["cluster_id"]) in mega_leftover:
                 # Naming 24 of a huge To-name group must not stamp the rest
                 # unless this face independently matches a hand-named person.
-                if not can_auto or not _person_has_manual_seed(conn, pid, manual_seed_cache):
+                if hit is None or not _person_has_manual_seed(conn, pid, manual_seed_cache):
                     if top["similarity"] >= medium:
                         suggested += 1
                     continue
-            if can_auto:
+            if hit is not None:
                 conn.execute(
                     "UPDATE faces SET person_id = ?, assigned_how = 'auto' WHERE id = ?",
                     (pid, row["id"]),
                 )
                 auto += 1
+                if via_ada:
+                    ada_n += 1
                 named.append(int(row["id"]))
                 claimed.setdefault(pid, []).append(row)
                 assigned.append(
                     {
                         "face_id": int(row["id"]),
                         "person_id": pid,
-                        "name": top.get("name") or gallery.get("names", {}).get(pid),
-                        "similarity": round(float(top["similarity"]), 3),
+                        "name": hit.get("name") or gallery.get("names", {}).get(pid) or ada_gallery.get("names", {}).get(pid),
+                        "similarity": round(float(hit["similarity"]), 3),
+                        "model": "adaface" if via_ada else "arcface",
                     }
                 )
             elif top["similarity"] >= medium:
                 suggested += 1
             if job_id and (i % 20 == 0 or i == len(rows)):
                 conn.commit()
-                update_job(job_id, progress=i, message=f"Auto-assigned {auto}")
+                msg = f"Auto-assigned {auto}"
+                if ada_n:
+                    msg += f" ({ada_n} AdaFace)"
+                update_job(job_id, progress=i, message=msg)
                 if pause_requested():
                     raise JobPaused()
         inherited = 0
@@ -1064,10 +1356,14 @@ def match_unknown(
                 )
         conn.commit()
         if job_id:
-            update_job(job_id, progress=len(rows), message=f"Auto-assigned {auto}; {suggested} medium-confidence leftovers")
+            msg = f"Auto-assigned {auto}; {suggested} medium-confidence leftovers"
+            if ada_n:
+                msg = f"Auto-assigned {auto} ({ada_n} AdaFace); {suggested} medium-confidence leftovers"
+            update_job(job_id, progress=len(rows), message=msg)
         result = {
             "considered": len(rows),
             "auto_assigned": auto,
+            "adaface_assigned": ada_n,
             "medium": suggested,
             "inherited": inherited,
             "assigned": assigned,
@@ -1154,7 +1450,8 @@ def rescue_hidden_named_faces(
         if gallery.get("matrix") is None:
             return {"restored": 0, "auto_assigned": 0, "assigned": []}
         sql = """
-            SELECT f.id, f.photo_id, f.embedding, f.sex_est, f.age_est, f.x1, f.y1, f.x2, f.y2, ph.path
+            SELECT f.id, f.photo_id, f.embedding, f.sex_est, f.age_est,
+                   f.x1, f.y1, f.x2, f.y2, ph.path, ph.width, ph.height
             FROM faces f
             JOIN photos ph ON ph.id = f.photo_id
             WHERE f.assigned_how = 'junk'
@@ -1173,6 +1470,7 @@ def rescue_hidden_named_faces(
         folder_by_photo: dict[int, set[int]] = {}
         claimed_by_photo: dict[int, dict[int, list[Any]]] = {}
         face_count_cache: dict[int, int] = {}
+        detected_count_cache: dict[int, int] = {}
         junk_count_cache: dict[int, int] = {}
         restored = 0
         from .config import CROP_DIR
@@ -1186,13 +1484,19 @@ def rescue_hidden_named_faces(
             crop = CROP_DIR / f"{int(row['id'])}.jpg"
             photo_path = row["path"] if "path" in row.keys() else None
             row_photo_id = int(row["photo_id"]) if "photo_id" in row.keys() and row["photo_id"] else None
-            if _hide_as_statue(crop, photo_path, row_photo_id, vec, statue_gallery, row["id"]):
+            grouped = (
+                row_photo_id is not None
+                and _detected_face_count(conn, row_photo_id, detected_count_cache) >= 4
+            )
+            if not grouped and _hide_as_statue(
+                crop, photo_path, row_photo_id, vec, statue_gallery, row["id"]
+            ):
                 continue
             ranked = rank_people_nn(vec, gallery, limit=8)
             ranked = _drop_sex_mismatch(
                 ranked,
                 row["sex_est"] if "sex_est" in row.keys() else None,
-                row["age_est"] if "age_est" in row.keys() else None,
+                _probe_age_for_sex(row),
             )
             if not ranked:
                 continue
@@ -1314,30 +1618,43 @@ def match_photo(photo_id: int, *, detect: bool = True) -> dict:
                 new_faces = 0
         finally:
             conn.close()
-    n_faces = 0
     conn = connect()
     init_db(conn)
     try:
-        n_faces = int(
+        detected = int(
             conn.execute(
-                """
-                SELECT COUNT(*) AS n FROM faces
-                WHERE photo_id = ? AND IFNULL(assigned_how, '') != 'junk'
-                """,
+                "SELECT COUNT(*) AS n FROM faces WHERE photo_id = ?",
                 (int(photo_id),),
             ).fetchone()["n"]
             or 0
         )
+        # Vintage group shots: gold/bronze statue rules hide real kids. User
+        # asked to re-identify, so put those faces back in the unnamed pool.
+        if detected >= 4:
+            conn.execute(
+                """
+                UPDATE faces
+                SET quality = 'ok', assigned_how = NULL
+                WHERE photo_id = ?
+                  AND assigned_how = 'junk'
+                  AND person_id IS NULL
+                """,
+                (int(photo_id),),
+            )
+            conn.commit()
     finally:
         conn.close()
-    crowd = n_faces >= CROWD_PHOTO_FACES
+    # Re-identify is a user click: use rematch thresholds even on a family group.
+    # Class-photo "do not stamp one name on every child" is _ranked_without_claimed.
+    # Library-wide Find Known Faces still uses crowd-strict thresholds.
     result = match_unknown(
         photo_id=int(photo_id),
-        include_cleared=False,
-        aggressive=not crowd,
-        high=MATCH_HIGH if crowd else MATCH_REMATCH_HIGH,
-        medium=MATCH_MEDIUM if crowd else MATCH_REMATCH_MEDIUM,
-        margin=MATCH_MARGIN if crowd else MATCH_REMATCH_MARGIN,
+        include_cleared=True,
+        aggressive=True,
+        high=MATCH_REMATCH_HIGH,
+        medium=MATCH_REMATCH_MEDIUM,
+        margin=MATCH_REMATCH_MARGIN,
+        strict_crowd=False,
     )
     result["new_faces"] = new_faces
     return result
@@ -1502,17 +1819,28 @@ def _cluster_lone_person_id(conn, cluster_id: int) -> int | None:
     return int(rows[0]["person_id"])
 
 
-def suppress_like_junk(threshold: float = 0.46) -> int:
+def suppress_like_junk(threshold: float = 0.46, junk_face_ids: list[int] | None = None) -> int:
     """Mark unnamed faces that look like previously rejected statues/objects."""
     conn = connect()
     init_db(conn)
     try:
-        junk = conn.execute(
-            """
-            SELECT embedding FROM faces
-            WHERE assigned_how = 'junk' AND embedding IS NOT NULL
-            """
-        ).fetchall()
+        ids = [int(fid) for fid in (junk_face_ids or []) if fid]
+        if ids:
+            marks = ",".join("?" * len(ids))
+            junk = conn.execute(
+                f"""
+                SELECT embedding FROM faces
+                WHERE id IN ({marks}) AND assigned_how = 'junk' AND embedding IS NOT NULL
+                """,
+                ids,
+            ).fetchall()
+        else:
+            junk = conn.execute(
+                """
+                SELECT embedding FROM faces
+                WHERE assigned_how = 'junk' AND embedding IS NOT NULL
+                """
+            ).fetchall()
         unknown = conn.execute(
             """
             SELECT id, embedding FROM faces
@@ -1520,21 +1848,38 @@ def suppress_like_junk(threshold: float = 0.46) -> int:
             """
         ).fetchall()
         junk_vecs = []
-        marked_ids: list[int] = []
-        marked = 0
         for row in junk:
             vec = bytes_to_embedding(row["embedding"])
             if vec is not None:
-                junk_vecs.append(vec)
+                junk_vecs.append(l2_normalize(vec))
         if not junk_vecs or not unknown:
             return 0
-        gallery = load_named_gallery(conn)
+        unk_ids: list[int] = []
+        unk_vecs: list[np.ndarray] = []
         for row in unknown:
             vec = bytes_to_embedding(row["embedding"])
             if vec is None:
                 continue
-            sim = max(cosine(vec, j) for j in junk_vecs)
-            named = rank_people_nn(vec, gallery, limit=1) if gallery.get("matrix") is not None else []
+            unk_ids.append(int(row["id"]))
+            unk_vecs.append(l2_normalize(vec))
+        if not unk_vecs:
+            return 0
+        junk_mat = np.stack(junk_vecs)
+        unk_mat = np.stack(unk_vecs)
+        max_junk = (unk_mat @ junk_mat.T).max(axis=1)
+        gallery = load_named_gallery(conn)
+        has_gallery = gallery.get("matrix") is not None
+        marked_ids: list[int] = []
+        marked = 0
+        from .config import CROP_DIR
+        from .faces import looks_like_statue
+
+        for i, face_id in enumerate(unk_ids):
+            sim = float(max_junk[i])
+            if sim < threshold:
+                continue
+            vec = unk_vecs[i]
+            named = rank_people_nn(vec, gallery, limit=1) if has_gallery else []
             named_sim = float(named[0]["similarity"]) if named else -1.0
             # A real catalogued person must not be hidden because a lookalike
             # was marked not-a-person (photo-in-photo, statue, etc.).
@@ -1542,25 +1887,21 @@ def suppress_like_junk(threshold: float = 0.46) -> int:
                 continue
             if named_sim >= MATCH_HIGH:
                 continue
-            if sim >= threshold:
-                from .config import CROP_DIR
-                from .faces import looks_like_statue
-
-                crop = CROP_DIR / f"{row['id']}.jpg"
-                # A dinner-table crop can match junked embeddings at 0.66 and
-                # still be a person. Colour/shape of this crop decides.
-                if crop.exists() and not looks_like_statue(crop):
-                    continue
-                conn.execute(
-                    """
-                    UPDATE faces
-                    SET quality = 'unidentifiable', assigned_how = 'junk', cluster_id = NULL
-                    WHERE id = ?
-                    """,
-                    (row["id"],),
-                )
-                marked += 1
-                marked_ids.append(int(row["id"]))
+            crop = CROP_DIR / f"{face_id}.jpg"
+            # A dinner-table crop can match junked embeddings at 0.66 and
+            # still be a person. Colour/shape of this crop decides.
+            if crop.exists() and not looks_like_statue(crop):
+                continue
+            conn.execute(
+                """
+                UPDATE faces
+                SET quality = 'unidentifiable', assigned_how = 'junk', cluster_id = NULL
+                WHERE id = ?
+                """,
+                (face_id,),
+            )
+            marked += 1
+            marked_ids.append(face_id)
         conn.commit()
     finally:
         conn.close()

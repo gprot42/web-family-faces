@@ -102,6 +102,7 @@ def photo_public(
         "comment": _row_text(row, "comment"),
         "tags": list(tags or []),
         "thumb_url": f"/api/photos/{row['id']}/thumb",
+        "view_url": f"/api/photos/{row['id']}/view",
         "file_url": f"/api/photos/{row['id']}/file",
         "file_available": path.exists() if check_file else None,
         "faces": [face_public(f) for f in faces] if faces is not None else None,
@@ -123,6 +124,7 @@ def person_public(row: dict[str, Any], *, cover_size: int = 384) -> dict[str, An
         "age_max": row.get("age_max"),
         "created_at": row.get("created_at"),
         "unknown_name": is_unknown_name(row.get("name")),
+        "cover_face_id": row.get("cover_face_id"),
         "cover_url": f"/api/faces/{row['cover_face_id']}/crop?v={cover_size}" if row.get("cover_face_id") else None,
     }
     if "faces" in row and row["faces"] is not None:

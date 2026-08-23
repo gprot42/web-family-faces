@@ -2,7 +2,7 @@
 
 Local-first app for a family photo library: detect every face, cluster similar faces, **name a person once**, then match the rest. Built for albums that span a century — the same person at 3 and 75 will usually be two clusters; you merge them.
 
-Grok / SuperGrok Heavy is not the identity engine. Face matching uses InsightFace `buffalo_l` (ArcFace) on your machine. Originals are never moved.
+Grok / SuperGrok Heavy is not the identity engine. Face matching uses InsightFace `buffalo_l` (ArcFace) on your machine. If that match is unsure, AdaFace retries the same crop locally. Originals are never moved.
 
 Optional: open **Settings** and paste an xAI key, then click **Look up famous face** on a group or person. That sends only a face crop to Grok (with web search) in case the face is public — it never auto-names, and it never uploads originals. On a photo, **Sharpen** asks Grok Imagine for a temporary crisper preview, and **Change with Grok** applies a prompt (restore colour, black and white, repair scratches) to a temporary preview. The original file is never overwritten. The key is stored in the Family Faces data folder (`data/xai.api_key`) and copied to `~/.config/xai/api_key` (same name as `XAI_API_KEY`), not in the name catalog backup.
 

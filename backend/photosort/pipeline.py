@@ -13,6 +13,7 @@ from . import importer
 from . import state as state_mod
 from .db import connect, init_db
 from .jobs import active_job, latest_jobs, start_job, update_job
+from .util import now_iso
 
 FOLDERS_KEY = "pipeline_folders"
 AUTO_UPDATE_EVERY_SECONDS = 300
@@ -86,6 +87,7 @@ def run_pipeline(
     faces_if_new_only: bool = False,
 ) -> None:
     remember_folders(folders)
+    started = now_iso()
     added = 0
     for folder in folders:
         result = importer.import_folder(
@@ -101,8 +103,7 @@ def run_pipeline(
             message="New photos added. Face scanning is off in Settings.",
         )
         return
-    pending = pending_scan_count()
-    if faces_if_new_only and pending == 0:
+    if faces_if_new_only and added == 0:
         update_job(
             job_id,
             progress=added,
@@ -111,7 +112,7 @@ def run_pipeline(
         )
         return
     update_job(job_id, message="Looking for faces in photos not scanned yet…")
-    faces_mod.scan_pending(job_id)
+    faces_mod.scan_pending(job_id, since=started if faces_if_new_only else None)
 
 
 def maybe_auto_update() -> dict | None:
@@ -160,8 +161,6 @@ def should_resume() -> bool:
     recent = latest_jobs(1)
     if recent and recent[0].get("status") == "paused":
         return False
-    if pending_scan_count() > 0:
-        return True
     if not recent:
         return False
     last = recent[0]

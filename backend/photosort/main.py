@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
 from contextlib import asynccontextmanager
@@ -9,6 +10,7 @@ from typing import Any
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -32,7 +34,7 @@ from . import settings as settings_mod
 from . import state as state_mod
 from . import stats as stats_mod
 from . import suggest as suggest_mod
-from .config import CLUSTER_PREVIEW_LIMIT, CROP_DIR, ROOT, THUMB_DIR, UI_PORT
+from .config import CLUSTER_PREVIEW_LIMIT, CROP_DIR, ROOT, THUMB_DIR, VIEW_DIR, UI_PORT
 from .originals import drop_preview_rows, is_preview_path, preview_path_sql
 from .db import connect, init_db
 from .jobs import active_job, latest_jobs, request_pause, start_job
@@ -307,9 +309,9 @@ def get_gedcom() -> dict[str, Any]:
 
 
 @app.get("/api/gedcom/people/{xref}")
-def get_gedcom_person(xref: str) -> dict[str, Any]:
+async def get_gedcom_person(xref: str) -> dict[str, Any]:
     try:
-        return gedcom_mod.get_person(xref)
+        return await asyncio.to_thread(gedcom_mod.get_person, xref)
     except FileNotFoundError:
         raise HTTPException(404, "Load a .ged file first.") from None
     except KeyError:
@@ -426,11 +428,15 @@ def backup() -> dict[str, Any]:
 
 
 @app.get("/api/catalog/folders")
-def catalog_folders(under: list[str] = Query(default=[])) -> dict[str, Any]:
+async def catalog_folders(under: list[str] = Query(default=[]), disk: bool = False) -> dict[str, Any]:
     folders = [item for item in under if str(item or "").strip()]
-    if folders:
-        return {"items": people_mod.list_albums_under(folders)}
-    return {"items": people_mod.list_name_folders()}
+
+    def load() -> list[dict[str, Any]]:
+        if folders:
+            return people_mod.list_albums_under(folders, disk=disk)
+        return people_mod.list_name_folders()
+
+    return {"items": await asyncio.to_thread(load)}
 
 
 def _import_folders(body: ImportBody) -> list[Path]:
@@ -1013,6 +1019,19 @@ def unassign_photo(photo_id: int) -> dict[str, Any]:
     return {"ok": True, "cleared": n}
 
 
+@app.post("/api/photos/{photo_id}/junk-unnamed")
+def junk_unnamed_photo(photo_id: int) -> dict[str, Any]:
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()
+        if not row or photos_mod.photo_hidden(row):
+            raise HTTPException(404, "Photo not found")
+    finally:
+        conn.close()
+    n = people_mod.junk_unnamed_on_photo(photo_id, sync_sidecars=False)
+    return {"ok": True, "junked": n}
+
+
 @app.post("/api/faces/warmup")
 def warmup_faces() -> dict[str, Any]:
     status = faces_mod.analyzer_status()
@@ -1098,6 +1117,9 @@ def patch_photo(photo_id: int, body: PhotoPatch) -> dict[str, Any]:
     raise HTTPException(400, "Nothing to change.")
 
 
+_CACHE_IMAGE = {"Cache-Control": "public, max-age=31536000, immutable"}
+
+
 @app.get("/api/photos/{photo_id}/file")
 def photo_file(photo_id: int):
     conn = _conn()
@@ -1105,7 +1127,7 @@ def photo_file(photo_id: int):
         row = conn.execute("SELECT path FROM photos WHERE id = ?", (photo_id,)).fetchone()
         if not row or not Path(row["path"]).exists():
             raise HTTPException(404, "File not found")
-        return FileResponse(row["path"])
+        return FileResponse(row["path"], headers={"Cache-Control": "public, max-age=86400"})
     finally:
         conn.close()
 
@@ -1114,7 +1136,7 @@ def photo_file(photo_id: int):
 def photo_thumb(photo_id: int):
     path = THUMB_DIR / f"{photo_id}.jpg"
     if path.exists():
-        return FileResponse(path, media_type="image/jpeg")
+        return FileResponse(path, media_type="image/jpeg", headers=_CACHE_IMAGE)
     conn = _conn()
     try:
         row = conn.execute("SELECT path FROM photos WHERE id = ?", (photo_id,)).fetchone()
@@ -1122,10 +1144,33 @@ def photo_thumb(photo_id: int):
             raise HTTPException(404, "Thumb not found")
         made = importer.make_thumb(Path(row["path"]), photo_id)
         if made and made.exists():
-            return FileResponse(made, media_type="image/jpeg")
-        return FileResponse(row["path"])
+            return FileResponse(made, media_type="image/jpeg", headers=_CACHE_IMAGE)
+        return FileResponse(row["path"], headers={"Cache-Control": "public, max-age=86400"})
     finally:
         conn.close()
+
+
+@app.get("/api/photos/{photo_id}/view")
+async def photo_view(photo_id: int):
+    dest = VIEW_DIR / f"{photo_id}.jpg"
+    if dest.exists() and dest.stat().st_size > 0:
+        return FileResponse(dest, media_type="image/jpeg", headers=_CACHE_IMAGE)
+
+    def build() -> Path | None:
+        VIEW_DIR.mkdir(parents=True, exist_ok=True)
+        conn = _conn()
+        try:
+            row = conn.execute("SELECT path FROM photos WHERE id = ?", (photo_id,)).fetchone()
+            if not row or not Path(row["path"]).exists():
+                return None
+            return importer.make_view(Path(row["path"]), photo_id)
+        finally:
+            conn.close()
+
+    made = await asyncio.to_thread(build)
+    if made and made.exists():
+        return FileResponse(made, media_type="image/jpeg", headers=_CACHE_IMAGE)
+    raise HTTPException(404, "View not found")
 
 
 @app.post("/api/photos/{photo_id}/sharpen")
@@ -1299,7 +1344,7 @@ def junk_face(face_id: int) -> dict[str, Any]:
         except Exception:
             log_mod.exception("sidecar follow-up failed face=%s", face_id)
         try:
-            match_mod.suppress_like_junk()
+            match_mod.suppress_like_junk(junk_face_ids=[face_id])
         except Exception:
             log_mod.exception("junk follow-up failed face=%s", face_id)
 
@@ -1391,7 +1436,10 @@ def list_clusters() -> dict[str, Any]:
             ).fetchone()["n"]
             if int(loose or 0) > 0:
                 clustering = True
-                threading.Thread(target=cluster_mod.try_run_clustering, daemon=True).start()
+                threading.Thread(
+                    target=lambda: cluster_mod.try_run_clustering(only_unclustered=True),
+                    daemon=True,
+                ).start()
             return {"items": [], "total": 0, "clustering": clustering}
         total = int(
             conn.execute(
@@ -1682,7 +1730,7 @@ def junk_cluster(cluster_id: int, body: SplitBody | None = None) -> dict[str, An
 
     def follow_up() -> None:
         try:
-            match_mod.suppress_like_junk()
+            match_mod.suppress_like_junk(junk_face_ids=face_ids)
         except Exception:
             log_mod.exception("junk follow-up failed cluster=%s", cluster_id)
 
@@ -1851,6 +1899,43 @@ def merge_suggestions() -> dict[str, Any]:
     return {"items": suggest_mod.merge_suggestions()}
 
 
+def _unlink_temp(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+@app.get("/api/people/{person_id}/photos.zip")
+def download_person_photos(person_id: int):
+    import tempfile
+
+    handle = tempfile.NamedTemporaryFile(prefix="photosort-person-", suffix=".zip", delete=False)
+    handle.close()
+    dest = Path(handle.name)
+    try:
+        built = people_mod.write_person_photo_zip(person_id, dest)
+    except Exception:
+        _unlink_temp(dest)
+        raise
+    if built is None:
+        _unlink_temp(dest)
+        raise HTTPException(404, "Person not found")
+    if not built["entries"]:
+        _unlink_temp(dest)
+        raise HTTPException(
+            404,
+            "None of this person's photos are on disk. Mount the album if it is on a NAS.",
+        )
+    return FileResponse(
+        dest,
+        media_type="application/zip",
+        filename=built["filename"],
+        background=BackgroundTask(_unlink_temp, dest),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/api/people/{person_id}")
 def get_person(person_id: int) -> dict[str, Any]:
     person = people_mod.get_person(person_id)
@@ -1874,6 +1959,16 @@ def patch_person(person_id: int, body: PersonPatch, background_tasks: Background
         background_tasks.add_task(people_mod._sync_sidecars_for_people, [person_id])
     person["faces"] = None
     return person_public(person)
+
+
+@app.post("/api/people/{person_id}/next-cover")
+def next_person_cover(person_id: int) -> dict[str, Any]:
+    person = people_mod.advance_person_cover(person_id)
+    if not person:
+        raise HTTPException(404, "Person not found")
+    person["faces"] = None
+    person["shots"] = None
+    return person_public(person, cover_size=128)
 
 
 @app.post("/api/people/{person_id}/merge")
