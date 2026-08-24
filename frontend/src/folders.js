@@ -20,6 +20,13 @@ export function folderLabel(path) {
   return parts[parts.length - 1] || path;
 }
 
+/** Last two path segments so “Old” is not shown without its parent album. */
+export function folderBreadcrumb(path) {
+  const parts = String(path || "").split("/").filter(Boolean);
+  if (parts.length >= 2) return `${parts[parts.length - 2]} / ${parts[parts.length - 1]}`;
+  return parts[0] || path;
+}
+
 export function normalizeFolderPath(path) {
   const raw = String(path || "").trim();
   if (!raw || raw === "/") return "/";

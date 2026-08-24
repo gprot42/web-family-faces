@@ -81,3 +81,25 @@ def test_mount_known_without_share_names(monkeypatch):
     assert result["ok"] is False
     assert result["items"] == []
     assert "share" in result["error"].lower()
+
+
+def test_shares_for_paths_reads_volume_name():
+    names = nas.shares_for_paths(
+        [
+            "/Volumes/media_shared_photos/Photo_Collection/2006 - Vienna",
+            "/Volumes/media_shared_photos/other",
+            "/Users/someone/Pictures",
+        ]
+    )
+    assert names == ["media_shared_photos"]
+
+
+def test_mount_for_paths_skips_already_mounted(monkeypatch, tmp_path):
+    vol = tmp_path / "Volumes" / "photos_share"
+    vol.mkdir(parents=True)
+    monkeypatch.setattr(nas, "_volume_path", lambda share: tmp_path / "Volumes" / share)
+    called = []
+    monkeypatch.setattr(nas, "mount_share", lambda *a, **k: called.append(a))
+    result = nas.mount_for_paths([vol / "1995 - Coast"])
+    assert result["ok"] is True
+    assert called == []

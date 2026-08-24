@@ -22,7 +22,7 @@ export default function NamesToggle({ className = "secondary" }) {
   return (
     <button
       type="button"
-      className={[className, on ? "" : "is-off"].filter(Boolean).join(" ")}
+      className={["names-toggle", className, on ? "" : "is-off"].filter(Boolean).join(" ")}
       aria-pressed={on}
       onClick={(e) => {
         e.preventDefault();

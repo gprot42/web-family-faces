@@ -292,6 +292,7 @@ export default function Review({ onChange }) {
     onChange?.({ faces_auto: -removed });
     try {
       await api.confirmAuto({ face_ids: faceIds, person_id: personId });
+      onChange?.();
     } catch (ex) {
       setErr(ex.message);
       await load();
@@ -305,6 +306,7 @@ export default function Review({ onChange }) {
     onChange?.({ faces_auto: -removed });
     try {
       await api.unassignFace(face.id);
+      onChange?.();
     } catch (ex) {
       setErr(ex.message);
       await load();

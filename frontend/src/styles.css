@@ -733,6 +733,21 @@ button.ghost {
   box-shadow: none;
 }
 button.ghost:hover { background: var(--bg-deep); color: var(--ink); box-shadow: none; }
+button.names-toggle {
+  border-radius: 6px;
+  min-height: 40px;
+  padding: 0 12px;
+}
+button.names-toggle.is-off {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+button.names-toggle.is-off:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: var(--on-accent);
+}
 button.picked {
   background: var(--pine);
   color: var(--on-accent);
@@ -913,14 +928,14 @@ button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shado
   align-items: stretch;
   background: var(--paper);
   border: 2px solid var(--ink);
-  border-radius: 14px;
-  padding: 4px;
-  gap: 4px;
+  border-radius: 10px;
+  padding: 3px;
+  gap: 0;
   box-shadow: var(--shadow);
 }
 .view-switch a {
-  padding: 0 10px;
-  border-radius: 10px;
+  padding: 0 12px;
+  border-radius: 7px;
   color: var(--ink);
   font-weight: 700;
   font-size: 0.92rem;
@@ -954,6 +969,9 @@ button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shado
   letter-spacing: 0.08em;
   text-transform: uppercase;
   vertical-align: 2px;
+}
+.folder-toolbar button {
+  border-radius: 999px;
 }
 .folder-filter .view-switch-label { margin-bottom: 8px; }
 .folder-filter .person-chips { margin-bottom: 0; }
@@ -1419,8 +1437,64 @@ button.person-chip[aria-pressed="true"] .hint {
   justify-content: space-between;
   gap: 12px;
 }
+.folder-head button {
+  font-family: var(--sans);
+  font-size: 0.92rem;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
 .folder-head .ghost,
 .folder-head .secondary { flex-shrink: 0; }
+.pending-empty {
+  margin: 0 0 18px;
+  padding: 10px 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--paper);
+}
+.pending-empty summary {
+  cursor: pointer;
+  font-family: var(--sans);
+  font-size: 0.92rem;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+.pending-empty .hint { margin: 8px 0 0; }
+.pending-album-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pending-album {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--paper);
+}
+.pending-album-copy {
+  min-width: 0;
+  flex: 1 1 220px;
+}
+.pending-album-copy strong { display: block; }
+.pending-album-copy .hint {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.pending-album-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
 .folder-head .row { flex-wrap: nowrap; }
 .label-grid {
   display: grid;
@@ -2116,7 +2190,8 @@ button.saved {
   flex-direction: column;
   align-items: flex-end;
   gap: 12px;
-  z-index: 7;
+  z-index: 8;
+  pointer-events: auto;
 }
 .photo-full-east .photo-full-nav.next {
   position: static;
@@ -2126,6 +2201,13 @@ button.saved {
 }
 .photo-full-east .photo-full-nav.next:hover {
   transform: none;
+}
+.photo-full-zoombar {
+  position: absolute;
+  right: 16px;
+  bottom: 96px;
+  z-index: 8;
+  pointer-events: auto;
 }
 .photo-full-tools {
   position: absolute;
@@ -2259,33 +2341,35 @@ button.saved {
   background: rgba(255, 253, 250, 0.16);
 }
 .photo-full-tools button:disabled { opacity: 0.35; }
-.photo-full-east .zoom-tools {
+.photo-full-zoombar .zoom-tools {
   display: inline-flex;
   flex-wrap: nowrap;
   align-items: center;
   gap: 0;
   max-width: none;
-  padding: 1px;
+  padding: 2px;
   border: 1px solid rgba(255, 253, 250, 0.28);
   border-radius: 999px;
   background: rgba(12, 10, 8, 0.62);
   color: #fffdfa;
-  font-size: 0.78rem;
+  font-size: 0.84rem;
+  pointer-events: auto;
 }
-.photo-full-east .zoom-tools button,
-.photo-full-east .zoom-level {
+.photo-full-zoombar .zoom-tools button,
+.photo-full-zoombar .zoom-level {
   color: #fffdfa;
   background: transparent;
   border: 0;
-  min-width: 28px;
-  min-height: 28px;
-  height: 28px;
-  padding: 0 6px;
-  font-size: 0.78rem;
+  min-width: 34px;
+  min-height: 34px;
+  height: 34px;
+  padding: 0 8px;
+  font-size: 0.84rem;
   box-shadow: none;
+  pointer-events: auto;
 }
-.photo-full-east .zoom-tools button:hover,
-.photo-full-east .zoom-tools button[aria-pressed="true"] {
+.photo-full-zoombar .zoom-tools button:hover,
+.photo-full-zoombar .zoom-tools button[aria-pressed="true"] {
   background: rgba(255, 253, 250, 0.14);
   transform: none;
 }
@@ -2535,7 +2619,7 @@ button.saved {
   margin: 0;
   min-height: 0;
   padding: 7px 12px;
-  border-radius: 12px;
+  border-radius: 6px;
   background: color-mix(in srgb, var(--paper) 90%, transparent);
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
@@ -4176,12 +4260,15 @@ kbd {
 .reset-folder.picked { background: var(--accent-soft); }
 .photo-menu {
   position: fixed;
-  z-index: 90;
+  z-index: 200;
   min-width: 180px;
   max-width: min(280px, calc(100vw - 16px));
-  max-height: min(80vh, 560px);
+  max-height: calc(100vh - 16px);
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
   padding: 6px;
   background: var(--paper);
   color: var(--ink);
@@ -4191,6 +4278,16 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+.photo-menu > * {
+  flex-shrink: 0;
+}
+.photo-menu::-webkit-scrollbar {
+  width: 10px;
+}
+.photo-menu::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--ink) 28%, transparent);
+  border-radius: 8px;
 }
 .photo-menu-sep {
   height: 1px;
@@ -4347,6 +4444,10 @@ kbd {
   .photo-full-east {
     right: 12px;
   }
+  .photo-full-zoombar {
+    right: 12px;
+    bottom: 120px;
+  }
   .photo-full-dock {
     max-width: calc(100% - 24px);
     bottom: 16px;
@@ -4389,6 +4490,7 @@ kbd {
   }
   .person-sticky-actions {
     width: 100%;
+    justify-content: flex-start;
   }
   .to-name-layout.has-named { grid-template-columns: 1fr; }
   .to-name-groups { overflow: visible; }
@@ -4471,6 +4573,12 @@ kbd {
   object-fit: cover;
   flex-shrink: 0;
   background: var(--bg-deep);
+}
+.people-search-hit.photo-hit img,
+.people-search-hit.photo-hit .person-picker-gap {
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
 }
 .app:has(.photo-full) .people-search-fab,
 .app:has(.photo-full) .people-search-panel {

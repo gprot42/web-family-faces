@@ -4,6 +4,7 @@ import { api } from "../api";
 import { tip } from "../tip.js";
 import ViewSwitch from "../components/ViewSwitch.jsx";
 import { loadCachedPeople, patchCachedPerson, saveCachedPeople } from "../peopleCache.js";
+import { emitCatalogChange } from "../photoMenu.js";
 
 const IGNORE_KEY = "photosort-merge-ignore";
 const CATEGORIES = [
@@ -316,6 +317,7 @@ export default function People() {
               suggestion={s}
               people={people}
               onJoin={() => {
+                emitCatalogChange();
                 api.people(folder || undefined).then((listed) => {
                   setPeople(listed.items || []);
                   if (listed.folders) setFolders(listed.folders);

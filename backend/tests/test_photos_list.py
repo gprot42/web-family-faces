@@ -105,7 +105,45 @@ def test_list_albums_under_includes_unscanned_children(tmp_path, monkeypatch):
     by_name = {row["folder"]: row for row in items}
     assert by_name["1997 - Market"]["photos"] == 0
     assert by_name["1998 - Harbor 2"]["photos"] == 0
+    assert by_name["1997 - Market"]["has_images"] is False
+    assert by_name["1998 - Harbor 2"]["has_images"] is False
     assert by_name["1997 - Market"].get("group") in ("", None)
+
+
+def test_list_albums_under_flags_unscanned_folder_with_photos(tmp_path, monkeypatch):
+    from photosort.people import list_albums_under
+
+    _db(tmp_path, monkeypatch)
+    root = tmp_path / "Photo_Collection"
+    album = root / "1999 - Pier"
+    album.mkdir(parents=True)
+    (album / "deck.jpg").write_bytes(b"not-a-real-jpeg")
+    (root / "notes-only").mkdir()
+    (root / "notes-only" / "readme.txt").write_text("no photos")
+    items = list_albums_under([str(root)], disk=True)
+    by_name = {row["folder"]: row for row in items}
+    assert by_name["1999 - Pier"]["photos"] == 0
+    assert by_name["1999 - Pier"]["has_images"] is True
+    assert by_name["notes-only"]["photos"] == 0
+    assert by_name["notes-only"]["has_images"] is False
+
+
+def test_list_albums_under_preview_copies_are_not_photos(tmp_path, monkeypatch):
+    from photosort.people import list_albums_under
+
+    _db(tmp_path, monkeypatch)
+    root = tmp_path / "Photo_Collection"
+    album = root / "2003 - Mum59"
+    album.mkdir(parents=True)
+    (album / "DSC00158-1024x768.jpg").write_bytes(b"preview")
+    (root / "2006 - Vienna" / "1024x768").mkdir(parents=True)
+    (root / "2006 - Vienna" / "1024x768" / "opera.jpg").write_bytes(b"preview")
+    items = list_albums_under([str(root)], disk=True)
+    by_name = {row["folder"]: row for row in items}
+    assert by_name["2003 - Mum59"]["photos"] == 0
+    assert by_name["2003 - Mum59"]["has_images"] is False
+    assert by_name["2006 - Vienna"]["photos"] == 0
+    assert by_name["2006 - Vienna"]["has_images"] is False
 
 
 def test_list_albums_under_expands_nested_scan_sets(tmp_path, monkeypatch):
@@ -409,6 +447,19 @@ def test_photo_view_is_cached_display_jpeg(tmp_path, monkeypatch):
     assert again.content == resp.content
 
 
+def test_photo_view_falls_back_to_thumb_when_original_is_offline(tmp_path, monkeypatch):
+    from PIL import Image
+
+    _db(tmp_path, monkeypatch)
+    thumb = tmp_path / "data" / "thumbs" / "1.jpg"
+    Image.new("RGB", (80, 80), (12, 40, 90)).save(thumb, "JPEG")
+    client = TestClient(app)
+    resp = client.get("/api/photos/1/view")
+    assert resp.status_code == 200
+    assert "jpeg" in (resp.headers.get("content-type") or "")
+    assert resp.content == thumb.read_bytes()
+
+
 def test_pipeline_should_resume_after_interrupted_job(tmp_path, monkeypatch):
     from photosort import pipeline as pipeline_mod
     from photosort.jobs import create_job, update_job
@@ -491,6 +542,109 @@ def test_resume_latest_restarts_paused_pipeline(tmp_path, monkeypatch):
     result = pipeline_mod.resume_latest()
     assert started == ["pipeline"]
     assert result["type"] == "pipeline"
+
+
+def test_run_pipeline_skips_missing_folder_and_scans(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from photosort import pipeline as pipeline_mod, faces as faces_mod
+
+    _db(tmp_path, monkeypatch)
+    present = tmp_path / "heirlooms"
+    present.mkdir()
+    missing = tmp_path / "vienna"
+    imported = []
+    scanned = []
+
+    def fake_import(job_id, folder, *args, **kwargs):
+        imported.append(Path(folder))
+        return {"added": 0}
+
+    monkeypatch.setattr(pipeline_mod.importer, "import_folder", fake_import)
+    monkeypatch.setattr(faces_mod, "scan_pending", lambda job_id, **k: scanned.append(job_id))
+    pipeline_mod.run_pipeline(7, [missing, present], scan=True)
+    assert imported == [present]
+    assert scanned == [7]
+    stored = pipeline_mod.remembered_folder_paths()
+    assert missing in stored
+    assert present in stored
+
+
+def test_resume_latest_starts_when_albums_unmounted(tmp_path, monkeypatch):
+    from photosort import pipeline as pipeline_mod
+
+    _db(tmp_path, monkeypatch)
+    missing = tmp_path / "vienna"
+    pipeline_mod.remember_folders([missing])
+    started = []
+    ran = []
+
+    def fake_start(job_type, fn):
+        started.append(job_type)
+        ran.append(fn)
+        return {"id": 102, "type": job_type, "status": "queued"}
+
+    monkeypatch.setattr(pipeline_mod, "start_job", fake_start)
+    result = pipeline_mod.resume_latest()
+    assert pipeline_mod.pending_scan_count() >= 1
+    assert started == ["pipeline"]
+    assert result["type"] == "pipeline"
+    assert pipeline_mod.remembered_folder_paths() == [missing]
+
+
+def test_resume_pipeline_keeps_unmounted_album_paths(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from photosort import pipeline as pipeline_mod, faces as faces_mod
+
+    _db(tmp_path, monkeypatch)
+    present = tmp_path / "heirlooms"
+    present.mkdir()
+    missing = tmp_path / "vienna"
+    pipeline_mod.remember_folders([missing, present])
+    imported = []
+    monkeypatch.setattr(
+        pipeline_mod.importer,
+        "import_folder",
+        lambda job_id, folder, *a, **k: imported.append(Path(folder)) or {"added": 0},
+    )
+    monkeypatch.setattr(faces_mod, "scan_pending", lambda job_id, **k: None)
+
+    def fake_start(job_type, fn):
+        fn(103)
+        return {"id": 103, "type": job_type, "status": "done"}
+
+    monkeypatch.setattr(pipeline_mod, "start_job", fake_start)
+    pipeline_mod.resume_pipeline(reindex=False)
+    assert imported == [present]
+    assert pipeline_mod.remembered_folder_paths() == [missing, present]
+
+
+def test_unavailable_folders_message_uses_plural():
+    from pathlib import Path
+    from photosort import pipeline as pipeline_mod
+
+    msg = pipeline_mod.unavailable_folders_message(
+        [Path("/Volumes/share/2003 - Mum59"), Path("/Volumes/share/2006 - Vienna"), Path("/Volumes/share/2021 - Writing")]
+    )
+    assert "aren't available" in msg
+    assert "Mum59" in msg
+    assert "Vienna" in msg
+    assert "Writing" in msg
+
+
+def test_scan_photo_leaves_offline_original_unscanned(tmp_path, monkeypatch):
+    from photosort import faces as faces_mod
+
+    _db(tmp_path, monkeypatch)
+    conn = connect()
+    row = conn.execute("SELECT * FROM photos WHERE id = 2").fetchone()
+    assert row["scanned_at"] is None
+    found = faces_mod.scan_photo(conn, row, analyzer=None)
+    again = conn.execute("SELECT scanned_at FROM photos WHERE id = 2").fetchone()
+    conn.close()
+    assert found == 0
+    assert again["scanned_at"] is None
 
 
 def test_should_resume_does_not_start_from_unscanned_backlog(tmp_path, monkeypatch):

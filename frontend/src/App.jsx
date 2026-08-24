@@ -19,6 +19,7 @@ import BrandLogo from "./components/BrandLogo.jsx";
 import PeopleSearch from "./components/PeopleSearch.jsx";
 import { tip } from "./tip.js";
 import { FolderViewLink } from "./components/ViewSwitch.jsx";
+import { CATALOG_CHANGE_EVENT, PHOTO_CHANGE_EVENT } from "./photoMenu.js";
 
 function navActive(on) {
   return on ? "active" : undefined;
@@ -73,6 +74,11 @@ export default function App() {
     }
   }
 
+  function scheduleRefresh(ms = 400) {
+    window.clearTimeout(statsTimer.current);
+    statsTimer.current = window.setTimeout(refresh, ms);
+  }
+
   function onChange(delta, mode) {
     if (delta && typeof delta === "object" && !delta.nativeEvent) {
       if (mode === "set") {
@@ -80,28 +86,51 @@ export default function App() {
       } else {
         adjustStats(delta);
       }
-      window.clearTimeout(statsTimer.current);
-      statsTimer.current = window.setTimeout(refresh, 2500);
+      scheduleRefresh(400);
       return;
     }
     refresh();
   }
 
   useEffect(() => {
+    scheduleRefresh(200);
+  }, [loc.pathname]);
+
+  useEffect(() => {
     refresh();
     const id = setInterval(refresh, 20000);
-    return () => clearInterval(id);
+    function onCatalog() {
+      scheduleRefresh(400);
+    }
+    function onVisible() {
+      if (document.visibilityState === "visible") scheduleRefresh(400);
+    }
+    window.addEventListener(PHOTO_CHANGE_EVENT, onCatalog);
+    window.addEventListener(CATALOG_CHANGE_EVENT, onCatalog);
+    window.addEventListener("focus", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(id);
+      window.clearTimeout(statsTimer.current);
+      window.removeEventListener(PHOTO_CHANGE_EVENT, onCatalog);
+      window.removeEventListener(CATALOG_CHANGE_EVENT, onCatalog);
+      window.removeEventListener("focus", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   useEffect(() => {
     let cancel = false;
     let timer = 0;
+    const wasBusy = { current: false };
     async function tick() {
       try {
         const data = await api.jobs();
         if (cancel) return;
         setJobs(data);
         const busy = Boolean(data?.active || (data?.photo_matches || []).length);
+        if (busy || wasBusy.current) refresh();
+        wasBusy.current = busy;
         timer = window.setTimeout(tick, busy ? 2000 : 8000);
       } catch {
         if (!cancel) timer = window.setTimeout(tick, 8000);

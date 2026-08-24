@@ -361,15 +361,13 @@ def pause_jobs() -> dict[str, Any]:
 
 @app.post("/api/jobs/resume")
 def resume_jobs() -> dict[str, Any]:
+    stored = pipeline_mod.remembered_folder_paths()
+    if stored and not os.environ.get("PYTEST_CURRENT_TEST"):
+        nas_mod.mount_for_paths(stored)
     job = pipeline_mod.resume_latest()
     if not job:
-        stored = pipeline_mod.remembered_folder_paths()
         if stored:
-            names = ", ".join(path.name or str(path) for path in stored[:3])
-            raise HTTPException(
-                409,
-                f"{names} isn't available. Mount the drive, then Resume.",
-            )
+            raise HTTPException(409, pipeline_mod.unavailable_folders_message(stored))
         raise HTTPException(409, "Nothing to resume. Choose folders, then Find Known Faces.")
     return job
 
@@ -1152,18 +1150,30 @@ def photo_thumb(photo_id: int):
 
 @app.get("/api/photos/{photo_id}/view")
 async def photo_view(photo_id: int):
-    dest = VIEW_DIR / f"{photo_id}.jpg"
-    if dest.exists() and dest.stat().st_size > 0:
-        return FileResponse(dest, media_type="image/jpeg", headers=_CACHE_IMAGE)
+    from . import config as cfg
+
+    for dest in (cfg.VIEW_DIR / f"{photo_id}.jpg", VIEW_DIR / f"{photo_id}.jpg"):
+        if dest.exists() and dest.stat().st_size > 0:
+            return FileResponse(dest, media_type="image/jpeg", headers=_CACHE_IMAGE)
+
+    def _thumb() -> Path | None:
+
+        for folder in (cfg.THUMB_DIR, THUMB_DIR):
+            path = folder / f"{photo_id}.jpg"
+            if path.is_file() and path.stat().st_size > 0:
+                return path
+        return None
 
     def build() -> Path | None:
         VIEW_DIR.mkdir(parents=True, exist_ok=True)
         conn = _conn()
         try:
             row = conn.execute("SELECT path FROM photos WHERE id = ?", (photo_id,)).fetchone()
-            if not row or not Path(row["path"]).exists():
-                return None
-            return importer.make_view(Path(row["path"]), photo_id)
+            if row and Path(row["path"]).exists():
+                made = importer.make_view(Path(row["path"]), photo_id)
+                if made and made.exists():
+                    return made
+            return _thumb()
         finally:
             conn.close()
 
@@ -1401,6 +1411,7 @@ def list_clusters() -> dict[str, Any]:
     preview = preview_path_sql("ph.path")
     conn = _conn()
     try:
+        groups_sql = people_mod.to_name_cluster_sql()
         top = [
             dict(row)
             for row in conn.execute(
@@ -1408,15 +1419,7 @@ def list_clusters() -> dict[str, Any]:
                 SELECT c.id, c.status, c.created_at,
                        COUNT(f.id) AS face_count,
                        AVG(f.age_est) AS age_mean
-                FROM clusters c
-                JOIN faces f ON f.cluster_id = c.id
-                JOIN photos ph ON ph.id = f.photo_id
-                WHERE c.status != 'junk'
-                  AND f.person_id IS NULL
-                  AND f.quality = 'ok'
-                  AND IFNULL(f.assigned_how, '') != 'junk'
-                  AND {preview}
-                GROUP BY c.id
+                {groups_sql}
                 ORDER BY face_count DESC, c.id
                 LIMIT 80
                 """
@@ -1446,15 +1449,7 @@ def list_clusters() -> dict[str, Any]:
                 f"""
                 SELECT COUNT(*) AS n FROM (
                   SELECT c.id
-                  FROM clusters c
-                  JOIN faces f ON f.cluster_id = c.id
-                  JOIN photos ph ON ph.id = f.photo_id
-                  WHERE c.status != 'junk'
-                    AND f.person_id IS NULL
-                    AND f.quality = 'ok'
-                    AND IFNULL(f.assigned_how, '') != 'junk'
-                    AND {preview}
-                  GROUP BY c.id
+                  {groups_sql}
                 )
                 """
             ).fetchone()["n"]

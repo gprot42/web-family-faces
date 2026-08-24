@@ -66,6 +66,24 @@ def remembered_folders() -> list[Path]:
     return [library] if library else []
 
 
+def unavailable_folders_message(paths: list[Path] | None = None) -> str:
+    """Copy when Resume cannot see stored albums (drive unmounted)."""
+    names = [path.name or str(path) for path in (paths or []) if path.name or str(path)]
+    names = names[:3]
+    if not names:
+        return "The album folder isn't available. Mount the drive, then Resume."
+    if len(names) == 1:
+        listed = names[0]
+        verb = "isn't"
+    elif len(names) == 2:
+        listed = f"{names[0]} and {names[1]}"
+        verb = "aren't"
+    else:
+        listed = f"{names[0]}, {names[1]}, and {names[2]}"
+        verb = "aren't"
+    return f"{listed} {verb} available. Mount the drive, then Resume."
+
+
 def pending_scan_count() -> int:
     conn = connect()
     init_db(conn)
@@ -85,18 +103,33 @@ def run_pipeline(
     reindex: bool = True,
     scan: bool = True,
     faces_if_new_only: bool = False,
+    remember: bool = True,
 ) -> None:
-    remember_folders(folders)
+    requested = [Path(folder).expanduser() for folder in folders]
+    present = [folder for folder in requested if folder.is_dir()]
+    missing = [folder for folder in requested if not folder.is_dir()]
+    if remember and requested:
+        remember_folders(requested)
     started = now_iso()
     added = 0
-    for folder in folders:
-        result = importer.import_folder(
-            job_id,
-            folder,
-            verify_existing=False,
-            skip_if_complete=not reindex,
-        ) or {}
+    for folder in present:
+        try:
+            result = importer.import_folder(
+                job_id,
+                folder,
+                verify_existing=False,
+                skip_if_complete=not reindex,
+            ) or {}
+        except FileNotFoundError:
+            missing.append(folder)
+            continue
         added += int(result.get("added") or 0)
+    if missing:
+        names = ", ".join(path.name or str(path) for path in missing[:3])
+        update_job(
+            job_id,
+            message=f"Skipping {names} — not mounted. Continuing with photos already in the catalog.",
+        )
     if not scan:
         update_job(
             job_id,
@@ -175,14 +208,17 @@ def should_resume() -> bool:
 
 
 def resume_pipeline(*, reindex: bool = False) -> dict | None:
+    stored = remembered_folder_paths()
     folders = remembered_folders()
-    if not folders:
-        return None
     if active_job():
         return active_job()
+    if not folders and not stored and pending_scan_count() <= 0:
+        return None
     captured = list(folders)
-    remember_folders(captured)
-    return start_job("pipeline", lambda job_id: run_pipeline(job_id, captured, reindex=reindex))
+    return start_job(
+        "pipeline",
+        lambda job_id: run_pipeline(job_id, captured, reindex=reindex, remember=False),
+    )
 
 
 def resume_latest() -> dict | None:
@@ -215,7 +251,6 @@ def resume_latest() -> dict | None:
 
 
 def resume_interrupted_pipeline() -> dict | None:
-    folders = remembered_folders()
-    if not folders or not should_resume():
+    if not should_resume():
         return None
     return resume_pipeline(reindex=False)

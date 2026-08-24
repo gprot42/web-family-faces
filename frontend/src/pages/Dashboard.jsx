@@ -77,7 +77,10 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
     ? "A photo was already in the catalog. Already indexed photos are kept."
     : /Unsupported file format or not RAW/i.test(failedRaw)
       ? "A camera-raw file could not be read. That file was skipped; already indexed photos are kept."
-      : failedRaw;
+      : /Folder not found/i.test(failedRaw)
+        ? "An album folder isn't mounted. Resume continues with photos already in the catalog."
+        : failedRaw;
+  const scanFailed = Boolean(failed && ["pipeline", "import", "scan"].includes(failed.type));
   const jobTitle = {
     pipeline: "Finding known faces",
     import: "Reading folder",
@@ -150,17 +153,6 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
     if (scanNew && added.length && !active) setAsk({ kind: "scan", paths: added });
   }
 
-  async function runPipeline(e) {
-    e.preventDefault();
-    const next = addTypedPath();
-    const list = (next || []).filter(isAlbumPath);
-    if (!list.length) {
-      setErr("Choose at least one folder.");
-      return;
-    }
-    setAsk({ kind: "scan", paths: list });
-  }
-
   async function refreshJobs() {
     onChange?.();
     try {
@@ -180,7 +172,21 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
     }
   }
 
-  const scanFailed = Boolean(failed && ["pipeline", "import", "scan"].includes(failed.type));
+  async function runPipeline(e) {
+    e.preventDefault();
+    if (scanFailed) {
+      await resumeLatest();
+      return;
+    }
+    const next = addTypedPath();
+    const list = (next || []).filter(isAlbumPath);
+    if (!list.length) {
+      setErr("Choose at least one folder.");
+      return;
+    }
+    setAsk({ kind: "scan", paths: list });
+  }
+
   const pendingScan = Math.max(0, (stats?.photos || 0) - (stats?.photos_scanned || 0));
 
   return (

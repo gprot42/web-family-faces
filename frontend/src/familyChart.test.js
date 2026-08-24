@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CARD_H, CARD_W, layoutFamilyTree, viewOnFocus } from "./familyChart.js";
+import { CARD_H, CARD_W, layoutFamilyTree, treePersonIdForCatalog, viewOnFocus } from "./familyChart.js";
 
 test("layoutFamilyTree always places the selected person", () => {
   const layout = layoutFamilyTree({
@@ -31,4 +31,16 @@ test("viewOnFocus keeps the selected person on screen", () => {
   assert.ok(screenX > 80 && screenX < 720, `x ${screenX}`);
   assert.ok(screenY > 80 && screenY < 480, `y ${screenY}`);
   assert.ok(view.zoom >= 0.5, `zoom ${view.zoom}`);
+});
+
+test("treePersonIdForCatalog prefers a linked catalog id, then a unique name", () => {
+  const people = [
+    { id: "I1", name: "Ada Cole", catalog_id: 12 },
+    { id: "I2", name: "Sam Reed" },
+    { id: "I3", name: "Sam Reed" },
+  ];
+  assert.equal(treePersonIdForCatalog(people, 12), "I1");
+  assert.equal(treePersonIdForCatalog(people, 99, "Ada Cole"), "I1");
+  assert.equal(treePersonIdForCatalog(people, 99, "Sam Reed"), "");
+  assert.equal(treePersonIdForCatalog(people, 0, "Ada Cole"), "");
 });

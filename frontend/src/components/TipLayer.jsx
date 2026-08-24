@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 
 const PAD = 8;
 
@@ -8,9 +9,14 @@ function tipTarget(node) {
 }
 
 export default function TipLayer() {
+  const loc = useLocation();
   const [tip, setTip] = useState(null);
   const [box, setBox] = useState({ left: 0, top: 0, ready: false });
   const bubble = useRef(null);
+
+  useEffect(() => {
+    setTip(null);
+  }, [loc.pathname, loc.search, loc.hash]);
 
   useEffect(() => {
     function show(target) {
@@ -41,6 +47,7 @@ export default function TipLayer() {
     }
     document.addEventListener("pointerover", onOver);
     document.addEventListener("pointerout", onOut);
+    document.addEventListener("pointerdown", hide);
     document.addEventListener("focusin", onOver);
     document.addEventListener("focusout", onOut);
     document.addEventListener("scroll", hide, true);
@@ -48,6 +55,7 @@ export default function TipLayer() {
     return () => {
       document.removeEventListener("pointerover", onOver);
       document.removeEventListener("pointerout", onOut);
+      document.removeEventListener("pointerdown", hide);
       document.removeEventListener("focusin", onOver);
       document.removeEventListener("focusout", onOut);
       document.removeEventListener("scroll", hide, true);

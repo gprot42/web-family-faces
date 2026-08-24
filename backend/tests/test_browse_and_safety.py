@@ -847,10 +847,19 @@ def test_resume_points_at_unnamed_cluster(tmp_path, monkeypatch):
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
         ("/x.jpg", "x", 10, 10, now_iso()),
     )
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/y.jpg", "y", 10, 10, now_iso()),
+    )
     conn.execute("INSERT INTO clusters (status, created_at) VALUES ('unknown', ?)", (now_iso(),))
     conn.execute(
         """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, cluster_id, created_at)
            VALUES (1,0,0,1,1,0.9,'ok',1,?)""",
+        (now_iso(),),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, cluster_id, created_at)
+           VALUES (2,0,0,1,1,0.9,'ok',1,?)""",
         (now_iso(),),
     )
     conn.commit()

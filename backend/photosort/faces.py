@@ -716,9 +716,13 @@ def box_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, 
 
 def scan_photo(conn, photo_row, analyzer) -> int:
     path = Path(photo_row["path"])
+    thumb = THUMB_DIR / f"{int(photo_row['id'])}.jpg"
     try:
         image, sx, sy = _load_detect(photo_row)
     except Exception:
+        # Original unmounted and no local preview: leave pending so Resume can retry.
+        if not path.is_file() and not thumb.is_file():
+            return 0
         conn.execute(
             "UPDATE photos SET scanned_at = ? WHERE id = ?",
             (now_iso(), photo_row["id"]),

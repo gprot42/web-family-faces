@@ -78,10 +78,19 @@ def test_unnamed_counts_ignore_preview_copies(tmp_path, monkeypatch):
         "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
         ("/album/1024 x 768/a.jpg", "p", 10, 10, now_iso()),
     )
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/album/1994 - Harbor/b.jpg", "b", 10, 10, now_iso()),
+    )
     conn.execute("INSERT INTO clusters (status, created_at) VALUES ('unknown', ?)", (now_iso(),))
     conn.execute(
         """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, cluster_id, created_at)
            VALUES (1,0,0,1,1,0.9,'ok',1,?)""",
+        (now_iso(),),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, cluster_id, created_at)
+           VALUES (3,0,0,1,1,0.9,'ok',1,?)""",
         (now_iso(),),
     )
     conn.execute(
@@ -92,13 +101,36 @@ def test_unnamed_counts_ignore_preview_copies(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
     summary = visible_unnamed_summary()
-    assert summary["faces"] == 1
+    assert summary["faces"] == 2
     assert summary["clusters"] == 1
     stats = folder_stats()
-    assert stats["faces_unknown"] == 1
+    assert stats["faces_unknown"] == 2
     assert stats["unknown_clusters"] == 1
     assert stats["people_named"] == 0
     assert stats["people_unknown"] == 0
+
+
+def test_to_name_count_skips_one_face_leftovers(tmp_path, monkeypatch):
+    from photosort.people import visible_unnamed_summary
+    from photosort.stats import folder_stats
+
+    conn = _setup(tmp_path, monkeypatch)
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/album/one.jpg", "a", 10, 10, now_iso()),
+    )
+    conn.execute("INSERT INTO clusters (status, created_at) VALUES ('unknown', ?)", (now_iso(),))
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, cluster_id, created_at)
+           VALUES (1,0,0,1,1,0.9,'ok',1,?)""",
+        (now_iso(),),
+    )
+    conn.commit()
+    conn.close()
+    summary = visible_unnamed_summary()
+    assert summary["faces"] == 1
+    assert summary["clusters"] == 0
+    assert folder_stats()["unknown_clusters"] == 0
 
 
 def test_unknown_name_people_count_as_not_yet_named(tmp_path, monkeypatch):
@@ -2338,6 +2370,51 @@ def test_display_faces_keeps_one_copy_of_each_picture():
     assert ids == [2, 5]
 
 
+def test_display_faces_keeps_larger_scan_of_the_same_print():
+    from photosort.util import embedding_to_bytes, l2_normalize
+    import numpy as np
+
+    same = embedding_to_bytes(l2_normalize(np.array([1.0, 0.2, 0.0, 0.0], dtype=np.float32)))
+    other = embedding_to_bytes(l2_normalize(np.array([0.0, 0.0, 1.0, 0.1], dtype=np.float32)))
+    faces = [
+        {
+            "id": 1,
+            "photo_id": 10,
+            "det_score": 0.8,
+            "sha256": "print",
+            "path": "/album/Loose/_photo_00038A.jpg",
+            "taken_at": "2022-09-13T21:04:09",
+            "width": 2102,
+            "height": 2058,
+            "embedding": same,
+        },
+        {
+            "id": 2,
+            "photo_id": 11,
+            "det_score": 0.9,
+            "sha256": "negative",
+            "path": "/album/Negatives/3_Image__265.jpg",
+            "taken_at": "2022-09-13T21:10:00",
+            "width": 3861,
+            "height": 3853,
+            "embedding": same,
+        },
+        {
+            "id": 3,
+            "photo_id": 12,
+            "det_score": 0.7,
+            "sha256": "other",
+            "path": "/album/Loose/_photo_00099A.jpg",
+            "taken_at": "2022-09-13T22:00:00",
+            "width": 2000,
+            "height": 2000,
+            "embedding": other,
+        },
+    ]
+    shown = display_faces(faces)
+    assert [f["id"] for f in shown] == [2, 3]
+
+
 def test_rename_person_http_updates_name(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from photosort.main import app
@@ -3012,6 +3089,56 @@ def test_match_does_not_auto_name_a_man_as_a_woman(tmp_path, monkeypatch):
     assert out["auto_assigned"] == 0 or row["person_id"] == david["id"]
 
 
+def test_polluted_female_gallery_does_not_name_a_man(tmp_path, monkeypatch):
+    """A man tagged as June must not become the nearest neighbour for other men."""
+    from photosort.match import match_photo, suggestions_for_face
+
+    _setup(tmp_path, monkeypatch)
+    june = create_person("June Reed")
+    david = create_person("David John Reed")
+    joan_vec = _unit(1.0, 0.0)
+    david_vec = _unit(0.0, 1.0)
+    conn = connect()
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/a.jpg", "a", 200, 200, now_iso()),
+    )
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/b.jpg", "b", 200, 200, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, sex_est, person_id, assigned_how, created_at)
+           VALUES (1,0,0,10,10,0.9,'ok',?,'F',?, 'manual', ?)""",
+        (embedding_to_bytes(joan_vec), june["id"], now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, sex_est, person_id, assigned_how, created_at)
+           VALUES (1,20,0,30,10,0.9,'ok',?,'M',?, 'manual', ?)""",
+        (embedding_to_bytes(david_vec), june["id"], now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, sex_est, person_id, assigned_how, created_at)
+           VALUES (1,40,0,50,10,0.9,'ok',?,'M',?, 'manual', ?)""",
+        (embedding_to_bytes(david_vec), david["id"], now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, sex_est, age_est, created_at)
+           VALUES (2,0,0,40,40,0.9,'ok',?,'M',36,?)""",
+        (embedding_to_bytes(david_vec), now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    names = {item["name"] for item in suggestions_for_face(4)}
+    assert "June Reed" not in names
+    out = match_photo(2)
+    conn = connect()
+    row = conn.execute("SELECT person_id FROM faces WHERE photo_id = 2").fetchone()
+    conn.close()
+    assert row["person_id"] != june["id"]
+    assert out["auto_assigned"] == 0 or row["person_id"] == david["id"]
+
+
 def test_match_photo_names_boy_even_if_detector_guessed_female(tmp_path, monkeypatch):
     """Re-identify must not skip a strong catalog hit because InsightFace guessed the wrong sex."""
     _setup(tmp_path, monkeypatch)
@@ -3159,6 +3286,46 @@ def test_search_people_by_vectors_ranks_named_catalog(tmp_path, monkeypatch):
     assert hits[0]["similarity"] > 0.9
     empty = search_people_by_vectors([], limit=2)
     assert empty == []
+
+
+def test_search_archive_photos_finds_unnamed_catalog_face(tmp_path, monkeypatch):
+    from photosort.match import search_archive_photos, search_uploaded_face
+    from photosort import faces as faces_mod
+
+    _setup(tmp_path, monkeypatch)
+    probe = l2_normalize(np.array([1.0, 0.0, 0.0] + [0.0] * 29, dtype=np.float32))
+    other = l2_normalize(np.array([0.0, 1.0, 0.0] + [0.0] * 29, dtype=np.float32))
+    conn = connect()
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/album/heirlooms/print.jpg", "abc", 100, 100, now_iso()),
+    )
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/album/other.jpg", "def", 100, 100, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, created_at)
+           VALUES (1,0,0,10,10,0.9,'ok',?,?)""",
+        (embedding_to_bytes(probe), now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, created_at)
+           VALUES (2,0,0,10,10,0.9,'ok',?,?)""",
+        (embedding_to_bytes(other), now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    hits = search_archive_photos([probe], limit=4)
+    assert hits[0]["id"] == 1
+    assert hits[0]["filename"] == "print.jpg"
+    assert hits[0]["folder"] == "heirlooms"
+    assert hits[0]["similarity"] > 0.9
+    monkeypatch.setattr(faces_mod, "embeddings_from_image_bytes", lambda data, **k: [probe])
+    out = search_uploaded_face(b"not-a-real-jpeg")
+    assert out["faces_found"] == 1
+    assert out["photos"][0]["id"] == 1
+    assert out["people"] == []
 
 
 def test_match_photo_skips_rescan_when_everyone_is_named(tmp_path, monkeypatch):

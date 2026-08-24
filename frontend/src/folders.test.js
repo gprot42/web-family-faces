@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  folderBreadcrumb,
   folderDisplayName,
   FOLDER_TITLES_KEY,
   isFolderStarred,
@@ -51,6 +52,15 @@ test("starred folders round-trip through localStorage", () => {
   writeStarredFolders(["/a/Kyoto/", "/a/Kyoto", "/a/Mexico"]);
   assert.equal(localStorage.getItem(STARRED_FOLDERS_KEY), JSON.stringify(["/a/Kyoto", "/a/Mexico"]));
   assert.deepEqual(readStarredFolders(), ["/a/Kyoto", "/a/Mexico"]);
+});
+
+test("folderBreadcrumb keeps a short name with its parent album", () => {
+  assert.equal(
+    folderBreadcrumb("/Volumes/photos/Lulu Singing - 1st June 2016/Old"),
+    "Lulu Singing - 1st June 2016 / Old",
+  );
+  assert.equal(folderBreadcrumb("/Volumes/photos/1999 - Pier"), "photos / 1999 - Pier");
+  assert.equal(folderBreadcrumb("Old"), "Old");
 });
 
 test("folder titles are stored by path and do not rename the disk folder", () => {

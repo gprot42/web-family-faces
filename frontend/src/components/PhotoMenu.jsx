@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { imageBlobForClipboard } from "../copyPhoto.js";
 import { applyFullscreenLabels, readFullscreenLabels } from "../nametag.js";
-import { emitPhotoChange, subscribePhotoMenu } from "../photoMenu.js";
+import { emitCatalogChange, emitPhotoChange, subscribePhotoMenu } from "../photoMenu.js";
 import { clearRematchUndo, readRematchUndo, writeRematchUndo } from "../rematchUndo.js";
 import { pushFaceUndo, pushUndo } from "../editUndo.js";
 import { boxIou, displayFaces, overlayFaces, unnamedName } from "./LabeledPhoto.jsx";
@@ -32,7 +32,7 @@ export default function PhotoMenu() {
     if (!menu) return undefined;
     function insideMenu(event) {
       if (!box.current) return false;
-      if (event?.target && box.current.contains(event.target)) return true;
+      if (event?.target instanceof Node && box.current.contains(event.target)) return true;
       if (event?.clientX == null || event?.clientY == null) return false;
       const r = box.current.getBoundingClientRect();
       return event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom;
@@ -43,30 +43,54 @@ export default function PhotoMenu() {
         setMenu(null);
         return;
       }
+      if (event?.type === "scroll" || event?.type === "wheel") {
+        if (insideMenu(event)) return;
+        if (box.current && event.target instanceof Node && (event.target === box.current || box.current.contains(event.target))) return;
+      }
       if (insideMenu(event)) return;
       setMenu(null);
     }
     window.addEventListener("pointerdown", hide, true);
     window.addEventListener("keydown", hide);
     window.addEventListener("scroll", hide, true);
+    window.addEventListener("wheel", hide, { capture: true, passive: true });
     return () => {
       window.removeEventListener("pointerdown", hide, true);
       window.removeEventListener("keydown", hide);
       window.removeEventListener("scroll", hide, true);
+      window.removeEventListener("wheel", hide, { capture: true });
     };
   }, [menu]);
 
   useLayoutEffect(() => {
-    if (!menu || !box.current) return;
-    const r = box.current.getBoundingClientRect();
-    let left = menu.x;
-    let top = menu.y;
-    if (left + r.width > window.innerWidth - PAD) left = window.innerWidth - r.width - PAD;
-    if (top + r.height > window.innerHeight - PAD) top = window.innerHeight - r.height - PAD;
-    if (left < PAD) left = PAD;
-    if (top < PAD) top = PAD;
-    box.current.style.left = `${left}px`;
-    box.current.style.top = `${top}px`;
+    if (!menu || !box.current) return undefined;
+    const el = box.current;
+    function place() {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const room = Math.max(160, vh - PAD * 2);
+      el.style.maxHeight = `${room}px`;
+      const r = el.getBoundingClientRect();
+      const width = r.width;
+      const height = Math.min(el.scrollHeight, room);
+      let left = menu.x;
+      if (left + width > vw - PAD) left = vw - width - PAD;
+      if (left < PAD) left = PAD;
+      const below = vh - menu.y - PAD;
+      const above = menu.y - PAD;
+      let top = menu.y;
+      if (height <= below) top = menu.y;
+      else if (height <= above) top = menu.y - height;
+      else if (above > below) top = PAD;
+      if (top + height > vh - PAD) top = vh - height - PAD;
+      if (top < PAD) top = PAD;
+      el.style.left = `${left}px`;
+      el.style.top = `${top}px`;
+      el.style.maxHeight = `${Math.max(160, vh - top - PAD)}px`;
+    }
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
   }, [menu]);
 
   if (!menu) return null;
@@ -204,6 +228,7 @@ export default function PhotoMenu() {
         if (hit) pushFaceUndo(prev, hit, "hiding this face");
         await api.junkFace(faceId);
       }
+      emitCatalogChange();
     } catch (ex) {
       emitPhotoChange(prev);
       window.alert(ex.message || "Could not hide this face.");
@@ -225,6 +250,7 @@ export default function PhotoMenu() {
         pushFaceUndo(prev, hit, "hiding this face");
       }
       await api.junkUnnamedPhoto(prev.id);
+      emitCatalogChange();
     } catch (ex) {
       emitPhotoChange(prev);
       window.alert(ex.message || "Could not hide unnamed faces.");
@@ -238,7 +264,12 @@ export default function PhotoMenu() {
       role="menu"
       aria-label="Photo"
       onPointerDown={(e) => e.stopPropagation()}
-      onWheel={(e) => e.stopPropagation()}
+      onWheel={(e) => {
+        e.stopPropagation();
+        const el = e.currentTarget;
+        if (el.scrollHeight <= el.clientHeight + 1) return;
+        if (e.defaultPrevented) el.scrollTop += e.deltaY;
+      }}
       onScroll={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
     >

@@ -11,6 +11,7 @@ export default function PeopleSearch() {
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState("");
   const [faceHits, setFaceHits] = useState(null);
+  const [photoHits, setPhotoHits] = useState(null);
   const [facesFound, setFacesFound] = useState(0);
   const [faceBusy, setFaceBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -72,6 +73,7 @@ export default function PeopleSearch() {
     setFile(next || null);
     setPreview(next ? URL.createObjectURL(next) : "");
     setFaceHits(null);
+    setPhotoHits(null);
     setFacesFound(0);
     setErr("");
   }
@@ -86,8 +88,10 @@ export default function PeopleSearch() {
       const found = await api.searchFace(upload);
       setFacesFound(Number(found.faces_found) || 0);
       setFaceHits(found.people || []);
+      setPhotoHits(found.photos || []);
     } catch (ex) {
       setFaceHits(null);
+      setPhotoHits(null);
       setErr(ex.message || "Could not search that photo.");
     } finally {
       setFaceBusy(false);
@@ -102,7 +106,7 @@ export default function PeopleSearch() {
         aria-expanded={open}
         aria-controls="people-search-panel"
         onClick={() => setOpen((cur) => !cur)}
-        {...tip("Find someone by name, or upload a photo to match a face already in the catalog.")}
+        {...tip("Find someone by name, or upload a photo to match a picture and faces already in the catalog.")}
       >
         Search
       </button>
@@ -153,7 +157,7 @@ export default function PeopleSearch() {
           <div className="people-search-or">or</div>
           <p className="cluster-label">Upload a photo</p>
           <p className="hint" style={{ marginTop: -4 }}>
-            Match a face in a snapshot to people already stored here. The file is not added to the album.
+            Match a snapshot to a picture already in the catalog, and to people already named. The file is not added to the album.
           </p>
           <div className="row" style={{ marginTop: 8 }}>
             <input
@@ -183,30 +187,64 @@ export default function PeopleSearch() {
             <img className="people-search-preview" src={preview} alt="Uploaded photo preview" />
           ) : null}
           {err ? <p className="error">{err}</p> : null}
-          {faceHits && !faceHits.length ? (
+          {faceHits && photoHits && !faceHits.length && !photoHits.length ? (
             <p className="hint">
               {facesFound
-                ? "Found a face, but nobody in the catalog is a close match."
+                ? "Found a face, but it does not match a catalog photo or a named person closely enough."
                 : "No face found in that photo. Try a clearer, closer shot."}
             </p>
           ) : null}
-          {faceHits?.length ? (
-            <div className="people-search-hits">
-              {faceHits.map((person) => (
-                <Link key={person.id} className="people-search-hit" to={`/people/${person.id}`} onClick={() => setOpen(false)}>
-                  {person.cover_url ? <img src={person.cover_url} alt="" /> : <span className="person-picker-gap" />}
-                  <span>
-                    <strong>{person.name}</strong>
-                    {person.nickname ? <span className="hint"> · {person.nickname}</span> : null}
-                    <span className="hint">
-                      {" "}
-                      · {Math.round((person.similarity || 0) * 100)}% match
-                      {person.face_count ? ` · ${person.face_count} photo${person.face_count === 1 ? "" : "s"}` : ""}
+          {photoHits?.length ? (
+            <>
+              <p className="cluster-label" style={{ marginTop: 12 }}>
+                In your archive
+              </p>
+              <div className="people-search-hits">
+                {photoHits.map((photo) => (
+                  <Link
+                    key={photo.id}
+                    className="people-search-hit photo-hit"
+                    to={`/photos/${photo.id}`}
+                    onClick={() => setOpen(false)}
+                  >
+                    {photo.thumb_url ? <img src={photo.thumb_url} alt="" /> : <span className="person-picker-gap" />}
+                    <span>
+                      <strong>{photo.filename}</strong>
+                      <span className="hint">
+                        {photo.folder ? ` · ${photo.folder}` : ""}
+                        {photo.exact
+                          ? " · exact file"
+                          : ` · ${Math.round((photo.similarity || 0) * 100)}% same face`}
+                        {photo.person_name ? ` · ${photo.person_name}` : ""}
+                      </span>
                     </span>
-                  </span>
-                </Link>
-              ))}
-            </div>
+                  </Link>
+                ))}
+              </div>
+            </>
+          ) : null}
+          {faceHits?.length ? (
+            <>
+              <p className="cluster-label" style={{ marginTop: 12 }}>
+                Named people
+              </p>
+              <div className="people-search-hits">
+                {faceHits.map((person) => (
+                  <Link key={person.id} className="people-search-hit" to={`/people/${person.id}`} onClick={() => setOpen(false)}>
+                    {person.cover_url ? <img src={person.cover_url} alt="" /> : <span className="person-picker-gap" />}
+                    <span>
+                      <strong>{person.name}</strong>
+                      {person.nickname ? <span className="hint"> · {person.nickname}</span> : null}
+                      <span className="hint">
+                        {" "}
+                        · {Math.round((person.similarity || 0) * 100)}% match
+                        {person.face_count ? ` · ${person.face_count} photo${person.face_count === 1 ? "" : "s"}` : ""}
+                      </span>
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            </>
           ) : null}
         </div>
       ) : null}

@@ -8,7 +8,7 @@ import ViewSwitch from "../components/ViewSwitch.jsx";
 import PersonPicker from "../components/PersonPicker.jsx";
 import FamousLookup from "../components/FamousLookup.jsx";
 import { PhotoTagRow } from "../components/PhotoTags.jsx";
-import { PHOTO_CHANGE_EVENT, showPhotoMenu } from "../photoMenu.js";
+import { emitCatalogChange, PHOTO_CHANGE_EVENT, showPhotoMenu } from "../photoMenu.js";
 import { patchCachedPerson } from "../peopleCache.js";
 import { clearPersonPos, personShotHash, readPersonPos, writePersonPos } from "../albumPos.js";
 
@@ -139,6 +139,7 @@ export default function PersonDetail() {
     dropShot(face);
     try {
       await api.unassignFace(face.id);
+      emitCatalogChange();
     } catch (ex) {
       setErr(ex.message || "Could not remove this photo.");
       await load();
@@ -258,6 +259,13 @@ export default function PersonDetail() {
                 Download photos
               </button>
             )}
+            <Link
+              className="btn secondary"
+              to={`/tree?person=${person.id}`}
+              {...tip("Open this person on the Family tree page, centered among their relatives.")}
+            >
+              Show in family tree
+            </Link>
             <ViewSwitch photoId={shots[0]?.photo_id} personId={person.id} />
           </div>
         </div>
@@ -379,7 +387,10 @@ export default function PersonDetail() {
               setName(result.name);
               return;
             }
-            api.mergePerson(pid, person.id).then(() => nav(`/people/${pid}`));
+            api.mergePerson(pid, person.id).then(() => {
+              emitCatalogChange();
+              nav(`/people/${pid}`);
+            });
           }}
           onConfirm={(hit) => {
             setName(hit.name);
@@ -461,7 +472,12 @@ export default function PersonDetail() {
           <PersonPicker
             people={people}
             hint="Click a face only to merge the same person at two ages."
-            onPick={(p) => api.mergePerson(id, p.id).then(load)}
+            onPick={(p) =>
+              api.mergePerson(id, p.id).then(() => {
+                emitCatalogChange();
+                load();
+              })
+            }
           />
         </details>
       ) : null}

@@ -42,6 +42,10 @@ export function peekUndo() {
   return stack.length ? stack[stack.length - 1] : null;
 }
 
+export function undoCount() {
+  return stack.length;
+}
+
 export function popUndo() {
   const entry = stack.pop() || null;
   if (entry) emit();

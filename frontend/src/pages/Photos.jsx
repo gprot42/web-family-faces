@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import { ALL_FOLDERS_EVENT, addedFolderPaths, folderDisplayName, folderIsIndexed, folderLabel, FOLDER_TITLE_MAX, isFolderStarred, normalizeFolderPath, photoInFolders, readFolderTitles, readImportFolders, readStarredFolders, setFolderTitle, toggleStarredFolder, writeFolderTitles, writeImportFolders, writeStarredFolders } from "../folders.js";
+import { ALL_FOLDERS_EVENT, addedFolderPaths, folderBreadcrumb, folderDisplayName, folderIsIndexed, folderLabel, FOLDER_TITLE_MAX, isFolderStarred, normalizeFolderPath, photoInFolders, readFolderTitles, readImportFolders, readStarredFolders, setFolderTitle, toggleStarredFolder, writeFolderTitles, writeImportFolders, writeStarredFolders } from "../folders.js";
 import { PHOTO_CHANGE_EVENT } from "../photoMenu.js";
 import JobGauge from "../components/JobGauge.jsx";
 import { beginPlay } from "../play.js";
@@ -75,6 +75,15 @@ function writeFolderHash(hash) {
   const next = `${window.location.pathname}${window.location.search}${hash || ""}`;
   const cur = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   if (cur !== next) window.history.replaceState(null, "", next);
+}
+
+function mergeFolderCatalog(base, extra) {
+  const byPath = new Map();
+  for (const item of [...(base || []), ...(extra || [])]) {
+    if (!item?.path) continue;
+    byPath.set(normalizeFolderPath(item.path), item);
+  }
+  return [...byPath.values()];
 }
 
 function catalogTree(catalog) {
@@ -413,10 +422,11 @@ function FolderPhotos() {
       }
       loadingAlbums.current = true;
       if (!(catalog || []).length) setLoading(true);
+      let indexedItems = [];
       try {
         const indexed = await api.nameFolders();
         if (cancelled) return;
-        const indexedItems = indexed.items || [];
+        indexedItems = indexed.items || [];
         if (indexedItems.length) {
           setCatalog(indexedItems);
           saveCachedCatalog(indexedItems);
@@ -459,11 +469,14 @@ function FolderPhotos() {
           if (cancelled) return;
           const albums = listed.items || [];
           if (!albums.length) return;
-          setCatalog(albums);
-          saveCachedCatalog(albums);
+          const withPhotos = albums.filter((album) => (album.photos || 0) > 0);
+          const next = withPhotos.length ? albums : mergeFolderCatalog(indexedItems, albums);
+          if (!next.length) return;
+          setCatalog(next);
+          saveCachedCatalog(next);
           setData({
             items: [],
-            total: albums.filter((album) => album.path && album.photos > 0).reduce((n, album) => n + (album.photos || 0), 0),
+            total: next.filter((album) => album.path && album.photos > 0).reduce((n, album) => n + (album.photos || 0), 0),
           });
         })
         .catch(() => {});
@@ -715,8 +728,8 @@ function FolderPhotos() {
   const shown = (catalog || []).reduce((n, album) => n + (album.photos || 0), 0) || groups.reduce((n, [, photos]) => n + photos.length, 0);
   const libName = saved.length
     ? saved.length === 1
-      ? folderLabel(saved[0])
-      : `${folderLabel(saved[0])} + ${saved.length - 1} more`
+      ? folderBreadcrumb(saved[0])
+      : `${folderBreadcrumb(saved[0])} + ${saved.length - 1} more`
     : "";
   const pending = useMemo(() => {
     if (catalog === null && !data.items.length) return [];
@@ -728,6 +741,14 @@ function FolderPhotos() {
     }
     return saved.filter((path) => path && !folderIsIndexed(path, data.items, catalog));
   }, [saved, data.items, catalog]);
+  const pendingScan = pending.filter((path) => {
+    const album = (catalog || []).find((item) => item.path === path);
+    return album?.has_images !== false;
+  });
+  const pendingNone = pending.filter((path) => {
+    const album = (catalog || []).find((item) => item.path === path);
+    return album?.has_images === false;
+  });
 
   async function scanFolders(paths) {
     const list = (paths || saved).filter(Boolean);
@@ -737,8 +758,6 @@ function FolderPhotos() {
     }
     setScanErr("");
     try {
-      writeImportFolders(list);
-      setSaved(list);
       await api.pipeline(list);
     } catch (ex) {
       setScanErr(ex.message);
@@ -894,7 +913,7 @@ function FolderPhotos() {
           }
         />
       ) : null}
-      <div className="row" style={{ marginBottom: 16 }}>
+      <div className="row folder-toolbar" style={{ marginBottom: 16 }}>
         <input
           className="grow"
           type="search"
@@ -925,19 +944,19 @@ function FolderPhotos() {
         >
           Add folders
         </button>
-        {importing || pending.length ? (
+        {importing || pendingScan.length ? (
           <button
             type="button"
             className="secondary"
-            disabled={importing || !pending.length}
-            onClick={() => requestScan(pending)}
+            disabled={importing || !pendingScan.length}
+            onClick={() => requestScan(pendingScan)}
             {...tip("Show the albums that are not in the catalog yet, then confirm. Already scanned albums stay as they are. Files are not moved.")}
           >
             {importing
               ? "Finding known faces…"
-              : pending.length === 1
-                ? "Find Known Faces in new folder"
-                : "Find Known Faces in new folders"}
+              : pendingScan.length === 1
+                ? `Find Known Faces in ${folderBreadcrumb(pendingScan[0])}`
+                : "Find Known Faces in selected albums"}
           </button>
         ) : null}
         <button
@@ -1003,39 +1022,85 @@ function FolderPhotos() {
           }}
         />
       ) : null}
-      {pending.length ? (
-        <div className="person-chips" aria-label="Folders not scanned yet">
-          {pending.map((path) => (
-            <span key={path} className="person-chip">
-              {folderLabel(path)}
-              <span className="hint"> · not scanned yet</span>
-            </span>
-          ))}
-        </div>
-      ) : null}
-      {pending.length ? (
-        <section className="folder-block">
-          <h2 className="folder-head">
-            <span>
-              {pending.length} album{pending.length === 1 ? "" : "s"}
-              <span className="hint"> · not scanned yet</span>
-            </span>
-            <button
-              type="button"
-              className="ghost"
-              disabled={importing}
-              onClick={() => requestScan(pending)}
-              {...tip("Show these albums, then confirm. Already scanned albums stay as they are.")}
-            >
-              {importing ? "Finding known faces…" : "Find Known Faces"}
-            </button>
+      {pendingScan.length ? (
+        <section className="folder-block pending-albums">
+          <h2>
+            {pendingScan.length} album{pendingScan.length === 1 ? "" : "s"}
+            <span className="hint"> · not scanned yet</span>
           </h2>
           <p className="hint">
             {importing
               ? "These albums are selected. Photos appear here as they are read. Files stay where they are."
-              : "These albums are selected but not in the catalog yet. Find Known Faces to show the photos. Files stay where they are."}
+              : "Selected, but not in the catalog yet. Find Known Faces reads the photos. Files stay where they are."}
           </p>
+          <ul className="pending-album-list">
+            {pendingScan.map((path) => (
+              <li key={path} className="pending-album">
+                <div className="pending-album-copy">
+                  <strong>{folderDisplayName(path, folderBreadcrumb(path), folderTitles)}</strong>
+                  <div className="hint" title={path}>
+                    {path}
+                  </div>
+                </div>
+                <div className="pending-album-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={importing}
+                    onClick={() => requestScan([path])}
+                    {...tip(`Read photos in ${folderBreadcrumb(path)}. Already scanned albums stay as they are.`)}
+                  >
+                    {importing ? "Finding known faces…" : "Find Known Faces"}
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+          {pendingScan.length > 1 ? (
+            <button
+              type="button"
+              className="secondary"
+              disabled={importing}
+              onClick={() => requestScan(pendingScan)}
+              {...tip("Read every selected album that is not in the catalog yet.")}
+            >
+              Find Known Faces in all {pendingScan.length} albums
+            </button>
+          ) : null}
         </section>
+      ) : null}
+      {pendingNone.length ? (
+        <details className="pending-empty">
+          <summary>
+            {pendingNone.length} folder{pendingNone.length === 1 ? "" : "s"} have no photo files
+          </summary>
+          <p className="hint">
+            These paths are on the disk, but they have no pictures to catalog. Files stay where they are.
+          </p>
+          <ul className="pending-album-list">
+            {pendingNone.map((path) => (
+              <li key={path} className="pending-album">
+                <div className="pending-album-copy">
+                  <strong>{folderDisplayName(path, folderBreadcrumb(path), folderTitles)}</strong>
+                  <div className="hint" title={path}>
+                    {path}
+                  </div>
+                </div>
+                <div className="pending-album-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={importing}
+                    onClick={() => requestScan([path])}
+                    {...tip(`Look again for photos in ${folderBreadcrumb(path)}. This folder currently has no photo files.`)}
+                  >
+                    {importing ? "Finding known faces…" : "Find Known Faces"}
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </details>
       ) : null}
       {!loading && !groups.length && !pending.length ? (
         <p className="hint">
@@ -1818,15 +1883,19 @@ function ScanConfirm({ paths, titles, onCancel, onConfirm }) {
   const n = (paths || []).length;
   return (
     <ConfirmAsk
-      title={n === 1 ? "Find Known Faces in this folder?" : `Find Known Faces in ${n} folders?`}
+      title={
+        n === 1
+          ? `Find Known Faces in ${folderBreadcrumb((paths || [])[0])}?`
+          : `Find Known Faces in ${n} folders?`
+      }
       body="Read photos that are not in the catalog yet. Already scanned albums stay as they are. Files stay where they are."
       onCancel={onCancel}
       onConfirm={onConfirm}
     >
       <ul className="scan-confirm-list">
         {(paths || []).map((path) => {
-          const name = folderDisplayName(path, folderLabel(path), titles);
-          const disk = folderLabel(path);
+          const name = folderDisplayName(path, folderBreadcrumb(path), titles);
+          const disk = folderBreadcrumb(path);
           return (
             <li key={path}>
               <strong>{name}</strong>

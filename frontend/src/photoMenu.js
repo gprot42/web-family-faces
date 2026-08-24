@@ -1,7 +1,12 @@
 export const PHOTO_CHANGE_EVENT = "photosort-photo-change";
+export const CATALOG_CHANGE_EVENT = "photosort-catalog-change";
 
 export function emitPhotoChange(photo) {
   window.dispatchEvent(new CustomEvent(PHOTO_CHANGE_EVENT, { detail: photo }));
+}
+
+export function emitCatalogChange() {
+  window.dispatchEvent(new Event(CATALOG_CHANGE_EVENT));
 }
 
 let openMenu = null;

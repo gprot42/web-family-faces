@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from .config import CHILD_AGE, CLUSTER_PREVIEW_LIMIT, CROP_DIR, CROP_PAD, ELDER_AGE, TEEN_AGE
+from .config import CHILD_AGE, CLUSTER_PREVIEW_LIMIT, CROP_DIR, CROP_PAD, ELDER_AGE, IMAGE_EXTS, TEEN_AGE
 from .db import connect, init_db
 from .originals import drop_preview_rows, preview_path_sql
 from .util import bytes_to_embedding, l2_normalize, now_iso
@@ -34,6 +34,25 @@ def age_band(age: float | None) -> str:
 
 UNKNOWN_NAME = "Unknown name of person"
 PERSON_CATEGORIES = ("family", "work", "other")
+TO_NAME_MIN_FACES = 2
+
+
+def to_name_cluster_sql() -> str:
+    """Groups on To name: two or more unnamed faces, not junk, not hidden, not preview copies."""
+    preview = preview_path_sql("ph.path")
+    return f"""
+        FROM clusters c
+        JOIN faces f ON f.cluster_id = c.id
+        JOIN photos ph ON ph.id = f.photo_id
+        WHERE c.status != 'junk'
+          AND f.person_id IS NULL
+          AND f.quality = 'ok'
+          AND IFNULL(f.assigned_how, '') != 'junk'
+          AND IFNULL(ph.hidden, 0) = 0
+          AND {preview}
+        GROUP BY c.id
+        HAVING COUNT(f.id) >= {int(TO_NAME_MIN_FACES)}
+    """
 
 
 def _named_visible_sql(face_alias: str = "f", photo_alias: str = "ph") -> str:
@@ -939,6 +958,24 @@ def normalize_category(value: Any) -> str:
 
 
 _BURST_GAP_SEC = 8.0
+_LOOKALIKE_COPY_SIM = 0.85
+
+
+def _photo_area(face: dict[str, Any]) -> int:
+    return max(0, int(face.get("width") or 0)) * max(0, int(face.get("height") or 0))
+
+
+def _face_vec(face: dict[str, Any]) -> np.ndarray | None:
+    blob = face.get("embedding")
+    if blob is None:
+        return None
+    try:
+        vec = bytes_to_embedding(blob)
+    except Exception:
+        return None
+    if vec is None or vec.size == 0:
+        return None
+    return l2_normalize(vec)
 
 
 def _taken_dt(value: Any) -> datetime | None:
@@ -1008,7 +1045,31 @@ def display_faces(faces: list[dict[str, Any]]) -> list[dict[str, Any]]:
         shown.append(face)
         last_t = taken
         last_folder = folder
-    return shown
+    return _collapse_lookalike_copies(shown)
+
+
+def _collapse_lookalike_copies(faces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the larger scan when the same print was indexed twice under different files."""
+    kept: list[dict[str, Any]] = []
+    vecs: list[np.ndarray | None] = []
+    for face in faces:
+        vec = _face_vec(face)
+        replaced = False
+        if vec is not None:
+            for i, other in enumerate(vecs):
+                if other is None:
+                    continue
+                if float(np.dot(vec, other)) < _LOOKALIKE_COPY_SIM:
+                    continue
+                if _photo_area(face) > _photo_area(kept[i]):
+                    kept[i] = face
+                    vecs[i] = vec
+                replaced = True
+                break
+        if not replaced:
+            kept.append(face)
+            vecs.append(vec)
+    return kept
 
 
 def is_unknown_name(name: str | None) -> bool:
@@ -1378,7 +1439,7 @@ def get_person(person_id: int) -> dict[str, Any] | None:
             """
             SELECT f.id, f.photo_id, f.x1, f.y1, f.x2, f.y2, f.det_score, f.quality,
                    f.age_est, f.sex_est, f.person_id, f.cluster_id, f.assigned_how,
-                   f.created_at, ph.path, ph.taken_at, ph.width, ph.height, ph.sha256
+                   f.created_at, f.embedding, ph.path, ph.taken_at, ph.width, ph.height, ph.sha256
             FROM faces f
             JOIN photos ph ON ph.id = f.photo_id
             WHERE f.person_id = ?
@@ -1396,6 +1457,10 @@ def get_person(person_id: int) -> dict[str, Any] | None:
             face["tags"] = tag_map.get(int(face["photo_id"]), [])
         person["faces"] = face_dicts
         person["shots"] = display_faces(person["faces"])
+        for shot in person["shots"]:
+            shot.pop("embedding", None)
+        for face in person["faces"]:
+            face.pop("embedding", None)
         person["face_count"] = len(person["shots"])
         covers = _best_cover_ids(conn, [int(person_id)], scan_embeddings=False)
         fallback = _fallback_cover_ids(conn, [int(person_id)])
@@ -2002,8 +2067,9 @@ def path_in_folder(path: str, wanted: str) -> bool:
 
 
 def visible_unnamed_summary() -> dict[str, Any]:
-    """Unnamed faces and To name groups, ignoring preview copies and junk."""
+    """Unnamed faces, and To name groups (two or more unnamed faces)."""
     preview = preview_path_sql("ph.path")
+    groups_sql = to_name_cluster_sql()
     conn = connect()
     init_db(conn)
     try:
@@ -2021,18 +2087,9 @@ def visible_unnamed_summary() -> dict[str, Any]:
         ).fetchone()["n"]
         clusters = conn.execute(
             f"""
-            SELECT f.cluster_id AS id, COUNT(*) AS n
-            FROM faces f
-            JOIN photos ph ON ph.id = f.photo_id
-            JOIN clusters c ON c.id = f.cluster_id
-            WHERE f.person_id IS NULL
-              AND f.quality = 'ok'
-              AND IFNULL(f.assigned_how, '') != 'junk'
-              AND IFNULL(ph.hidden, 0) = 0
-              AND c.status = 'unknown'
-              AND {preview}
-            GROUP BY f.cluster_id
-            ORDER BY n DESC, id ASC
+            SELECT c.id AS id, COUNT(f.id) AS n
+            {groups_sql}
+            ORDER BY n DESC, c.id ASC
             """
         ).fetchall()
         top = clusters[0] if clusters else None
@@ -2125,6 +2182,37 @@ def _album_subdirs(path: Path) -> list[Path]:
         ]
     except OSError:
         return []
+
+
+def _folder_has_images(path: Path) -> bool | None:
+    """True when the folder has at least one full-size photo. None if it is not mounted."""
+    from .originals import is_preview_dir_name, is_preview_path, skip_dir
+
+    if not path.is_dir():
+        return None
+    try:
+        for dirpath, dirnames, filenames in os.walk(path):
+            current = Path(dirpath)
+            if skip_dir(current) and current != path:
+                dirnames[:] = []
+                continue
+            dirnames[:] = [
+                name
+                for name in dirnames
+                if not skip_dir(current / name) and not is_preview_dir_name(name)
+            ]
+            for name in filenames:
+                if name.startswith(".") or name.startswith("._"):
+                    continue
+                if Path(name).suffix.lower() not in IMAGE_EXTS:
+                    continue
+                child = current / name
+                if is_preview_path(child):
+                    continue
+                return True
+        return False
+    except OSError:
+        return None
 
 
 def _albums_from_indexed(indexed: list[dict[str, Any]], roots: list[Path]) -> list[dict[str, Any]]:
@@ -2278,6 +2366,11 @@ def list_albums_under(folders: list[str] | None = None, *, disk: bool = True) ->
     items = [
         row for row in items if not (row["photos"] == 0 and row["path"] in nested_groups)
     ]
+    for row in items:
+        if row["photos"] > 0:
+            row["has_images"] = True
+        else:
+            row["has_images"] = _folder_has_images(Path(row["path"]))
     return sorted(
         items,
         key=lambda r: ((r.get("group") or r["folder"]).lower(), r["path"].lower()),

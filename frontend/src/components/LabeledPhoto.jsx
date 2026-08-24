@@ -795,16 +795,6 @@ export function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pin
     const pin = pinOf(job.face, pins);
     if (!pin) continue;
     const rect = tagRect(pin.left, pin.top, job.tw, job.th, "manual");
-    if (keepOffEyes) {
-      const fh = Math.max(2, job.faceRect.y2 - job.faceRect.y1);
-      const hit = {
-        x1: job.faceRect.x1 - Math.max(job.tw, 8) * 0.4,
-        y1: job.faceRect.y1 - job.th * 0.15,
-        x2: job.faceRect.x2 + Math.max(job.tw, 8) * 0.4,
-        y2: job.faceRect.y1 + fh * 0.78,
-      };
-      if (coversEyes(rect, job.faceRect) || overlapArea(rect, hit) > 0.12) continue;
-    }
     placed.push({ ...job, left: pin.left, top: pin.top, place: "manual", rect });
     pinnedIds.add(job.face.id);
   }
@@ -1070,33 +1060,18 @@ export default function LabeledPhoto({
     };
   }
 
-  function onTagPointerDown(event, face, start) {
-    if (selecting) return;
-    if (!movable) return;
-    if (event.button != null && event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const host = tagHost(event.currentTarget);
-    const box = event.currentTarget.getBoundingClientRect();
-    const center = clientToPct(host, box.left + box.width / 2, box.top + box.height / 2);
-    const grab = clientToPct(host, event.clientX, event.clientY);
-    drag.current = {
-      id: face.id,
-      face,
-      host,
-      origin: { left: start.left, top: start.top },
-      grabDx: grab.left - center.left,
-      grabDy: grab.top - center.top,
-      startX: event.clientX,
-      startY: event.clientY,
-      moved: false,
-    };
-    event.currentTarget.setPointerCapture?.(event.pointerId);
+  function endTagWindowDrag() {
+    const d = drag.current;
+    if (!d?.move) return;
+    window.removeEventListener("pointermove", d.move);
+    window.removeEventListener("pointerup", d.up);
+    window.removeEventListener("pointercancel", d.up);
   }
 
   function onTagPointerMove(event) {
     const d = drag.current;
     if (!d || d.id == null) return;
+    event.preventDefault();
     const dx = event.clientX - d.startX;
     const dy = event.clientY - d.startY;
     if (!d.moved && Math.hypot(dx, dy) < 3) return;
@@ -1113,17 +1088,52 @@ export default function LabeledPhoto({
   function onTagPointerUp(event) {
     const d = drag.current;
     if (!d) return;
+    endTagWindowDrag();
     const moved = d.moved;
     const face = d.face;
     const pin = d.pin;
     drag.current = null;
     setDragPin(null);
-    if (!moved || !pin) return;
     skipClick.current = true;
+    if (moved && pin) {
+      event.preventDefault();
+      event.stopPropagation();
+      setLocalPins((cur) => ({ ...cur, [face.id]: { left: pin.left, top: pin.top } }));
+      onTagMove?.(face, pin);
+      return;
+    }
+    onFaceClick?.(face);
+  }
+
+  function onTagPointerDown(event, face, start) {
+    if (selecting) return;
+    if (!movable) return;
+    if (event.button != null && event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    setLocalPins((cur) => ({ ...cur, [face.id]: { left: pin.left, top: pin.top } }));
-    onTagMove?.(face, pin);
+    const host = tagHost(event.currentTarget);
+    const box = event.currentTarget.getBoundingClientRect();
+    const center = clientToPct(host, box.left + box.width / 2, box.top + box.height / 2);
+    const grab = clientToPct(host, event.clientX, event.clientY);
+    const move = (ev) => onTagPointerMove(ev);
+    const up = (ev) => onTagPointerUp(ev);
+    drag.current = {
+      id: face.id,
+      face,
+      host,
+      origin: { left: start.left, top: start.top },
+      grabDx: grab.left - center.left,
+      grabDy: grab.top - center.top,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false,
+      move,
+      up,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   }
 
   function onTagClick(event, face) {

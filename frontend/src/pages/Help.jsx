@@ -82,7 +82,7 @@ export default function Help() {
             </li>
             <li>
               <strong>Search</strong> in the bottom right looks up a person by name, or matches a
-              snapshot to a face already in the catalog. On a person page you can add a{" "}
+              snapshot to a picture already in the catalog, and to named people. On a person page you can add a{" "}
               <strong>nickname</strong>; search finds them by that as well as the full name.
             </li>
           </ul>
@@ -96,9 +96,11 @@ export default function Help() {
             Folder View is the albums. Click a face to open that person. Right-click a face and choose{" "}
             <strong>Find a better photo</strong> to try the next cover; right-click again for another.
             Use <strong>Search</strong> in
-            the bottom right to find someone by name, or upload a snapshot to match a face already
+            the bottom right to find someone by name, or upload a snapshot to match a picture already
             in the catalog. On a person page, <strong>Download photos</strong> saves a zip of every
-            picture they are named in; the album files stay where they are. A child and an
+            picture they are named in; the album files stay where they are.{" "}
+            <strong>Show in family tree</strong> opens that person on the Family tree page.
+            A child and an
             80-year-old will usually be two cards — only join them if you are sure they are the same
             person.
           </p>
@@ -168,7 +170,7 @@ export default function Help() {
             preview, or click the badge to describe another change. The original file is never
             overwritten.
           </div>
-          <div><kbd>⌘Z</kbd> / <kbd>Ctrl+Z</kbd> undo the last name, hide, restore, comment, or re-identify on this photo</div>
+          <div><kbd>⌘Z</kbd> / <kbd>Ctrl+Z</kbd> undo the last name, hide, restore, comment, or re-identify on this photo. Press again to undo the change before that.</div>
           <div><kbd>n</kbd> new person</div>
           <div><kbd>u</kbd> unassign</div>
           <div><kbd>j</kbd> / <kbd>k</kbd> next / previous face</div>

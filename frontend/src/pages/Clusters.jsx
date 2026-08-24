@@ -12,6 +12,7 @@ import NameSuggest from "../components/NameSuggest.jsx";
 import PersonPicker, { isPersonDrag, personFromDataTransfer } from "../components/PersonPicker.jsx";
 import { saveCachedPeople } from "../peopleCache.js";
 import { hidePerson, readHiddenPeople, showPerson } from "../toNameHidden.js";
+import { CATALOG_CHANGE_EVENT, PHOTO_CHANGE_EVENT } from "../photoMenu.js";
 
 function clusterKey(cluster) {
   const ids = cluster.face_ids;
@@ -165,7 +166,7 @@ export default function Clusters({ onChange, stats }) {
   const [savingId, setSavingId] = useState(null);
   const [saved, setSaved] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [showCats, setShowCats] = useState([]);
+  const [showCats, setShowCats] = useState(["family"]);
   const restoreWanted = useRef(wantedToNameClusterId(loc.hash));
   const [activeId, setActiveId] = useState(() => restoreWanted.current || null);
   const [catById, setCatById] = useState({});
@@ -184,6 +185,7 @@ export default function Clusters({ onChange, stats }) {
   const [lookupOk, setLookupOk] = useState(true);
   const [identifyNote, setIdentifyNote] = useState("");
   const [identifyAsk, setIdentifyAsk] = useState(false);
+  const [groupTotal, setGroupTotal] = useState(() => Number(stats?.unknown_clusters) || 0);
   const jobKey = useRef("");
 
   useEffect(() => {
@@ -250,6 +252,11 @@ export default function Clusters({ onChange, stats }) {
       });
     const c = await api.clusters();
     setItems(c.items || []);
+    const total = Number(c.total);
+    if (Number.isFinite(total)) {
+      setGroupTotal(total);
+      onChange?.({ unknown_clusters: total }, "set");
+    }
     peopleP.catch(() => {});
     return Boolean(c.clustering) && !(c.items || []).length;
   }
@@ -262,6 +269,7 @@ export default function Clusters({ onChange, stats }) {
         while (!cancelled && (await refresh())) {
           await new Promise((r) => setTimeout(r, 1500));
         }
+        if (!cancelled) onChange?.();
       } catch (ex) {
         if (!cancelled) setErr(ex.message);
       } finally {
@@ -270,6 +278,24 @@ export default function Clusters({ onChange, stats }) {
     })();
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let timer = 0;
+    function onCatalog() {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        refresh().catch(() => {});
+        onChange?.();
+      }, 300);
+    }
+    window.addEventListener(CATALOG_CHANGE_EVENT, onCatalog);
+    window.addEventListener(PHOTO_CHANGE_EVENT, onCatalog);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener(CATALOG_CHANGE_EVENT, onCatalog);
+      window.removeEventListener(PHOTO_CHANGE_EVENT, onCatalog);
     };
   }, []);
 
@@ -493,6 +519,7 @@ export default function Clusters({ onChange, stats }) {
         people: 1,
         people_named: 1,
       });
+      if (!result.remaining) setGroupTotal((n) => Math.max(0, n - 1));
       await refresh();
       onChange?.();
     } catch (ex) {
@@ -510,6 +537,7 @@ export default function Clusters({ onChange, stats }) {
     setItems((cur) => cur.filter((c) => c.id !== id));
     setSaved({ name: "Not a person", faces: namedCount, also: 0 });
     onChange?.({ unknown_clusters: -1, faces_unknown: -namedCount });
+    setGroupTotal((n) => Math.max(0, n - 1));
     try {
       const result = await api.junkCluster(id, faceIds);
       if (!result.cleared) {
@@ -535,6 +563,7 @@ export default function Clusters({ onChange, stats }) {
       people: 1,
       people_unknown: 1,
     });
+    setGroupTotal((n) => Math.max(0, n - 1));
     try {
       const result = await api.unknownCluster(id, category, faceIds);
       if (!result.assigned) {
@@ -569,6 +598,7 @@ export default function Clusters({ onChange, stats }) {
         leftover: result.remaining || 0,
       });
       onChange?.({ unknown_clusters: result.remaining ? 0 : -1, faces_unknown: -(result.assigned || namedCount) });
+      if (!result.remaining) setGroupTotal((n) => Math.max(0, n - 1));
       await refresh();
       onChange?.();
     } catch (ex) {
@@ -624,7 +654,7 @@ export default function Clusters({ onChange, stats }) {
           <div className={`to-name-sticky${identifying || identifyPaused ? " busy" : ""}`}>
             <div className="page-head">
               <div>
-                <p className="eyebrow">Inbox</p>
+                <p className="eyebrow">Inbox{groupTotal ? ` · ${groupTotal.toLocaleString()} groups` : ""}</p>
                 <h1>Faces to name</h1>
                 {identifying || identifyPaused ? null : (
                   <p className="lede">
@@ -916,7 +946,6 @@ function ClusterCard({
                     to={photoTo}
                     state={{ fullscreen: true, from: `/to-name#${clusterHash(cluster.id)}` }}
                     onClick={() => onOpenPhoto?.(f)}
-                    {...tip("Open the whole photo. Original stays on the NAS.")}
                   >
                     <img src={f.crop_url} alt="" decoding="async" />
                   </Link>

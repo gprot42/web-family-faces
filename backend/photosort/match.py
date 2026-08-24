@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +41,8 @@ STATUE_SIM = 0.58
 GALLERY_CLUSTER_MIN = 0.50
 # Hits weaker than this must not fill the vote window for a huge catalog.
 VOTE_MIN_SIM = 0.32
+# Screenshot or phone copy of an album print still matches the catalog crop.
+SEARCH_ARCHIVE_MIN = 0.50
 _GALLERY_SEED_HOW = ("manual", "sidecar", "merge", "split", "unknown_name")
 _gallery_cache: dict[str, Any] | None = None
 _gallery_stamp: tuple[Any, ...] | None = None
@@ -47,6 +50,8 @@ _ada_gallery_cache: dict[str, Any] | None = None
 _ada_gallery_stamp: tuple[Any, ...] | None = None
 _statue_cache: dict[str, Any] | None = None
 _statue_cache_stamp: tuple[Any, ...] | None = None
+_search_gallery_cache: dict[str, Any] | None = None
+_search_gallery_stamp: tuple[Any, ...] | None = None
 
 
 def rank_people(embedding: np.ndarray, centroids: dict[int, dict[str, np.ndarray]]) -> list[dict[str, Any]]:
@@ -64,6 +69,24 @@ def rank_people(embedding: np.ndarray, centroids: dict[int, dict[str, np.ndarray
     return ranked
 
 
+def _exemplar_sex_ok(name: str, sex_est: Any, age: Any = None) -> bool:
+    """Keep a named crop in the gallery only if it does not fight the person's name.
+
+    A man tagged Margaret must not become the nearest-neighbour for other men.
+    Kids and unknown detector sex still count — InsightFace is often wrong on
+    hats, long hair, and children.
+    """
+    want = _name_sex(name)
+    got = _norm_sex(sex_est)
+    if not want or not got or want == got:
+        return True
+    try:
+        age_n = float(age) if age is not None else None
+    except (TypeError, ValueError):
+        age_n = None
+    return age_n is not None and age_n < 18
+
+
 def _named_stamp(conn) -> tuple[Any, ...]:
     row = conn.execute(
         """
@@ -75,7 +98,7 @@ def _named_stamp(conn) -> tuple[Any, ...]:
           AND IFNULL(f.assigned_how, '') NOT IN ('junk', 'auto', 'cleared')
         """
     ).fetchone()
-    return (str(config_mod.DB_PATH), int(row["n"]), int(row["mx"]), int(row["sp"]), "cluster-0.50")
+    return (str(config_mod.DB_PATH), int(row["n"]), int(row["mx"]), int(row["sp"]), "cluster-0.50-name-sex")
 
 
 def load_named_gallery(conn=None) -> dict[str, Any]:
@@ -91,7 +114,7 @@ def load_named_gallery(conn=None) -> dict[str, Any]:
             return _gallery_cache
         rows = conn.execute(
             """
-            SELECT f.id, f.person_id, p.name, f.embedding, f.assigned_how
+            SELECT f.id, f.person_id, p.name, f.embedding, f.assigned_how, f.sex_est, f.age_est
             FROM faces f
             JOIN people p ON p.id = f.person_id
             WHERE f.person_id IS NOT NULL
@@ -103,6 +126,8 @@ def load_named_gallery(conn=None) -> dict[str, Any]:
         names: dict[int, str] = {}
         for row in rows:
             if is_unknown_name(row["name"]):
+                continue
+            if not _exemplar_sex_ok(row["name"], row["sex_est"], row["age_est"]):
                 continue
             blob = row["embedding"]
             if not blob:
@@ -235,7 +260,7 @@ def load_ada_gallery(conn=None, *, fill: bool = False) -> dict[str, Any]:
             return _ada_gallery_cache
         rows = conn.execute(
             """
-            SELECT f.id, f.person_id, p.name, f.embedding_ada, f.assigned_how
+            SELECT f.id, f.person_id, p.name, f.embedding_ada, f.assigned_how, f.sex_est, f.age_est
             FROM faces f
             JOIN people p ON p.id = f.person_id
             WHERE f.person_id IS NOT NULL
@@ -247,6 +272,8 @@ def load_ada_gallery(conn=None, *, fill: bool = False) -> dict[str, Any]:
         names: dict[int, str] = {}
         for row in rows:
             if is_unknown_name(row["name"]):
+                continue
+            if not _exemplar_sex_ok(row["name"], row["sex_est"], row["age_est"]):
                 continue
             vec = bytes_to_embedding(row["embedding_ada"])
             if vec is None:
@@ -437,13 +464,15 @@ def matches_known_statue(
 
 def _invalidate_galleries() -> None:
     global _gallery_cache, _gallery_stamp, _ada_gallery_cache, _ada_gallery_stamp
-    global _statue_cache, _statue_cache_stamp
+    global _statue_cache, _statue_cache_stamp, _search_gallery_cache, _search_gallery_stamp
     _gallery_cache = None
     _gallery_stamp = None
     _ada_gallery_cache = None
     _ada_gallery_stamp = None
     _statue_cache = None
     _statue_cache_stamp = None
+    _search_gallery_cache = None
+    _search_gallery_stamp = None
 
 
 def _person_has_manual_seed(conn, person_id: int, cache: dict[int, bool] | None = None) -> bool:
@@ -632,7 +661,9 @@ def suggestions_for_face(
     conn = connect()
     init_db(conn)
     try:
-        row = conn.execute("SELECT embedding FROM faces WHERE id = ?", (face_id,)).fetchone()
+        row = conn.execute(
+            "SELECT embedding, sex_est, age_est FROM faces WHERE id = ?", (face_id,)
+        ).fetchone()
         if not row:
             return []
         vec = bytes_to_embedding(row["embedding"])
@@ -643,6 +674,7 @@ def suggestions_for_face(
         ranked = rank_people_nn(
             vec, gallery, limit=limit, exclude_face_ids={int(face_id)}
         )
+        ranked = _drop_sex_mismatch(ranked, row["sex_est"], _probe_age_for_sex(row))
         ranked = [row for row in ranked if float(row.get("similarity") or 0) >= MATCH_MEDIUM]
         if ranked:
             return ranked
@@ -697,12 +729,221 @@ def search_people_by_vectors(vectors: list[np.ndarray], limit: int = 8) -> list[
     return out
 
 
+def _search_face_stamp(conn) -> tuple[Any, ...]:
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS n, IFNULL(MAX(f.id), 0) AS mx
+        FROM faces f
+        JOIN photos ph ON ph.id = f.photo_id
+        WHERE f.embedding IS NOT NULL
+          AND f.quality = 'ok'
+          AND IFNULL(f.assigned_how, '') != 'junk'
+          AND IFNULL(ph.hidden, 0) = 0
+        """
+    ).fetchone()
+    return (str(config_mod.DB_PATH), int(row["n"]), int(row["mx"]))
+
+
+def load_search_face_gallery(conn=None) -> dict[str, Any]:
+    """All searchable catalog faces, named or not — used to find an archive photo."""
+    global _search_gallery_cache, _search_gallery_stamp
+    own = conn is None
+    if own:
+        conn = connect()
+        init_db(conn)
+    try:
+        stamp = _search_face_stamp(conn)
+        if _search_gallery_cache is not None and _search_gallery_stamp == stamp:
+            return _search_gallery_cache
+        rows = conn.execute(
+            """
+            SELECT f.id, f.photo_id, f.person_id, f.embedding, p.name
+            FROM faces f
+            JOIN photos ph ON ph.id = f.photo_id
+            LEFT JOIN people p ON p.id = f.person_id
+            WHERE f.embedding IS NOT NULL
+              AND f.quality = 'ok'
+              AND IFNULL(f.assigned_how, '') != 'junk'
+              AND IFNULL(ph.hidden, 0) = 0
+            """
+        ).fetchall()
+        vecs: list[np.ndarray] = []
+        face_ids: list[int] = []
+        photo_ids: list[int] = []
+        person_ids: list[int] = []
+        names: dict[int, str] = {}
+        for row in rows:
+            vec = bytes_to_embedding(row["embedding"])
+            if vec is None:
+                continue
+            fid = int(row["id"])
+            vecs.append(l2_normalize(vec))
+            face_ids.append(fid)
+            photo_ids.append(int(row["photo_id"]))
+            pid = int(row["person_id"]) if row["person_id"] else 0
+            person_ids.append(pid)
+            if pid and row["name"]:
+                names[pid] = row["name"]
+        gallery = {
+            "matrix": np.stack(vecs).astype(np.float32, copy=False) if vecs else None,
+            "face_ids": np.asarray(face_ids, dtype=np.int64),
+            "photo_ids": np.asarray(photo_ids, dtype=np.int64),
+            "person_ids": np.asarray(person_ids, dtype=np.int64),
+            "names": names,
+        }
+        _search_gallery_cache = gallery
+        _search_gallery_stamp = stamp
+        return gallery
+    finally:
+        if own:
+            conn.close()
+
+
+def search_archive_photos(
+    vectors: list[np.ndarray],
+    limit: int = 6,
+    *,
+    min_sim: float = SEARCH_ARCHIVE_MIN,
+) -> list[dict[str, Any]]:
+    """Find catalog photos that contain the same faces as an upload."""
+    if not vectors:
+        return []
+    gallery = load_search_face_gallery()
+    matrix = gallery.get("matrix")
+    if matrix is None or len(matrix) == 0:
+        return []
+    photo_ids = gallery["photo_ids"]
+    face_ids = gallery["face_ids"]
+    person_ids = gallery["person_ids"]
+    names = gallery.get("names") or {}
+    best: dict[int, dict[str, Any]] = {}
+    top_n = min(int(matrix.shape[0]), max(32, limit * 8))
+    n = int(matrix.shape[0])
+    for vec in vectors:
+        sims = matrix @ l2_normalize(vec)
+        if top_n >= n:
+            order = np.argsort(sims)[::-1][:top_n]
+        else:
+            part = np.argpartition(sims, n - top_n)[n - top_n :]
+            order = part[np.argsort(sims[part])[::-1]]
+        for idx in order:
+            sim = float(sims[int(idx)])
+            if sim < min_sim:
+                break
+            pid = int(photo_ids[int(idx)])
+            prev = best.get(pid)
+            if prev and float(prev["similarity"]) >= sim:
+                continue
+            person_id = int(person_ids[int(idx)]) or None
+            best[pid] = {
+                "photo_id": pid,
+                "face_id": int(face_ids[int(idx)]),
+                "person_id": person_id,
+                "person_name": names.get(person_id) if person_id else None,
+                "similarity": sim,
+            }
+    ranked = sorted(best.values(), key=lambda row: row["similarity"], reverse=True)[:limit]
+    if not ranked:
+        return []
+    ids = [int(row["photo_id"]) for row in ranked]
+    marks = ",".join("?" * len(ids))
+    conn = connect()
+    init_db(conn)
+    try:
+        rows = {
+            int(row["id"]): row
+            for row in conn.execute(
+                f"""
+                SELECT id, path, taken_at, sha256, width, height
+                FROM photos
+                WHERE id IN ({marks}) AND IFNULL(hidden, 0) = 0
+                """,
+                ids,
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+    out: list[dict[str, Any]] = []
+    for item in ranked:
+        row = rows.get(int(item["photo_id"]))
+        if not row:
+            continue
+        path = Path(row["path"])
+        out.append(
+            {
+                "id": int(row["id"]),
+                "path": row["path"],
+                "filename": path.name,
+                "folder": path.parent.name,
+                "taken_at": row["taken_at"],
+                "thumb_url": f"/api/photos/{row['id']}/thumb",
+                "view_url": f"/api/photos/{row['id']}/view",
+                "similarity": round(float(item["similarity"]), 3),
+                "face_id": item["face_id"],
+                "person_id": item["person_id"],
+                "person_name": item["person_name"],
+            }
+        )
+    return out
+
+
+def _photos_with_sha(digest: str) -> list[dict[str, Any]]:
+    if not digest or digest.startswith("pending:"):
+        return []
+    conn = connect()
+    init_db(conn)
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, path, taken_at, sha256, width, height
+            FROM photos
+            WHERE sha256 = ? AND IFNULL(hidden, 0) = 0
+            ORDER BY id
+            LIMIT 8
+            """,
+            (digest,),
+        ).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for row in rows:
+        path = Path(row["path"])
+        out.append(
+            {
+                "id": int(row["id"]),
+                "path": row["path"],
+                "filename": path.name,
+                "folder": path.parent.name,
+                "taken_at": row["taken_at"],
+                "thumb_url": f"/api/photos/{row['id']}/thumb",
+                "view_url": f"/api/photos/{row['id']}/view",
+                "similarity": 1.0,
+                "exact": True,
+                "face_id": None,
+                "person_id": None,
+                "person_name": None,
+            }
+        )
+    return out
+
+
 def search_uploaded_face(data: bytes, limit: int = 8) -> dict[str, Any]:
-    """Find named people who look like faces in an uploaded photo. File is not saved."""
+    """Find archive photos and named people that match faces in an upload. File is not saved."""
     from .faces import embeddings_from_image_bytes
 
     vecs = embeddings_from_image_bytes(data)
-    return {"faces_found": len(vecs), "people": search_people_by_vectors(vecs, limit=limit)}
+    people = [
+        person
+        for person in search_people_by_vectors(vecs, limit=limit)
+        if float(person.get("similarity") or 0) >= MATCH_MEDIUM
+    ]
+    photos = search_archive_photos(vecs, limit=limit)
+    seen = {int(item["id"]) for item in photos}
+    for item in _photos_with_sha(hashlib.sha256(data).hexdigest()):
+        if int(item["id"]) not in seen:
+            photos.insert(0, item)
+            seen.add(int(item["id"]))
+    return {"faces_found": len(vecs), "people": people, "photos": photos[:limit]}
 
 
 def _box_iou(a: Any, b: Any) -> float:
@@ -870,7 +1111,7 @@ def _probe_age_for_sex(row: Any) -> Any:
     try:
         face_h = abs(float(row["y2"] or 0) - float(row["y1"] or 0))
         photo_h = float(row["height"] or 0)
-    except (TypeError, ValueError, KeyError):
+    except (TypeError, ValueError, KeyError, IndexError):
         return age
     if photo_h >= 400 and face_h > 0 and face_h / photo_h <= 0.14:
         try:

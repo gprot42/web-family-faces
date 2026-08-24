@@ -309,3 +309,14 @@ export function wheelZoomFactor(event) {
   const k = event.ctrlKey ? 0.01 : 0.0024;
   return Math.exp(-dy * k);
 }
+
+export function treePersonIdForCatalog(people, catalogId, catalogName = "") {
+  const id = Number(catalogId);
+  if (!id) return "";
+  const linked = (people || []).find((person) => Number(person.catalog_id) === id);
+  if (linked?.id) return linked.id;
+  const needle = String(catalogName || "").trim().toLowerCase();
+  if (!needle) return "";
+  const named = (people || []).filter((person) => String(person.name || "").trim().toLowerCase() === needle);
+  return named.length === 1 ? named[0].id : "";
+}

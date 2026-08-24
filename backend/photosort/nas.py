@@ -263,3 +263,38 @@ def mount_known(share: str | None = None, *, recent: bool = False) -> dict:
         "items": items,
         "error": None if ok else first_err or "Could not mount the NAS share.",
     }
+
+
+def shares_for_paths(paths: list[Path | str]) -> list[str]:
+    names: list[str] = []
+    for raw in paths or []:
+        parts = Path(raw).expanduser().parts
+        if len(parts) >= 3 and parts[1] == "Volumes":
+            share = _safe_share(parts[2])
+            if share and share not in names:
+                names.append(share)
+    return names
+
+
+def mount_for_paths(paths: list[Path | str]) -> dict:
+    """Mount /Volumes shares used by stored album paths, if they are not up yet."""
+    wanted = [share for share in shares_for_paths(paths) if not is_mounted(share)]
+    if not wanted:
+        return {"ok": True, "items": [], "error": None, "host": preferred_host()}
+    host = preferred_host()
+    if not host:
+        return {
+            "host": None,
+            "ok": False,
+            "items": [],
+            "error": "No Synology or SMB server is on this network.",
+        }
+    items = [mount_share(host, item) for item in wanted]
+    ok = any(item["mounted"] for item in items)
+    first_err = next((item["error"] for item in items if item["error"] and not item["mounted"]), None)
+    return {
+        "host": host,
+        "ok": ok,
+        "items": items,
+        "error": None if ok else first_err or "Could not mount the NAS share.",
+    }

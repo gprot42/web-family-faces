@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import { CARD_H, CARD_W, clampZoom, layoutFamilyTree, viewOnFocus, wheelZoomFactor } from "../familyChart.js";
+import { CARD_H, CARD_W, clampZoom, layoutFamilyTree, treePersonIdForCatalog, viewOnFocus, wheelZoomFactor } from "../familyChart.js";
 import { queryMatchesName } from "../nameSuggest.js";
 import { enterBrowserFullscreen, exitBrowserFullscreen } from "../play.js";
 import { tip } from "../tip.js";
@@ -329,9 +329,10 @@ export default function Tree() {
   const [params, setParams] = useSearchParams();
   const nav = useNavigate();
   const selected = (params.get("p") || "").trim();
+  const catalogFromUrl = (params.get("person") || "").trim();
   const fileRef = useRef(null);
   const [data, setData] = useState(null);
-  const [catalogPeople, setCatalogPeople] = useState([]);
+  const [catalogPeople, setCatalogPeople] = useState(null);
   const [person, setPerson] = useState(null);
   const [q, setQ] = useState("");
   const [pick, setPick] = useState(0);
@@ -363,7 +364,8 @@ export default function Tree() {
     loadList()
       .then((next) => {
         if (cancel) return;
-        if (!selectedRef.current && next.loaded && next.people?.[0]?.id) {
+        const wantCatalog = (new URLSearchParams(window.location.search).get("person") || "").trim();
+        if (!selectedRef.current && !wantCatalog && next.loaded && next.people?.[0]?.id) {
           openPerson(next.people[0].id);
         }
       })
@@ -375,7 +377,9 @@ export default function Tree() {
       .then((found) => {
         if (!cancel) setCatalogPeople((found.items || []).filter((p) => !p.unknown_name && p.name));
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancel) setCatalogPeople([]);
+      });
     return () => {
       cancel = true;
     };
@@ -413,6 +417,23 @@ export default function Tree() {
     };
   }, [selected, data?.loaded, data?.filename]);
 
+  useEffect(() => {
+    if (!catalogFromUrl || !data?.loaded) return;
+    const catalogId = Number(catalogFromUrl);
+    if (!catalogId) return;
+    const named = (catalogPeople || []).find((p) => Number(p.id) === catalogId);
+    const treeId = treePersonIdForCatalog(data.people, catalogId, named?.name);
+    if (!treeId && catalogPeople == null) return;
+    const next = new URLSearchParams(params);
+    next.delete("person");
+    if (treeId) next.set("p", treeId);
+    setParams(next, { replace: true });
+    if (!treeId) {
+      setErr("That person is not in the family tree.");
+      if (named?.name) setQ(named.name);
+    }
+  }, [catalogFromUrl, catalogPeople, data, params, setParams]);
+
   const catalogIdsInTree = useMemo(() => {
     const ids = new Set();
     for (const item of data?.people || []) {
@@ -429,7 +450,7 @@ export default function Tree() {
       .map((item) => ({ item, score: scorePerson(item, needle) }))
       .filter((row) => row.score > 0);
     const linked = new Set(treeHits.map((row) => row.item.catalog_id).filter(Boolean));
-    const catalogHits = catalogPeople
+    const catalogHits = (catalogPeople || [])
       .filter((person) => !catalogIdsInTree.has(person.id) && !linked.has(person.id))
       .map((person) => ({
         item: {

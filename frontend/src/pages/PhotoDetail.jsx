@@ -16,9 +16,9 @@ import ImaginePrompt from "../components/ImaginePrompt.jsx";
 import NameSuggest from "../components/NameSuggest.jsx";
 import { completeUniqueFirstName, matchPeople, uniqueFirstName } from "../nameSuggest.js";
 import { loadCachedPeople, saveCachedPeople } from "../peopleCache.js";
-import { emitPhotoChange, PHOTO_CHANGE_EVENT, showPhotoMenu } from "../photoMenu.js";
+import { emitCatalogChange, emitPhotoChange, PHOTO_CHANGE_EVENT, showPhotoMenu } from "../photoMenu.js";
 import { clearRematchUndo, readRematchUndo, writeRematchUndo } from "../rematchUndo.js";
-import { peekUndo, popUndo, pushFaceUndo, pushUndo } from "../editUndo.js";
+import { peekUndo, popUndo, pushFaceUndo, pushUndo, undoCount } from "../editUndo.js";
 import { folderHashFrom, personIdFrom, personShotHash, readAlbumPos, writeAlbumPos, writePersonPos } from "../albumPos.js";
 
 const ZOOM_MIN = 0.25;
@@ -164,6 +164,7 @@ export default function PhotoDetail() {
   const imaginingNow = useRef(false);
   const [rematching, setRematching] = useState(false);
   const rematchAbort = useRef(null);
+  const pageLive = useRef(true);
   const watchMatchRef = useRef(null);
   const [undoRematch, setUndoRematch] = useState(() => readRematchUndo(id));
   const [undoing, setUndoing] = useState(false);
@@ -174,6 +175,9 @@ export default function PhotoDetail() {
   const pickingGen = useRef(0);
   const cancelMarkFaceRef = useRef(() => {});
   const undoLastRef = useRef(() => Promise.resolve(false));
+  const undoBusy = useRef(false);
+  const undoWanted = useRef(0);
+  const photoNow = useRef(null);
   const commentRef = useRef(null);
   const suggestionsFor = useRef(new Set());
   const [full, setFull] = useState(true);
@@ -185,6 +189,7 @@ export default function PhotoDetail() {
   const [toolsDragging, setToolsDragging] = useState(false);
   const stageRef = useRef(null);
   const fullRef = useRef(null);
+  const zoomBarRef = useRef(null);
   const toolsRef = useRef(null);
   const toolsPosNow = useRef(toolsPos);
   const toolsSaved = useRef(toolsPos);
@@ -200,6 +205,7 @@ export default function PhotoDetail() {
   const stayNamed = useRef(false);
   fullNow.current = full;
   idNow.current = id;
+  photoNow.current = photo;
   zoomNow.current = zoom;
   panNow.current = pan;
   toolsPosNow.current = toolsPos;
@@ -326,6 +332,7 @@ export default function PhotoDetail() {
       ...(tagFilter ? { tag: tagFilter } : {}),
       lite: 1,
     });
+    photoNow.current = data;
     setPhoto(data);
     setCommentDraft(data.comment || "");
     setCommentSaved(false);
@@ -357,6 +364,14 @@ export default function PhotoDetail() {
         if (info.prompt) setImaginePrompt((cur) => cur || info.prompt);
       })
       .catch(() => {});
+    return data;
+  }
+
+  async function loadCatalog() {
+    const next = await load();
+    if (next) emitPhotoChange(next);
+    emitCatalogChange();
+    return next;
   }
 
   function revealFaceCard(faceId) {
@@ -370,7 +385,13 @@ export default function PhotoDetail() {
   }
 
   useEffect(() => {
-    rematchAbort.current?.abort();
+    pageLive.current = true;
+    return () => {
+      pageLive.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
     setRematching(false);
     suggestionsFor.current = new Set();
     pickingGen.current += 1;
@@ -398,7 +419,6 @@ export default function PhotoDetail() {
       .catch(() => {});
     return () => {
       cancelled = true;
-      rematchAbort.current?.abort();
     };
   }, [id, personId, tagFilter]);
 
@@ -463,7 +483,7 @@ export default function PhotoDetail() {
     let cancelled = false;
     const img = new Image();
     img.onload = () => {
-      if (cancelled || zoomRef.current >= 2) return;
+      if (cancelled) return;
       setPhotoSrc(view);
     };
     img.src = view;
@@ -547,6 +567,40 @@ export default function PhotoDetail() {
     document.getElementById(`face-card-${active}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [active]);
 
+  function placeZoomBar() {
+    const fullEl = fullRef.current;
+    const bar = zoomBarRef.current;
+    if (!fullEl || !bar || !fullNow.current) return;
+    const fw = fullEl.clientWidth;
+    const fh = fullEl.clientHeight;
+    if (fw < 80 || fh < 80) return;
+    const rot = ((Number(photo?.rotation) || 0) % 360 + 360) % 360;
+    const swapped = rot === 90 || rot === 270;
+    const pw = Math.max(1, Number(swapped ? photo?.height : photo?.width) || 1);
+    const ph = Math.max(1, Number(swapped ? photo?.width : photo?.height) || 1);
+    const ar = pw / ph;
+    const fitW = Math.min(fw, fh * ar);
+    const fitH = Math.min(fh, fw / ar);
+    const visW = fitW * ZOOM_FIT;
+    const visH = fitH * ZOOM_FIT;
+    const visRight = (fw + visW) / 2;
+    const visBottom = (fh + visH) / 2;
+    const tw = bar.offsetWidth || 168;
+    const th = bar.offsetHeight || 40;
+    const dock = 92;
+    let x = visRight + 10;
+    let y = visBottom - th - 8;
+    if (x + tw > fw - 12) x = visRight - tw - 10;
+    if (x + tw > fw - 12) x = fw - tw - 12;
+    if (y + th > fh - dock) y = fh - th - dock;
+    if (y < 72) y = 72;
+    x = Math.max(12, x);
+    bar.style.right = "auto";
+    bar.style.bottom = "auto";
+    bar.style.left = `${Math.round(x)}px`;
+    bar.style.top = `${Math.round(y)}px`;
+  }
+
   useEffect(() => {
     const el = full ? fullRef.current : stageRef.current;
     if (!el) return undefined;
@@ -557,12 +611,17 @@ export default function PhotoDetail() {
       el.style.setProperty("--stage-w", `${Math.max(0, Math.floor(box.width))}px`);
       el.style.setProperty("--stage-h", `${Math.max(0, Math.floor(box.height))}px`);
       el.style.setProperty("--photo-ar", String(w / h));
+      placeZoomBar();
     }
     applySize();
+    const id = window.requestAnimationFrame(placeZoomBar);
     const ro = new ResizeObserver(applySize);
     ro.observe(el);
-    return () => ro.disconnect();
-  }, [photo?.id, photo?.width, photo?.height, full]);
+    return () => {
+      window.cancelAnimationFrame(id);
+      ro.disconnect();
+    };
+  }, [photo?.id, photo?.width, photo?.height, photo?.rotation, full]);
 
   function resetZoom() {
     zoomNow.current = ZOOM_FIT;
@@ -627,7 +686,7 @@ export default function PhotoDetail() {
   function onPanStart(e) {
     if (pickingNow.current) return;
     if (e.button != null && e.button !== 0) return;
-    if (e.target.closest?.(".photo-full-tools, .photo-full-nav, .photo-full-east, .photo-full-dock, .back-btn, .app-brand, .photo-imagine-pop, .photo-sharpen-badge, .photo-tag-row, .photo-full-tags")) {
+    if (e.target.closest?.(".nametag, .photo-full-tools, .photo-full-nav, .photo-full-east, .photo-full-zoombar, .photo-full-dock, .back-btn, .app-brand, .photo-imagine-pop, .photo-sharpen-badge, .photo-tag-row, .photo-full-tags")) {
       return;
     }
     if (zoomNow.current <= ZOOM_FIT) return;
@@ -911,14 +970,29 @@ export default function PhotoDetail() {
   }, [photo, full]);
 
   useEffect(() => {
-    const nodes = [stageRef.current, fullRef.current].filter(Boolean);
-    if (!nodes.length) return undefined;
     const pinch = { zoom: ZOOM_FIT, x: 0, y: 0, active: false };
-    function onWheel(e) {
+    function applyWheel(e, host) {
       e.preventDefault();
       e.stopPropagation();
       if (pinch.active) return;
-      setZoomAt(zoomNow.current * wheelZoomFactor(e), eventOrigin(e, e.currentTarget));
+      setZoomAt(zoomNow.current * wheelZoomFactor(e), eventOrigin(e, host));
+    }
+    function onFullWheel(e) {
+      if (!fullNow.current) return;
+      if (e.target.closest?.("input, textarea, .nav, .photo-menu")) return;
+      const openMenu = document.querySelector(".photo-menu");
+      if (openMenu) {
+        const r = openMenu.getBoundingClientRect();
+        if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) return;
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      applyWheel(e, fullRef.current);
+    }
+    function onStageWheel(e) {
+      if (fullNow.current) return;
+      applyWheel(e, e.currentTarget);
     }
     function onGestureStart(e) {
       e.preventDefault();
@@ -936,18 +1010,23 @@ export default function PhotoDetail() {
       e.preventDefault();
       pinch.active = false;
     }
-    for (const el of nodes) {
-      el.addEventListener("wheel", onWheel, { passive: false });
-      el.addEventListener("gesturestart", onGestureStart, { passive: false });
-      el.addEventListener("gesturechange", onGestureChange, { passive: false });
-      el.addEventListener("gestureend", onGestureEnd, { passive: false });
+    const stage = stageRef.current;
+    const overlay = fullRef.current;
+    if (full) window.addEventListener("wheel", onFullWheel, { passive: false, capture: true });
+    else if (stage) stage.addEventListener("wheel", onStageWheel, { passive: false });
+    const gestureHost = full ? overlay : stage;
+    if (gestureHost) {
+      gestureHost.addEventListener("gesturestart", onGestureStart, { passive: false });
+      gestureHost.addEventListener("gesturechange", onGestureChange, { passive: false });
+      gestureHost.addEventListener("gestureend", onGestureEnd, { passive: false });
     }
     return () => {
-      for (const el of nodes) {
-        el.removeEventListener("wheel", onWheel);
-        el.removeEventListener("gesturestart", onGestureStart);
-        el.removeEventListener("gesturechange", onGestureChange);
-        el.removeEventListener("gestureend", onGestureEnd);
+      window.removeEventListener("wheel", onFullWheel, { capture: true });
+      if (stage) stage.removeEventListener("wheel", onStageWheel);
+      if (gestureHost) {
+        gestureHost.removeEventListener("gesturestart", onGestureStart);
+        gestureHost.removeEventListener("gesturechange", onGestureChange);
+        gestureHost.removeEventListener("gestureend", onGestureEnd);
       }
     };
   }, [full, photo?.id]);
@@ -959,9 +1038,15 @@ export default function PhotoDetail() {
         (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && String(e.key || "").toLowerCase() === "z";
       if (undoKey) {
         if (e.target.matches?.("textarea, [contenteditable]")) return;
-        if (!peekUndo()) return;
+        if (e.repeat) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        if (!peekUndo() && !undoBusy.current && undoWanted.current <= 0) return;
         e.preventDefault();
         e.stopPropagation();
+        undoWanted.current += 1;
         undoLastRef.current();
         return;
       }
@@ -992,7 +1077,23 @@ export default function PhotoDetail() {
         }
         return;
       }
+      const zoomInKey = e.key === "+" || e.key === "=" || e.code === "NumpadAdd";
+      const zoomOutKey = e.key === "-" || e.key === "_" || e.code === "Minus" || e.code === "NumpadSubtract";
       const typing = e.target.matches?.("input, textarea, [contenteditable]");
+      const typingInFullOverlay = Boolean(
+        typing && e.target.closest?.(".photo-full input, .photo-full textarea, .photo-imagine-pop, .photo-full-comment"),
+      );
+      if (fullNow.current && !e.metaKey && !e.ctrlKey && !e.altKey && !typingInFullOverlay) {
+        if (zoomInKey || zoomOutKey || e.key === "0") {
+          e.preventDefault();
+          e.stopPropagation();
+          if (typing) e.target.blur?.();
+          if (zoomInKey) nudgeZoom(1);
+          else if (zoomOutKey) nudgeZoom(-1);
+          else resetZoom();
+          return;
+        }
+      }
       if (typing) {
         if (commentOpen && e.key === "Escape" && !fullNow.current) {
           e.preventDefault();
@@ -1120,7 +1221,7 @@ export default function PhotoDetail() {
   }
 
   function faceById(faceId) {
-    return (photo?.faces || []).find((f) => Number(f.id) === Number(faceId));
+    return (photoNow.current?.faces || photo?.faces || []).find((f) => Number(f.id) === Number(faceId));
   }
 
   function rememberFaceChange(faceId, label) {
@@ -1154,65 +1255,102 @@ export default function PhotoDetail() {
         }
       }
     }
-    await load();
+    await loadCatalog();
+  }
+
+  function undoAgainHint() {
+    if (undoWanted.current > 0 || undoCount() > 0) {
+      return " Press again to undo the previous change.";
+    }
+    return "";
+  }
+
+  async function applyUndoEntry(entry) {
+    const live = photoNow.current;
+    if (entry.type === "rematch") {
+      const result = await api.undoMatchPhoto(entry.photoId, entry.faceIds);
+      if (Number(entry.photoId) === Number(live?.id)) {
+        clearRematchUndo(live.id);
+        setUndoRematch(null);
+        await loadCatalog();
+      }
+      const n = Number(result.undone) || 0;
+      setNote(
+        n
+          ? `Undid ${n} name${n === 1 ? "" : "s"}.${undoAgainHint()}`
+          : "Nothing left to undo.",
+      );
+      return;
+    }
+    if (entry.type === "photo-comment") {
+      const result = await api.patchPhoto(entry.photoId, { comment: entry.before || "" });
+      if (Number(entry.photoId) === Number(live?.id)) {
+        setPhoto((cur) => (cur ? { ...cur, comment: result.comment || "" } : cur));
+        setCommentDraft(result.comment || "");
+      }
+      setNote(`Undid the photo comment.${undoAgainHint()}`);
+      return;
+    }
+    if (entry.type === "face") {
+      await restoreFaceSnapshot(entry.faceId, entry.before);
+      setNote(
+        entry.label ? `Undid ${entry.label}.${undoAgainHint()}` : `Undid the last change.${undoAgainHint()}`,
+      );
+      if (entry.faceId) selectFace(entry.faceId);
+      return;
+    }
+    setNote("Nothing to undo.");
   }
 
   async function undoLastEdit() {
-    const entry = peekUndo();
-    if (!entry || undoing) return false;
-    popUndo();
+    if (undoBusy.current) return false;
+    undoBusy.current = true;
     setUndoing(true);
     setErr("");
+    let did = false;
     try {
-      if (entry.type === "rematch") {
-        const result = await api.undoMatchPhoto(entry.photoId, entry.faceIds);
-        if (Number(entry.photoId) === Number(photo?.id)) {
-          clearRematchUndo(photo.id);
-          setUndoRematch(null);
-          await load();
+      while (undoWanted.current > 0) {
+        const entry = peekUndo();
+        if (!entry) {
+          undoWanted.current = 0;
+          if (!did) setNote("Nothing to undo.");
+          break;
         }
-        const n = Number(result.undone) || 0;
-        setNote(n ? `Undid ${n} name${n === 1 ? "" : "s"}.` : "Nothing left to undo.");
-        return true;
+        popUndo();
+        undoWanted.current -= 1;
+        await applyUndoEntry(entry);
+        did = true;
       }
-      if (entry.type === "photo-comment") {
-        const result = await api.patchPhoto(entry.photoId, { comment: entry.before || "" });
-        if (Number(entry.photoId) === Number(photo?.id)) {
-          setPhoto((cur) => (cur ? { ...cur, comment: result.comment || "" } : cur));
-          setCommentDraft(result.comment || "");
-        }
-        setNote("Undid the photo comment.");
-        return true;
-      }
-      if (entry.type === "face") {
-        await restoreFaceSnapshot(entry.faceId, entry.before);
-        setNote(entry.label ? `Undid ${entry.label}.` : "Undid the last change.");
-        if (entry.faceId) selectFace(entry.faceId);
-        return true;
-      }
-      setNote("Nothing to undo.");
-      return false;
     } catch (ex) {
+      undoWanted.current = 0;
       setNote("");
       setErr(ex.message || "Could not undo.");
       await load();
-      return false;
     } finally {
+      undoBusy.current = false;
       setUndoing(false);
+      if (undoWanted.current > 0) undoLastRef.current();
     }
+    return did;
   }
   undoLastRef.current = undoLastEdit;
 
   function paintFace(faceId, patch) {
     setPhoto((cur) => {
       if (!cur) return cur;
-      const next = {
+      return {
         ...cur,
         faces: (cur.faces || []).map((f) => (Number(f.id) === Number(faceId) ? { ...f, ...patch } : f)),
       };
-      emitPhotoChange(next);
-      return next;
     });
+    const cur = photo;
+    if (cur) {
+      emitPhotoChange({
+        ...cur,
+        faces: (cur.faces || []).map((f) => (Number(f.id) === Number(faceId) ? { ...f, ...patch } : f)),
+      });
+    }
+    emitCatalogChange();
     setChangingId(null);
     setDrafts((cur) => {
       const next = { ...cur };
@@ -1334,7 +1472,7 @@ export default function PhotoDetail() {
     try {
       const result = await api.junkFace(faceId);
       const extra = result.also_ignored || 0;
-      await load();
+      await loadCatalog();
       setNote(
         extra
           ? `Marked as not a person. Also hid ${extra} similar object${extra === 1 ? "" : "s"}.`
@@ -1354,7 +1492,7 @@ export default function PhotoDetail() {
     paintFace(faceId, { assigned_how: null, quality: "ok" });
     try {
       await api.restoreFace(faceId);
-      await load();
+      await loadCatalog();
       selectFace(faceId);
       setNote("This face is a person again. You can type a name.");
     } catch (ex) {
@@ -1510,8 +1648,11 @@ export default function PhotoDetail() {
     setNote("Re-identifying in the background. You can keep browsing.");
     try {
       const result = await api.waitMatchPhoto(photoId, { start: opts.start, signal: ac.signal });
-      if (ac.signal.aborted || Number(idNow.current) !== Number(photoId)) return;
-      await load();
+      emitCatalogChange();
+      if (ac.signal.aborted) return;
+      if (!pageLive.current || Number(idNow.current) !== Number(photoId)) return;
+      const next = await load();
+      if (next) emitPhotoChange(next);
       const named = Number(result.auto_assigned) || 0;
       const leftover = Number(result.medium) || 0;
       const viaAda = Number(result.adaface_assigned) || 0;
@@ -1556,11 +1697,13 @@ export default function PhotoDetail() {
       }
     } catch (ex) {
       if (ex.name === "AbortError" || ac.signal.aborted) return;
-      if (Number(idNow.current) !== Number(photoId)) return;
+      if (!pageLive.current || Number(idNow.current) !== Number(photoId)) return;
       setNote("Re-identify is still running in the background. You can keep browsing.");
       setErr(ex.message || "Could not re-identify faces.");
     } finally {
-      if (!ac.signal.aborted && Number(idNow.current) === Number(photoId)) setRematching(false);
+      if (!ac.signal.aborted && pageLive.current && Number(idNow.current) === Number(photoId)) {
+        setRematching(false);
+      }
     }
   }
   watchMatchRef.current = watchMatch;
@@ -1579,7 +1722,9 @@ export default function PhotoDetail() {
       const result = await api.undoMatchPhoto(photo.id, ids);
       clearRematchUndo(photo.id);
       setUndoRematch(null);
-      await load();
+      const next = await load();
+      if (next) emitPhotoChange(next);
+      emitCatalogChange();
       const n = Number(result.undone) || 0;
       setNote(
         n
@@ -1727,7 +1872,7 @@ export default function PhotoDetail() {
     setNote("Removing name…");
     try {
       await api.unassignFace(faceId);
-      await load();
+      await loadCatalog();
       setNote("Name removed from this face.");
     } catch (ex) {
       setNote("");
@@ -1743,7 +1888,7 @@ export default function PhotoDetail() {
     setNote("Removing names…");
     try {
       await api.unassignPhoto(photo.id);
-      await load();
+      await loadCatalog();
       setNote(
         ids.length === 1 ? "Name removed from this face." : `Names removed from ${ids.length} faces on this photo.`,
       );
@@ -1763,7 +1908,7 @@ export default function PhotoDetail() {
     setNote("Hiding unnamed faces…");
     try {
       const result = await api.junkUnnamedPhoto(photo.id);
-      await load();
+      await loadCatalog();
       const n = Number(result?.junked) || ids.length;
       setNote(
         n === 1 ? "Hid the unnamed face on this photo." : `Hid ${n} unnamed faces on this photo. Named people stay.`,
@@ -2510,7 +2655,13 @@ export default function PhotoDetail() {
                     <button
                       type="button"
                       className="secondary"
-                      onClick={() => api.unknownFace(f.id).then(load)}
+                      onClick={() =>
+                        api.unknownFace(f.id).then(async () => {
+                          const next = await load();
+                          if (next) emitPhotoChange(next);
+                          emitCatalogChange();
+                        })
+                      }
                       {...tip("This is a real person, but you do not know the name yet.")}
                     >
                       Unknown name of person
@@ -2559,7 +2710,7 @@ export default function PhotoDetail() {
               return;
             }
             if (pickingNow.current) return;
-            if (e.target.closest(".photo-full-tools, .photo-full-nav, .photo-full-east, .photo-full-dock, .photo-full-caption, .back-btn, .app-brand, .nav, .photo-full-comment, .photo-sharpen-badge, .photo-imagine-pop, .photo-tag-row, .photo-full-tags")) return;
+            if (e.target.closest(".photo-full-tools, .photo-full-nav, .photo-full-east, .photo-full-zoombar, .photo-full-dock, .photo-full-caption, .back-btn, .app-brand, .nav, .photo-full-comment, .photo-sharpen-badge, .photo-imagine-pop, .photo-tag-row, .photo-full-tags")) return;
             if (e.target.closest(".nametag, .face-box")) return;
             if (didDrag.current) return;
             if (clickResetsZoom()) return;
@@ -2593,7 +2744,7 @@ export default function PhotoDetail() {
                 priority
                 activeId={active}
                 onFaceClick={(f) => {
-                  setFull(false);
+                  if (didDrag.current) return;
                   openFace(f);
                 }}
                 overlayTags={fullLabels}
@@ -2637,11 +2788,8 @@ export default function PhotoDetail() {
               Previous
             </button>
           ) : null}
-          <div
-            className="photo-full-east"
-            onClick={(e) => e.stopPropagation()}
-          >
           {photo.next_id || play?.ids?.length ? (
+            <div className="photo-full-east" onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
               className="photo-full-nav next"
@@ -2653,26 +2801,58 @@ export default function PhotoDetail() {
             >
               Next
             </button>
+            </div>
           ) : null}
+          <div
+            ref={zoomBarRef}
+            className="photo-full-zoombar"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="zoom-tools" role="group" aria-label="Zoom">
-            <button type="button" disabled={zoom >= ZOOM_MAX} onClick={() => nudgeZoom(1)} {...tip("Zoom in a step, up to 400%. Shortcut +")}>
+            <button
+              type="button"
+              disabled={zoom >= ZOOM_MAX}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                nudgeZoom(1);
+              }}
+              {...tip("Zoom in a step, up to 400%. Shortcut +")}
+            >
               +
             </button>
             <button
               type="button"
-              onClick={() => cycleZoom()}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                cycleZoom();
+              }}
               {...tip("Cycle 75% → 100% → 200% → 400%. Shortcut 0 fits the photo at 75%.")}
             >
               {Math.round(zoom * 100)}%
             </button>
-            <button type="button" disabled={zoom <= ZOOM_MIN} onClick={() => nudgeZoom(-1)} {...tip("Zoom out. Shortcut −")}>
+            <button
+              type="button"
+              disabled={zoom <= ZOOM_MIN}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                nudgeZoom(-1);
+              }}
+              {...tip("Zoom out. Shortcut −")}
+            >
               −
             </button>
             <button
               type="button"
               aria-pressed={zoom >= ZOOM_MAX - 0.05}
               disabled={zoom >= ZOOM_MAX}
-              onClick={() => zoomTo(ZOOM_MAX)}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                zoomTo(ZOOM_MAX);
+              }}
               {...tip("Zoom the photo to 400%.")}
             >
               400%
