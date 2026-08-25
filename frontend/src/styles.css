@@ -2537,6 +2537,20 @@ button.saved {
   border-color: color-mix(in srgb, var(--face-tone, var(--gold)) 55%, var(--line));
   transform: none;
 }
+.name-suggest-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.2em;
+  height: 1.2em;
+  flex: 0 0 auto;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--face-tone, var(--gold)) 78%, white);
+  color: #1a1612;
+  font-size: 0.72rem;
+  font-weight: 750;
+  line-height: 1;
+}
 .name-suggest-item img,
 .name-suggest-item .person-picker-gap {
   width: 28px;

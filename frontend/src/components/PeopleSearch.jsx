@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { api } from "../api";
 import { tip } from "../tip.js";
 
 export default function PeopleSearch() {
+  const loc = useLocation();
+  const onTree = loc.pathname === "/tree" || loc.pathname.startsWith("/tree/");
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [nameHits, setNameHits] = useState([]);
@@ -17,6 +19,10 @@ export default function PeopleSearch() {
   const [err, setErr] = useState("");
   const nameRef = useRef(null);
   const fileRef = useRef(null);
+
+  useEffect(() => {
+    if (onTree) setOpen(false);
+  }, [onTree]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -97,6 +103,8 @@ export default function PeopleSearch() {
       setFaceBusy(false);
     }
   }
+
+  if (onTree) return null;
 
   return (
     <>

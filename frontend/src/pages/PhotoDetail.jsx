@@ -14,7 +14,7 @@ import PersonPicker from "../components/PersonPicker.jsx";
 import FamousLookup from "../components/FamousLookup.jsx";
 import ImaginePrompt from "../components/ImaginePrompt.jsx";
 import NameSuggest from "../components/NameSuggest.jsx";
-import { completeUniqueFirstName, matchPeople, uniqueFirstName } from "../nameSuggest.js";
+import { completeUniqueFirstName, matchPeople, uniqueCatalogPerson } from "../nameSuggest.js";
 import { loadCachedPeople, saveCachedPeople } from "../peopleCache.js";
 import { emitCatalogChange, emitPhotoChange, PHOTO_CHANGE_EVENT, showPhotoMenu } from "../photoMenu.js";
 import { clearRematchUndo, readRematchUndo, writeRematchUndo } from "../rematchUndo.js";
@@ -382,6 +382,16 @@ export default function PhotoDetail() {
   function selectFace(faceId) {
     setActive(faceId);
     window.setTimeout(() => revealFaceCard(faceId), 0);
+  }
+
+  function beginTaggingFace(faceId) {
+    if (!faceId) return;
+    stopPlay();
+    setPlay(null);
+    setFull(false);
+    exitBrowserFullscreen();
+    selectFace(faceId);
+    window.setTimeout(() => document.getElementById(`face-name-${faceId}`)?.focus(), 50);
   }
 
   useEffect(() => {
@@ -1120,6 +1130,16 @@ export default function PhotoDetail() {
       }
       if (fullNow.current) {
         if (e.metaKey || e.ctrlKey || e.altKey) return;
+        const overlayNum = Number(e.key);
+        if (overlayNum >= 1 && overlayNum <= 9) {
+          const target = overlayFaces(photo?.faces || [])[overlayNum - 1];
+          if (target) {
+            e.preventDefault();
+            e.stopPropagation();
+            beginTaggingFace(target.id);
+            return;
+          }
+        }
         e.preventDefault();
         e.stopPropagation();
         if (e.key === "ArrowRight") {
@@ -1174,6 +1194,11 @@ export default function PhotoDetail() {
       const face = faces.find((f) => f.id === active);
       if (num >= 1 && num <= 5 && face?.suggestions?.[num - 1]) {
         assign({ person_id: face.suggestions[num - 1].person_id });
+        return;
+      }
+      if (num >= 1 && num <= 9) {
+        const target = overlayFaces(faces)[num - 1];
+        if (target) beginTaggingFace(target.id);
       }
     }
     window.addEventListener("keydown", onKey, true);
@@ -1198,7 +1223,7 @@ export default function PhotoDetail() {
   function pickCatalogName(face, typed, { useHighlight = false } = {}) {
     const hits = catalogHits(face, typed);
     if (useHighlight && namePick >= 0 && hits[namePick]) return hits[namePick];
-    return uniqueFirstName(typed, people, { excludeId: face?.person_id });
+    return uniqueCatalogPerson(typed, people, { excludeId: face?.person_id });
   }
 
   function applyCatalogPerson(person, face) {
@@ -1962,8 +1987,7 @@ export default function PhotoDetail() {
 
   function openFace(f) {
     if (!f) return;
-    setFull(false);
-    selectFace(f.id);
+    beginTaggingFace(f.id);
   }
 
   const seq = photoSequence(photo);
@@ -1990,7 +2014,7 @@ export default function PhotoDetail() {
           />
           </div>
           <h1>{photo.filename}</h1>
-          <p className="lede" {...tip("Keys: 1–5 save a suggested name, n new name, u remove name, j/k face, ←/→ photo.")}>
+          <p className="lede" {...tip("Keys: 1–9 open a numbered face to name, 1–5 save a suggested name, n new name, u remove name, j/k face, ←/→ photo.")}>
             {[
               photo.taken_at ? photo.taken_at.slice(0, 10) : "No date",
               seq?.label,
@@ -2442,7 +2466,7 @@ export default function PhotoDetail() {
                       return;
                     }
                     if (e.key === "Tab" && hits.length) {
-                      const person = (namePick >= 0 && hits[namePick]) || uniqueFirstName(typed, people, { excludeId: f.person_id }) || hits[0];
+                      const person = (namePick >= 0 && hits[namePick]) || uniqueCatalogPerson(typed, people, { excludeId: f.person_id }) || hits[0];
                       if (person) {
                         e.preventDefault();
                         e.stopPropagation();
@@ -2454,6 +2478,13 @@ export default function PhotoDetail() {
                     if (e.key === "Escape" && hits.length) {
                       e.preventDefault();
                       setNamePick(-1);
+                      return;
+                    }
+                    const hitNum = Number(e.key);
+                    if (hitNum >= 1 && hitNum <= hits.length) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      applyCatalogPerson(hits[hitNum - 1], f);
                       return;
                     }
                     if (e.key === "Enter") {
@@ -2891,16 +2922,15 @@ export default function PhotoDetail() {
             <button
               type="button"
               onClick={() => {
-                stopPlay();
-                setPlay(null);
-                setFull(false);
-                exitBrowserFullscreen();
+                const current = (photo.faces || []).find(
+                  (item) => item.id === active && item.assigned_how !== "junk",
+                );
                 const unnamed = (photo.faces || []).find(
                   (item) => !item.person_id && item.assigned_how !== "junk",
                 );
-                selectFace((unnamed || face || photo.faces?.[0] || {}).id);
+                beginTaggingFace((current || unnamed || face || photo.faces?.[0] || {}).id);
               }}
-              {...tip("Leave fullscreen and type names on the faces.")}
+              {...tip("Leave fullscreen and type names on the faces. Click a numbered face, or press 1–9, to name that person.")}
             >
               Add names
             </button>

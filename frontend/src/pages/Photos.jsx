@@ -13,6 +13,7 @@ import FolderPicker from "../components/FolderPicker.jsx";
 import ConfirmAsk from "../components/ConfirmAsk.jsx";
 import { photoTagHref, tagHref } from "../components/PhotoTags.jsx";
 import { clearAlbumPos, readAlbumPos, writeAlbumPos } from "../albumPos.js";
+import { ALBUM_PAGE, albumHasMore, nextAlbumOffset } from "../albumPage.js";
 
 function folderOf(path) {
   const parts = (path || "").split("/").filter(Boolean);
@@ -284,8 +285,6 @@ function preferLargerCopy(photos) {
   return [...best.values()];
 }
 
-const ALBUM_PAGE = 50;
-
 async function loadAllPhotos(params = {}, onPage) {
   const page = 500;
   let items = [];
@@ -380,19 +379,54 @@ function FolderPhotos() {
     };
   }, []);
 
-  async function fetchAlbum(path, limit = ALBUM_PAGE) {
-    const batch = await api.photos({ q, unidentified, folder: [path], offset: 0, limit });
-    const next = { items: preferLargerCopy(batch.items || []), total: batch.total || 0, path };
+  function writeAlbum(path, next) {
     setAlbumPhotos((cur) => {
-      const prev = cur[path];
-      if ((prev?.items?.length || 0) >= (next.items?.length || 0) && prev?.path === path) {
-        return cur;
-      }
       const merged = { ...cur, [path]: next };
       albumPhotosRef.current = merged;
       return merged;
     });
     return next;
+  }
+
+  async function fetchAlbum(path, limit = ALBUM_PAGE) {
+    const batch = await api.photos({ q, unidentified, folder: [path], offset: 0, limit });
+    const incoming = batch.items || [];
+    const next = {
+      items: preferLargerCopy(incoming),
+      total: batch.total || 0,
+      fetched: incoming.length,
+      path,
+    };
+    const prev = albumPhotosRef.current[path];
+    if ((prev?.items?.length || 0) >= (next.items?.length || 0) && prev?.path === path) {
+      return prev;
+    }
+    return writeAlbum(path, next);
+  }
+
+  async function fetchMoreAlbum(path) {
+    if (!path) return null;
+    let album = albumPhotosRef.current[path] || { items: [], total: 0, fetched: 0, path };
+    const start = (album.items || []).length;
+    for (let n = 0; n < 8; n++) {
+      const offset = nextAlbumOffset(album);
+      if (album.total > 0 && offset >= album.total) break;
+      const batch = await api.photos({
+        q,
+        unidentified,
+        folder: [path],
+        offset,
+        limit: ALBUM_PAGE,
+      });
+      const incoming = batch.items || [];
+      const fetched = offset + incoming.length;
+      const total = batch.total || album.total || 0;
+      const items = preferLargerCopy([...(album.items || []), ...incoming]);
+      album = { items, total, fetched, path };
+      writeAlbum(path, album);
+      if (!incoming.length || fetched >= total || items.length > start) break;
+    }
+    return album;
   }
 
   useEffect(() => {
@@ -710,11 +744,15 @@ function FolderPhotos() {
         clearAlbumPos();
         return undefined;
       }
-      document.getElementById(hash)?.scrollIntoView({ block: "start" });
+      if (restoredFor.current !== hash) {
+        document.getElementById(hash)?.scrollIntoView({ block: "start" });
+        restoredFor.current = hash;
+      }
       return undefined;
     }
 
     if (restoredFor.current === hash) return undefined;
+    restoredFor.current = hash;
     const run = () => document.getElementById(hash)?.scrollIntoView({ block: "start" });
     run();
     const t = window.setTimeout(run, 80);
@@ -1138,7 +1176,7 @@ function FolderPhotos() {
                 onNeed={() => {
                   if (meta?.path && !photos.length) fetchAlbum(meta.path);
                 }}
-                onMore={() => fetchAlbum(meta.path, Math.min((meta.total || photos.length) + ALBUM_PAGE, 500))}
+                onMore={() => fetchMoreAlbum(meta.path)}
               />
             ))
         : (
@@ -1304,7 +1342,12 @@ function FolderPhotos() {
                     folder={group.name}
                     label={albumLabel(group.path, group.name)}
                     photos={loadedGroup.items || []}
-                    meta={{ path: group.path, total: loadedGroup.total || group.total }}
+                    meta={{
+                      path: group.path,
+                      total: loadedGroup.total || group.total,
+                      fetched: loadedGroup.fetched,
+                      apiTotal: loadedGroup.total,
+                    }}
                     current
                     anchor={false}
                     onSelect={() => setActiveFolder(group.name)}
@@ -1318,9 +1361,7 @@ function FolderPhotos() {
                     onNeed={() => {
                       if (!(loadedGroup.items || []).length) fetchAlbum(group.path);
                     }}
-                    onMore={() =>
-                      fetchAlbum(group.path, Math.min((loadedGroup.total || group.total) + ALBUM_PAGE, 500))
-                    }
+                    onMore={() => fetchMoreAlbum(group.path)}
                   />
                 ) : null}
                 {viewingWhole && !showMixed && rootTotal > 0 ? (
@@ -1328,7 +1369,12 @@ function FolderPhotos() {
                     folder={group.name}
                     label={albumLabel(group.path, group.name)}
                     photos={rootPhotos}
-                    meta={{ path: group.path, total: rootTotal }}
+                    meta={{
+                      path: group.path,
+                      total: rootTotal,
+                      fetched: loadedGroup.fetched,
+                      apiTotal: loadedGroup.total,
+                    }}
                     current={activeFolder === group.name}
                     onSelect={() => setActiveFolder(group.name)}
                     resetting={resetting}
@@ -1344,9 +1390,7 @@ function FolderPhotos() {
                     onNeed={() => {
                       if (!(loadedGroup.items || []).length) fetchAlbum(group.path);
                     }}
-                    onMore={() =>
-                      fetchAlbum(group.path, Math.min((loadedGroup.items || []).length + ALBUM_PAGE, 500))
-                    }
+                    onMore={() => fetchMoreAlbum(group.path)}
                   />
                 ) : null}
                 {kids.map((album) => {
@@ -1357,7 +1401,12 @@ function FolderPhotos() {
                       folder={album.folder}
                       label={albumLabel(album.path, album.folder)}
                       photos={loaded.items || []}
-                      meta={{ path: album.path, total: loaded.total || album.photos }}
+                      meta={{
+                        path: album.path,
+                        total: loaded.total || album.photos,
+                        fetched: loaded.fetched,
+                        apiTotal: loaded.total,
+                      }}
                       current={activeFolder === album.folder}
                       onSelect={() => setActiveFolder(album.folder)}
                       resetting={resetting}
@@ -1370,9 +1419,7 @@ function FolderPhotos() {
                       onNeed={() => {
                         if (!(loaded.items || []).length) fetchAlbum(album.path);
                       }}
-                      onMore={() =>
-                        fetchAlbum(album.path, Math.min((loaded.total || album.photos) + ALBUM_PAGE, 500))
-                      }
+                      onMore={() => fetchMoreAlbum(album.path)}
                     />
                   );
                 })}
@@ -1389,7 +1436,12 @@ function FolderPhotos() {
                   folder={album.folder}
                   label={albumLabel(album.path, album.folder)}
                   photos={loaded.items || []}
-                  meta={{ path: album.path, total: loaded.total || album.photos }}
+                  meta={{
+                    path: album.path,
+                    total: loaded.total || album.photos,
+                    fetched: loaded.fetched,
+                    apiTotal: loaded.total,
+                  }}
                   current={activePath === album.path}
                   onSelect={() => {
                     setActiveFolder(album.folder);
@@ -1405,7 +1457,7 @@ function FolderPhotos() {
                   onNeed={() => {
                     if (!(loaded.items || []).length) fetchAlbum(album.path);
                   }}
-                  onMore={() => fetchAlbum(album.path, Math.min((loaded.total || album.photos) + ALBUM_PAGE, 500))}
+                  onMore={() => fetchMoreAlbum(album.path)}
                 />
               );
             })}
@@ -1531,7 +1583,7 @@ function AlbumBlock({ folder, label, photos, meta, current, onSelect, resetting,
       ) : (
         <p className="hint">Loading photos…</p>
       )}
-      {meta?.path && total > photos.length && photos.length ? (
+      {albumHasMore(meta, photos) ? (
         <div className="album-more">
           <p>
             {photos.length} of {total}

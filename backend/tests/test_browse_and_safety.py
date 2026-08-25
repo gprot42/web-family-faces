@@ -470,6 +470,33 @@ def test_looks_like_statue_orange_gold_leaf_in_a_temple_photo(tmp_path):
     assert looks_like_statue(leaf) is False
 
 
+def test_looks_like_statue_gilded_gondola_ornament_is_not_a_face(tmp_path):
+    """A gold canal ornament in a bright mixed scene is not a person."""
+    import numpy as np
+
+    crop = np.full((80, 80, 3), (168, 128, 72), dtype=np.uint8)
+    for y in range(0, 80, 6):
+        crop[y : y + 2] = (150, 112, 58)
+    crop[26:39, 22:50] = (200, 130, 80)
+    ferro = tmp_path / "ferro.png"
+    Image.fromarray(crop).save(ferro)
+    scene = np.zeros((120, 200, 3), dtype=np.uint8)
+    scene[:30] = (240, 200, 160)
+    scene[30:100] = (168, 128, 72)
+    scene[100:] = (36, 34, 32)
+    scene[100:, :50] = (120, 118, 116)
+    canal = tmp_path / "canal.png"
+    Image.fromarray(scene).save(canal)
+    portrait = tmp_path / "portrait.png"
+    Image.new("RGB", (80, 80), (190, 140, 100)).save(portrait)
+    tungsten = tmp_path / "indoor.png"
+    Image.new("RGB", (200, 120), (165, 115, 48)).save(tungsten)
+    assert looks_like_statue(ferro, canal) is True
+    assert looks_like_statue(ferro) is False
+    assert looks_like_statue(ferro, tungsten) is False
+    assert looks_like_statue(portrait, canal) is False
+
+
 def test_looks_like_statue_painted_temple_relief(tmp_path):
     """Gold headdress + brown painted face on stone architecture is not a person."""
     import numpy as np
@@ -518,6 +545,346 @@ def test_looks_like_statue_sand_sculpture_in_a_beach_photo(tmp_path):
     assert looks_like_statue(sand) is False
     assert looks_like_statue(sand, sepia) is False
     assert looks_like_statue(portrait, beach) is False
+
+
+def test_looks_like_statue_limestone_stele_in_a_museum(tmp_path):
+    """Carved beige stone in a grey museum room is not a person."""
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    crop = np.clip(
+        np.array([122, 108, 92], dtype=np.float32) + rng.normal(0, 5, (80, 80, 3)),
+        0,
+        255,
+    ).astype(np.uint8)
+    for y in range(0, 80, 3):
+        crop[y] = (102, 92, 78)
+    stone = tmp_path / "stele.png"
+    Image.fromarray(crop).save(stone)
+    scene = np.full((120, 200, 3), (120, 118, 116), dtype=np.uint8)
+    scene[15:105, 50:149] = (122, 108, 92)
+    museum = tmp_path / "museum.png"
+    Image.fromarray(scene).save(museum)
+    bw = tmp_path / "scan.png"
+    Image.new("RGB", (200, 120), (120, 120, 120)).save(bw)
+    portrait = tmp_path / "portrait.png"
+    Image.new("RGB", (80, 80), (190, 140, 100)).save(portrait)
+    assert looks_like_statue(stone, museum) is True
+    assert looks_like_statue(stone) is False
+    assert looks_like_statue(stone, bw) is False
+    assert looks_like_statue(portrait, museum) is False
+
+
+def test_looks_like_statue_ochre_temple_wall_is_not_a_face(tmp_path):
+    """A detector box on painted sandstone is not a person."""
+    import numpy as np
+
+    rng = np.random.default_rng(2)
+    crop = np.clip(
+        np.array([180, 131, 79], dtype=np.float32) + rng.normal(0, 6, (80, 80, 3)),
+        0,
+        255,
+    ).astype(np.uint8)
+    for y in range(0, 80, 3):
+        crop[y] = (150, 110, 60)
+    wall = tmp_path / "relief.png"
+    Image.fromarray(crop).save(wall)
+    scene = np.clip(
+        np.array([175, 125, 75], dtype=np.float32) + rng.normal(0, 10, (120, 200, 3)),
+        0,
+        255,
+    ).astype(np.uint8)
+    temple = tmp_path / "temple-wall.png"
+    Image.fromarray(scene).save(temple)
+    portrait = tmp_path / "portrait.png"
+    Image.new("RGB", (80, 80), (190, 140, 100)).save(portrait)
+    assert looks_like_statue(wall, temple) is True
+    assert looks_like_statue(wall) is False
+    assert looks_like_statue(portrait, temple) is False
+
+
+def test_looks_like_statue_marble_idol_with_gold_halo(tmp_path):
+    """A painted white-marble temple idol is not a person."""
+    import numpy as np
+
+    crop = np.zeros((80, 80, 3), dtype=np.uint8)
+    crop[:] = (92, 84, 80)
+    crop[:22] = (165, 115, 48)
+    for y in range(0, 22, 3):
+        crop[y] = (138, 92, 32)
+    crop[32:58, 18:62] = (110, 102, 98)
+    idol = tmp_path / "idol.png"
+    Image.fromarray(crop).save(idol)
+    scene = np.full((120, 200, 3), (130, 128, 126), dtype=np.uint8)
+    scene[18:100, 72:138] = (100, 92, 88)
+    scene[18:40, 80:130] = (165, 115, 48)
+    scene[10:50, 10:55] = (165, 115, 48)
+    scene[70:92, 40:70] = (170, 40, 50)
+    scene[80:110, 150:190] = (180, 45, 55)
+    shrine = tmp_path / "shrine.png"
+    Image.fromarray(scene).save(shrine)
+    portrait = tmp_path / "portrait.png"
+    Image.new("RGB", (80, 80), (190, 140, 100)).save(portrait)
+    assert looks_like_statue(idol, shrine) is True
+    assert looks_like_statue(idol) is False
+    assert looks_like_statue(portrait, shrine) is False
+
+
+def test_looks_like_statue_fresco_putto_on_a_wall_map(tmp_path):
+    """A painted cartouche face on a gilt-framed map wall is not a person."""
+    import numpy as np
+
+    crop = np.zeros((80, 80, 3), dtype=np.uint8)
+    crop[:] = (48, 78, 168)
+    crop[:, :12] = (52, 122, 72)
+    crop[22:58, 24:58] = (160, 138, 130)
+    for y in range(24, 56, 4):
+        crop[y, 24:58] = (148, 128, 120)
+    putto = tmp_path / "map-putto.png"
+    Image.fromarray(crop).save(putto)
+    scene = np.zeros((160, 220, 3), dtype=np.uint8)
+    scene[:] = (186, 148, 68)
+    scene[20:140, 26:194] = (42, 78, 168)
+    scene[58:108, 96:150] = (62, 128, 72)
+    gallery = tmp_path / "map-gallery.png"
+    Image.fromarray(scene).save(gallery)
+    portrait = tmp_path / "portrait.png"
+    Image.new("RGB", (80, 80), (190, 140, 100)).save(portrait)
+    dusk = np.full((160, 220, 3), (70, 90, 140), dtype=np.uint8)
+    dusk[70:150, 20:200] = (120, 90, 70)
+    dusk[80:130, 40:80] = (190, 140, 100)
+    garden = tmp_path / "dusk-garden.png"
+    Image.fromarray(dusk).save(garden)
+    train = np.full((160, 220, 3), (90, 110, 150), dtype=np.uint8)
+    train[:, 140:] = (200, 160, 50)
+    train[40:120, 70:130] = (190, 140, 100)
+    carriage = tmp_path / "train.png"
+    Image.fromarray(train).save(carriage)
+    assert looks_like_statue(putto, gallery) is True
+    assert looks_like_statue(putto) is False
+    assert looks_like_statue(portrait, gallery) is False
+    assert looks_like_statue(putto, garden) is False
+    assert looks_like_statue(putto, carriage) is False
+    assert looks_like_statue(portrait, garden) is False
+    assert looks_like_statue(portrait, carriage) is False
+
+
+def test_looks_like_statue_terracotta_bust_against_a_gallery_window(tmp_path):
+    """A carved terracotta head against a window in a gilt map hall is not a person."""
+    import numpy as np
+
+    crop = np.zeros((80, 80, 3), dtype=np.uint8)
+    crop[:] = (150, 120, 95)
+    crop[32:50, 40:58] = (176, 118, 112)
+    crop[:, :36] = (186, 198, 220)
+    bust = tmp_path / "terracotta-bust.png"
+    Image.fromarray(crop).save(bust)
+    scene = np.zeros((160, 220, 3), dtype=np.uint8)
+    scene[:] = (186, 148, 68)
+    scene[20:140, 26:194] = (70, 120, 72)
+    gallery = tmp_path / "map-hall.png"
+    Image.fromarray(scene).save(gallery)
+    portrait = tmp_path / "portrait.png"
+    Image.new("RGB", (80, 80), (190, 140, 100)).save(portrait)
+    window_face = np.zeros((80, 80, 3), dtype=np.uint8)
+    window_face[:] = (190, 140, 100)
+    window_face[:, :24] = (92, 148, 210)
+    person = tmp_path / "window-portrait.png"
+    Image.fromarray(window_face).save(person)
+    dusk = np.full((160, 220, 3), (70, 110, 180), dtype=np.uint8)
+    dusk[110:160, :] = (80, 120, 70)
+    garden = tmp_path / "garden.png"
+    Image.fromarray(dusk).save(garden)
+    assert looks_like_statue(bust, gallery) is True
+    assert looks_like_statue(bust) is False
+    assert looks_like_statue(portrait, gallery) is False
+    assert looks_like_statue(person, gallery) is False
+    assert looks_like_statue(bust, garden) is False
+
+
+def test_looks_like_statue_painted_mural_figure_is_not_a_person(tmp_path):
+    """A gold-crowned face painted on a temple mural is not a person."""
+    import numpy as np
+
+    crop = np.zeros((80, 80, 3), dtype=np.uint8)
+    crop[:] = (180, 130, 100)
+    crop[:22] = (168, 136, 48)
+    mural = tmp_path / "mural-face.png"
+    Image.fromarray(crop).save(mural)
+    scene = np.full((120, 200, 3), (150, 130, 105), dtype=np.uint8)
+    scene[12:75, 25:175] = (160, 120, 70)
+    scene[12:28, 25:175] = (90, 150, 210)
+    scene[28:42, 40:160] = (40, 120, 50)
+    panel = tmp_path / "mural-panel.png"
+    Image.fromarray(scene).save(panel)
+    portrait = tmp_path / "portrait.png"
+    Image.new("RGB", (80, 80), (190, 140, 100)).save(portrait)
+    assert looks_like_statue(mural, panel) is True
+    assert looks_like_statue(mural) is False
+    assert looks_like_statue(portrait, panel) is False
+
+
+def test_looks_like_statue_hatched_bronze_painting_on_a_gallery_wall(tmp_path):
+    """A drawn bronze Buddha in a frame on a grey wall is not a person."""
+    import numpy as np
+
+    crop = np.full((80, 80, 3), (78, 70, 64), dtype=np.uint8)
+    for y in range(0, 80, 2):
+        crop[y] = (48, 42, 38)
+    crop[:22] = (150, 110, 50)
+    drawn = tmp_path / "buddha-paint.png"
+    Image.fromarray(crop).save(drawn)
+    scene = np.full((120, 200, 3), (145, 146, 148), dtype=np.uint8)
+    scene[15:105, 40:170] = (90, 70, 50)
+    scene[15:40, 40:170] = (150, 110, 50)
+    gallery = tmp_path / "gallery.png"
+    Image.fromarray(scene).save(gallery)
+    portrait = tmp_path / "portrait.png"
+    Image.new("RGB", (80, 80), (190, 140, 100)).save(portrait)
+    assert looks_like_statue(drawn, gallery) is True
+    assert looks_like_statue(drawn) is False
+    assert looks_like_statue(portrait, gallery) is False
+
+
+def test_looks_like_statue_slide_badge_is_not_a_face(tmp_path):
+    """A labelled org-chart circle on a projected slide is not a person."""
+    import numpy as np
+
+    crop = np.full((80, 80, 3), (168, 70, 56), dtype=np.uint8)
+    crop[:8] = (200, 198, 194)
+    crop[-8:] = (200, 198, 194)
+    crop[:, :6] = (200, 198, 194)
+    crop[:, -6:] = (200, 198, 194)
+    crop[32:48, 20:60] = (248, 196, 180)
+    badge = tmp_path / "sm-badge.png"
+    Image.fromarray(crop).save(badge)
+    scene = np.full((120, 200, 3), (212, 210, 208), dtype=np.uint8)
+    scene[14:50, 24:90] = (200, 95, 70)
+    scene[74:108, 120:180] = (210, 140, 60)
+    slide = tmp_path / "slide.png"
+    Image.fromarray(scene).save(slide)
+    portrait = tmp_path / "portrait.png"
+    Image.new("RGB", (80, 80), (190, 140, 100)).save(portrait)
+    assert looks_like_statue(badge, slide) is True
+    assert looks_like_statue(badge) is False
+    assert looks_like_statue(portrait, slide) is False
+
+
+def test_looks_like_statue_museum_plaque_mosaic_is_not_a_face(tmp_path):
+    """A mosaic face printed on a museum information plaque is not a person."""
+    import numpy as np
+
+    crop = np.full((80, 80, 3), (160, 110, 95), dtype=np.uint8)
+    for y in range(0, 80, 5):
+        crop[y] = (142, 92, 80)
+    crop[:5] = (200, 198, 194)
+    crop[-5:] = (200, 198, 194)
+    crop[:, :5] = (200, 198, 194)
+    crop[:, -5:] = (200, 198, 194)
+    mosaic = tmp_path / "plaque-mosaic.png"
+    Image.fromarray(crop).save(mosaic)
+    scene = np.full((120, 200, 3), (152, 150, 148), dtype=np.uint8)
+    scene[12:108, 20:120] = (220, 218, 214)
+    scene[15:95, 125:195] = (155, 108, 92)
+    scene[108:120, :] = (165, 157, 150)
+    plaque = tmp_path / "museum-sign.png"
+    Image.fromarray(scene).save(plaque)
+    portrait = tmp_path / "portrait.png"
+    Image.new("RGB", (80, 80), (190, 140, 100)).save(portrait)
+    assert looks_like_statue(mosaic, plaque) is True
+    assert looks_like_statue(mosaic) is False
+    assert looks_like_statue(portrait, plaque) is False
+
+
+def test_looks_like_statue_red_stone_relief_is_not_a_face(tmp_path):
+    """A carved red porphyry battle relief is not a person."""
+    import numpy as np
+
+    crop = np.full((80, 80, 3), (100, 78, 82), dtype=np.uint8)
+    for y in range(0, 80, 2):
+        crop[y] = (72, 54, 58)
+    relief = tmp_path / "porphyry-head.png"
+    Image.fromarray(crop).save(relief)
+    scene = np.full((120, 200, 3), (108, 70, 74), dtype=np.uint8)
+    scene[10:110, 60:140] = (96, 62, 66)
+    wall = tmp_path / "relief-wall.png"
+    Image.fromarray(scene).save(wall)
+    portrait = tmp_path / "portrait.png"
+    Image.new("RGB", (80, 80), (190, 140, 100)).save(portrait)
+    glossy = np.full((80, 80, 3), (132, 97, 100), dtype=np.uint8)
+    for y in range(0, 80, 2):
+        glossy[y] = (96, 70, 74)
+    rider = tmp_path / "porphyry-rider.png"
+    Image.fromarray(glossy).save(rider)
+    assert looks_like_statue(relief, wall) is True
+    assert looks_like_statue(rider, wall) is True
+    assert looks_like_statue(relief) is False
+    assert looks_like_statue(rider) is False
+    assert looks_like_statue(portrait, wall) is False
+
+
+def test_looks_like_statue_movie_poster_on_a_street_is_not_a_face(tmp_path):
+    """A painted cartoon on a restaurant poster strip is not a person."""
+    import numpy as np
+
+    crop = np.full((80, 80, 3), (232, 228, 222), dtype=np.uint8)
+    crop[:, :18] = (140, 48, 40)
+    crop[:, 62:] = (140, 48, 40)
+    crop[16:64, 16:64] = (176, 138, 72)
+    crop[28:52, 28:52] = (200, 118, 88)
+    for x in range(0, 80, 5):
+        crop[2:12, x : x + 2] = (20, 18, 16)
+    for y in range(20, 60, 8):
+        crop[y, 20:60] = (160, 124, 64)
+    poster = tmp_path / "poster-face.png"
+    Image.fromarray(crop).save(poster)
+    scene = np.full((120, 200, 3), (150, 151, 152), dtype=np.uint8)
+    scene[:36] = (90, 150, 210)
+    scene[36:52] = (70, 128, 122)
+    street = tmp_path / "street.png"
+    Image.fromarray(scene).save(street)
+    portrait = tmp_path / "portrait.png"
+    Image.new("RGB", (80, 80), (190, 140, 100)).save(portrait)
+    assert looks_like_statue(poster, street) is True
+    assert looks_like_statue(poster) is False
+    assert looks_like_statue(portrait, street) is False
+
+
+def test_looks_like_statue_egyptian_ka_statue_in_a_museum(tmp_path):
+    """Gold nemes around a black painted face in a museum hall is not a person."""
+    import numpy as np
+
+    crop = np.zeros((80, 80, 3), dtype=np.uint8)
+    crop[:] = (48, 50, 52)
+    crop[:, :22] = (165, 115, 48)
+    crop[:, 58:] = (165, 115, 48)
+    crop[:16] = (165, 115, 48)
+    crop[28:52, 30:50] = (36, 38, 40)
+    crop[34:40, 36:44] = (250, 250, 248)
+    for y in range(0, 80, 3):
+        crop[y, :22] = (120, 82, 28)
+        crop[y, 58:] = (120, 82, 28)
+    ka = tmp_path / "ka.png"
+    Image.fromarray(crop).save(ka)
+    scene = np.full((120, 200, 3), (168, 164, 156), dtype=np.uint8)
+    scene[:40] = (200, 196, 188)
+    scene[90:] = (132, 118, 96)
+    scene[18:102, 78:122] = (165, 115, 48)
+    scene[28:92, 88:112] = (40, 42, 44)
+    museum = tmp_path / "cairo-museum.png"
+    Image.fromarray(scene).save(museum)
+    portrait = tmp_path / "portrait.png"
+    Image.new("RGB", (80, 80), (190, 140, 100)).save(portrait)
+    gold_hat = np.zeros((80, 80, 3), dtype=np.uint8)
+    gold_hat[:] = (190, 140, 100)
+    gold_hat[:, :18] = (165, 115, 48)
+    gold_hat[:, 62:] = (165, 115, 48)
+    hat = tmp_path / "gold-hat.png"
+    Image.fromarray(gold_hat).save(hat)
+    assert looks_like_statue(ka, museum) is True
+    assert looks_like_statue(ka) is False
+    assert looks_like_statue(portrait, museum) is False
+    assert looks_like_statue(hat, museum) is False
 
 
 def test_looks_like_statue_painted_gold_temple_face(tmp_path):

@@ -44,6 +44,20 @@ def test_should_auto_assign_burst_still_needs_a_real_match():
     assert _should_auto_assign(ranked, 0.55, 0.10, nearby_people={3}) is True
 
 
+def test_should_auto_assign_album_does_not_stamp_a_weak_lookalike():
+    from photosort.match import _should_auto_assign
+
+    ranked = [
+        {"person_id": 3, "similarity": 0.44, "mean3": 0.30, "votes": 2, "name": "Sam"},
+        {"person_id": 9, "similarity": 0.35, "mean3": 0.28, "votes": 1, "name": "Clara"},
+    ]
+    assert _should_auto_assign(ranked, 0.55, 0.10, aggressive=True, folder_people={3}) is False
+    ranked[0]["similarity"] = 0.52
+    ranked[0]["mean3"] = 0.50
+    ranked[0]["votes"] = 8
+    assert _should_auto_assign(ranked, 0.55, 0.10, aggressive=True, folder_people={3}) is True
+
+
 def test_rank_people_nn_ignores_the_query_face_itself():
     """A wrong current name at similarity 1.0 must not hide the real person."""
     jon = l2_normalize(np.array([1.0, 0.0], dtype=np.float32))

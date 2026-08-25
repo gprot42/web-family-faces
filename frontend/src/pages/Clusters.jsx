@@ -4,7 +4,7 @@ import { api } from "../api";
 import { tip } from "../tip.js";
 import { groupWhen } from "../ages.js";
 import { clusterHash, clusterIdFrom } from "../albumPos.js";
-import { matchPeople, uniqueFirstName } from "../nameSuggest.js";
+import { matchPeople, uniqueCatalogPerson } from "../nameSuggest.js";
 import FamousLookup from "../components/FamousLookup.jsx";
 import ConfirmAsk from "../components/ConfirmAsk.jsx";
 import JobGauge from "../components/JobGauge.jsx";
@@ -841,7 +841,7 @@ function ClusterCard({
 
   function catalogPerson(useHighlight = false) {
     if (useHighlight && namePick >= 0 && catalogHits[namePick]) return catalogHits[namePick];
-    return uniqueFirstName(name, people) || exactCatalogPerson();
+    return uniqueCatalogPerson(name, people) || exactCatalogPerson();
   }
 
   function applyCatalog(person) {
@@ -1052,6 +1052,12 @@ function ClusterCard({
                 if (e.key === "Escape" && catalogHits.length) {
                   e.preventDefault();
                   setNamePick(-1);
+                  return;
+                }
+                const num = Number(e.key);
+                if (num >= 1 && num <= catalogHits.length) {
+                  e.preventDefault();
+                  applyCatalog(catalogHits[num - 1]);
                 }
               }}
             />

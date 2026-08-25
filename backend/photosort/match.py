@@ -1285,6 +1285,74 @@ def revoke_unlike_confirmed(conn=None, min_sim: float = 0.32) -> int:
             conn.close()
 
 
+def revoke_unmatched_auto_names(conn=None) -> list[int]:
+    """Undo auto names the matcher would not assign from confirmed photos.
+
+    Cluster leftovers used to inherit a name just because one face in a mixed
+    group was already that person. Check names then filled with lookalikes.
+    """
+    own = conn is None
+    if own:
+        conn = connect()
+        init_db(conn)
+    try:
+        gallery = load_named_gallery(conn)
+        if gallery.get("matrix") is None:
+            return []
+        rows = conn.execute(
+            """
+            SELECT f.id, f.person_id, f.embedding, f.sex_est, f.age_est
+            FROM faces f
+            WHERE f.assigned_how = 'auto'
+              AND f.person_id IS NOT NULL
+              AND f.embedding IS NOT NULL
+            """
+        ).fetchall()
+        drop: list[int] = []
+        for row in rows:
+            vec = bytes_to_embedding(row["embedding"])
+            if vec is None:
+                drop.append(int(row["id"]))
+                continue
+            pid = int(row["person_id"])
+            ranked = rank_people_nn(vec, gallery, limit=3, exclude_face_ids={int(row["id"])})
+            ranked = _drop_sex_mismatch(ranked, row["sex_est"], row["age_est"])
+            top = ranked[0] if ranked else None
+            mean3 = float(top.get("mean3") or top.get("similarity") or 0) if top else 0.0
+            if (
+                not top
+                or int(top["person_id"]) != pid
+                or mean3 < MATCH_MEDIUM
+                or not _should_auto_assign(
+                    ranked,
+                    MATCH_REMATCH_HIGH,
+                    MATCH_REMATCH_MARGIN,
+                    aggressive=True,
+                )
+            ):
+                drop.append(int(row["id"]))
+        if not drop:
+            return []
+        marks = ",".join("?" * len(drop))
+        conn.execute(
+            f"""
+            UPDATE faces
+            SET person_id = NULL, assigned_how = NULL
+            WHERE id IN ({marks}) AND assigned_how = 'auto'
+            """,
+            drop,
+        )
+        conn.commit()
+        _invalidate_galleries()
+        from . import sidecar as sidecar_mod
+
+        sidecar_mod.write_for_face_ids(drop)
+        return drop
+    finally:
+        if own:
+            conn.close()
+
+
 def _should_auto_assign(
     ranked: list[dict[str, Any]],
     high: float,
@@ -1342,9 +1410,11 @@ def _should_auto_assign(
         and mean_gap >= 0.05
     ):
         return True
-    if in_album and sim >= 0.44 and gap >= 0.05:
+    # Same album is a hint, not a name. A collection folder named after one
+    # person would otherwise stamp cousins, cartoons, and other guests as them.
+    if in_album and sim >= 0.50 and gap >= 0.08 and vote_leader:
         return True
-    if in_album and sim >= 0.46 and (not nxt or int(nxt["person_id"]) not in folder_people):
+    if in_album and sim >= high and (not nxt or int(nxt["person_id"]) not in folder_people):
         return True
     return False
 
@@ -1564,6 +1634,14 @@ def match_unknown(
         if photo_id is None:
             inherited = _inherit_named_clusters(conn, photo_id=photo_id, include_cleared=include_cleared)
         auto += inherited
+        dropped_auto: list[int] = []
+        if photo_id is None:
+            dropped_auto = revoke_unmatched_auto_names(conn)
+            if dropped_auto:
+                drop_set = {int(fid) for fid in dropped_auto}
+                named = [fid for fid in named if int(fid) not in drop_set]
+                assigned = [item for item in assigned if int(item["face_id"]) not in drop_set]
+                auto = max(0, int(auto) - len(dropped_auto))
         if inherited:
             extra_sql = """
                 SELECT f.id, f.person_id, p.name
@@ -1907,7 +1985,7 @@ def _inherit_named_clusters(
     *,
     include_cleared: bool = False,
 ) -> int:
-    """If a group is already one named person, give leftover faces that name."""
+    """If a group is already one named person, name leftovers that independently match."""
     extra = 0
     cluster_sql = """
         SELECT DISTINCT cluster_id FROM faces
@@ -1943,29 +2021,15 @@ def _inherit_named_clusters(
         ).fetchone()["n"]
         pid = int(people[0]["person_id"])
         leftover = int(unnamed_n or 0)
-        if leftover > CLUSTER_PREVIEW_LIMIT:
-            extra += _assign_matching_cluster_leftovers(
-                conn,
-                int(row["cluster_id"]),
-                pid,
-                blocked=blocked,
-                photo_id=photo_id,
-            )
+        if leftover <= 0:
             continue
-        inherit_sql = f"""
-            UPDATE faces
-            SET person_id = ?, assigned_how = 'auto'
-            WHERE cluster_id = ?
-              AND person_id IS NULL
-              AND IFNULL(assigned_how, '') NOT IN {blocked}
-              AND embedding IS NOT NULL
-        """
-        inherit_params: list[Any] = [pid, row["cluster_id"]]
-        if photo_id is not None:
-            inherit_sql += " AND photo_id = ?"
-            inherit_params.append(int(photo_id))
-        cur = conn.execute(inherit_sql, inherit_params)
-        extra += int(cur.rowcount or 0)
+        extra += _assign_matching_cluster_leftovers(
+            conn,
+            int(row["cluster_id"]),
+            pid,
+            blocked=blocked,
+            photo_id=photo_id,
+        )
     return extra
 
 
@@ -2084,8 +2148,10 @@ def suppress_like_junk(threshold: float = 0.46, junk_face_ids: list[int] | None 
             ).fetchall()
         unknown = conn.execute(
             """
-            SELECT id, embedding FROM faces
-            WHERE person_id IS NULL AND quality = 'ok' AND embedding IS NOT NULL
+            SELECT f.id, f.embedding, f.photo_id, ph.path
+            FROM faces f
+            JOIN photos ph ON ph.id = f.photo_id
+            WHERE f.person_id IS NULL AND f.quality = 'ok' AND f.embedding IS NOT NULL
             """
         ).fetchall()
         junk_vecs = []
@@ -2097,12 +2163,15 @@ def suppress_like_junk(threshold: float = 0.46, junk_face_ids: list[int] | None 
             return 0
         unk_ids: list[int] = []
         unk_vecs: list[np.ndarray] = []
+        unk_photos: list[tuple[int | None, str | None]] = []
         for row in unknown:
             vec = bytes_to_embedding(row["embedding"])
             if vec is None:
                 continue
             unk_ids.append(int(row["id"]))
             unk_vecs.append(l2_normalize(vec))
+            photo_id = row["photo_id"]
+            unk_photos.append((int(photo_id) if photo_id is not None else None, row["path"]))
         if not unk_vecs:
             return 0
         junk_mat = np.stack(junk_vecs)
@@ -2129,9 +2198,11 @@ def suppress_like_junk(threshold: float = 0.46, junk_face_ids: list[int] | None 
             if named_sim >= MATCH_HIGH:
                 continue
             crop = CROP_DIR / f"{face_id}.jpg"
+            photo_id, photo_path = unk_photos[i]
             # A dinner-table crop can match junked embeddings at 0.66 and
-            # still be a person. Colour/shape of this crop decides.
-            if crop.exists() and not looks_like_statue(crop):
+            # still be a person. Colour/shape of this crop — and the photo
+            # around it — decides. Museum stone needs that scene.
+            if crop.exists() and not looks_like_statue(crop, photo_path, photo_id=photo_id):
                 continue
             conn.execute(
                 """

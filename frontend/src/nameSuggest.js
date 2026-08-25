@@ -98,6 +98,31 @@ export function uniqueFirstName(query, people, { excludeId } = {}) {
   return hits.length === 1 ? hits[0] : null;
 }
 
+function uniqueNamePrefix(query, people, { excludeId } = {}) {
+  const q = String(query || "").trim().toLowerCase();
+  if (q.length < 2) return null;
+  const hits = [];
+  for (const person of people || []) {
+    if (person?.unknown_name) continue;
+    if (excludeId != null && String(person.id) === String(excludeId)) continue;
+    const name = String(person.name || "").trim().toLowerCase();
+    const nick = String(person.nickname || "").trim().toLowerCase();
+    if (!name) continue;
+    if (name === q || name.startsWith(q) || (nick && (nick === q || nick.startsWith(q)))) hits.push(person);
+  }
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/** Person uniquely identified by what was typed: unique first name, unique full-name prefix, or a single catalog hit. */
+export function uniqueCatalogPerson(query, people, { excludeId } = {}) {
+  const uniqueFirst = uniqueFirstName(query, people, { excludeId });
+  if (uniqueFirst) return uniqueFirst;
+  const uniquePrefix = uniqueNamePrefix(query, people, { excludeId });
+  if (uniquePrefix) return uniquePrefix;
+  const hits = matchPeople(query, people, { excludeId, limit: 2 });
+  return hits.length === 1 ? hits[0] : null;
+}
+
 export function completeUniqueFirstName(query, people, { excludeId } = {}) {
   const unique = uniqueFirstName(query, people, { excludeId });
   if (!unique) return null;

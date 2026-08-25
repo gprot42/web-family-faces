@@ -346,6 +346,27 @@ def _edge_strength(arr: np.ndarray) -> float:
     return float(np.abs(gray[1:, :] - gray[:-1, :]).mean())
 
 
+def _poster_lettering(arr: np.ndarray) -> bool:
+    """True when the crop has printed title lettering (movie posters, comics)."""
+    if arr.ndim != 3 or arr.shape[0] < 16 or arr.shape[1] < 16:
+        return False
+    gray = 0.3 * arr[:, :, 0] + 0.59 * arr[:, :, 1] + 0.11 * arr[:, :, 2]
+    h = int(gray.shape[0])
+
+    def band(y0: int, y1: int) -> tuple[float, float]:
+        g = gray[max(0, y0) : max(y1, y0 + 2)]
+        if g.shape[1] < 8 or g.shape[0] < 2:
+            return 0.0, 0.0
+        dx = np.abs(np.diff(g, axis=1))
+        sharp = float((dx >= 22).mean())
+        col = (dx >= 22).mean(axis=0)
+        return sharp, float(col.std())
+
+    top_s, top_c = band(0, int(h * 0.32))
+    bot_s, bot_c = band(int(h * 0.68), h)
+    return max(top_s, bot_s) >= 0.033 and max(top_c, bot_c) >= 0.065
+
+
 def _scene_stats(
     photo_path: Path | str | None, photo_id: int | None
 ) -> tuple[float, float, float, float, float] | None:
@@ -397,6 +418,44 @@ def _scene_gold_fraction(photo_path: Path | str | None, photo_id: int | None) ->
     return None if stats is None else stats[0]
 
 
+def _open_scene_image(photo_path: Path | str | None, photo_id: int | None) -> Image.Image | None:
+    img = None
+    if photo_id is not None:
+        thumb = THUMB_DIR / f"{int(photo_id)}.jpg"
+        if thumb.is_file():
+            try:
+                img = Image.open(thumb).convert("RGB")
+            except OSError:
+                img = None
+    if img is None and photo_path:
+        path = Path(photo_path)
+        if path.is_file():
+            try:
+                img = Image.open(path).convert("RGB")
+                img.thumbnail((256, 256))
+            except OSError:
+                img = None
+    return img
+
+
+def _scene_mean_rgb(photo_path: Path | str | None, photo_id: int | None) -> np.ndarray | None:
+    """Mean RGB of the surrounding photo. None if no image to open."""
+    img = _open_scene_image(photo_path, photo_id)
+    if img is None:
+        return None
+    return np.asarray(img, dtype=np.float32).reshape(-1, 3).mean(0)
+
+
+def _scene_luma_std(photo_path: Path | str | None, photo_id: int | None) -> float | None:
+    """How much the surrounding photo varies in brightness. Flat tungsten is ~0."""
+    img = _open_scene_image(photo_path, photo_id)
+    if img is None:
+        return None
+    arr = np.asarray(img, dtype=np.float32)
+    luma = 0.3 * arr[:, :, 0] + 0.59 * arr[:, :, 1] + 0.11 * arr[:, :, 2]
+    return float(luma.std())
+
+
 def _scene_is_colour(photo_path: Path | str | None, photo_id: int | None) -> bool:
     """True when the album photo has real colour, not a black-and-white print."""
     stats = _scene_stats(photo_path, photo_id)
@@ -407,12 +466,111 @@ def _scene_is_colour(photo_path: Path | str | None, photo_id: int | None) -> boo
     return False
 
 
+def _scene_frame_metrics(
+    photo_path: Path | str | None, photo_id: int | None
+) -> tuple[float, float, float, float] | None:
+    """Border gold, cream+gold frame, inner blue, and border blue of the photo."""
+    img = _open_scene_image(photo_path, photo_id)
+    if img is None:
+        return None
+    arr = np.asarray(img, dtype=np.float32)
+    h, w = arr.shape[:2]
+    r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+    chroma = np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)
+    val = np.maximum(np.maximum(r, g), b) / 255.0
+    blue = (b > r + 8) & (b > g + 4) & (chroma >= 12) & (val >= 0.25)
+    gold = _orange_gold_mask(arr, sat_min=0.28)
+    cream = (chroma < 40) & (val >= 0.55) & (r >= g) & (r > b + 4)
+    border = np.zeros((h, w), dtype=bool)
+    bh, bw = max(int(h * 0.12), 4), max(int(w * 0.12), 4)
+    border[:bh] = True
+    border[-bh:] = True
+    border[:, :bw] = True
+    border[:, -bw:] = True
+    inner = ~border
+    if not inner.any() or not border.any():
+        return None
+    return (
+        float(gold[border].mean()),
+        float((gold | cream)[border].mean()),
+        float(blue[inner].mean()),
+        float(blue[border].mean()),
+    )
+
+
+def _scene_gilt_picture_frame(photo_path: Path | str | None, photo_id: int | None) -> bool:
+    """Gold moulding around a painted map panel, not rocks under a pale sky.
+
+    Gallery frames are gold on the border and olive/blue *inside*. Outdoor
+    rock+sky photos look gold on both the border and the interior.
+    """
+    img = _open_scene_image(photo_path, photo_id)
+    if img is None:
+        return False
+    arr = np.asarray(img, dtype=np.float32)
+    h, w = arr.shape[:2]
+    r, g, b = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2]
+    chroma = np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)
+    val = np.maximum(np.maximum(r, g), b) / 255.0
+    hsv = np.asarray(Image.fromarray(arr.astype(np.uint8)).convert("HSV"), dtype=np.float32)
+    hue = hsv[:, :, 0] * (360.0 / 255.0)
+    sat = hsv[:, :, 1] / 255.0
+    blue = (b > r + 8) & (b > g + 4) & (chroma >= 12) & (val >= 0.25)
+    olive = (hue >= 35) & (hue <= 150) & (sat >= 0.10) & (chroma >= 8) & (g >= b) & (g >= r - 18)
+    gold = _orange_gold_mask(arr, sat_min=0.28)
+    cream = (chroma < 40) & (val >= 0.55) & (r >= g) & (r > b + 4)
+    border = np.zeros((h, w), dtype=bool)
+    bh, bw = max(int(h * 0.12), 4), max(int(w * 0.12), 4)
+    border[:bh] = True
+    border[-bh:] = True
+    border[:, :bw] = True
+    border[:, -bw:] = True
+    inner = ~border
+    if not inner.any() or not border.any():
+        return False
+    border_gold = float(gold[border].mean())
+    border_frame = float((gold | cream)[border].mean())
+    border_olive = float(olive[border].mean())
+    inner_blue = float(blue[inner].mean())
+    inner_olive = float(olive[inner].mean())
+    border_blue = float(blue[border].mean())
+    inner_map = float((blue | olive)[inner].mean())
+    return (
+        border_gold >= 0.18
+        and border_frame >= 0.28
+        and border_olive < 0.10
+        and inner_map >= 0.28
+        and (
+            inner_olive >= border_olive + 0.12
+            or inner_blue >= border_blue + 0.10
+        )
+    )
+
+
+def _scene_framed_painted_map(photo_path: Path | str | None, photo_id: int | None) -> bool:
+    """Gilt picture-frame around a painted sea (Gallery of Maps / fresco wall).
+
+    Outdoor group shots and train windows also have blue, so the sea has to
+    sit *inside* a gold/cream border, not as a global colour cast.
+    """
+    metrics = _scene_frame_metrics(photo_path, photo_id)
+    if metrics is None:
+        return False
+    border_gold, border_frame, inner_blue, border_blue = metrics
+    return (
+        inner_blue >= 0.25
+        and border_gold >= 0.12
+        and border_frame >= 0.28
+        and inner_blue >= border_blue + 0.10
+    )
+
+
 def looks_like_statue(
     crop_path: Path,
     photo_path: Path | str | None = None,
     photo_id: int | None = None,
 ) -> bool:
-    """Bronze, gold, stone, and sand statues: metal/gray/beige, little real skin.
+    """Bronze, gold, stone, sand, printed posters, and diagram badges that are not people.
 
     Gold Buddhas read as "skin" if we only test R>G>B. Treat yellow metal
     separately. Orange gold-leaf (temple statues) needs a gold object in a
@@ -421,7 +579,8 @@ def looks_like_statue(
     (gray stone in a colour shot). A bronze head tight-cropped against blue
     sky is mostly colour, so gray-share alone is not enough. Sand sculptures
     are beige like skin, so they need a mixed-colour scene (sky/plants) and
-    must not look like a sepia print of a real person.
+    must not look like a sepia print of a real person. Org-chart circles on
+    a projected slide are saturated fill plus pale lettering on a grey page.
     """
     try:
         img = Image.open(crop_path).convert("RGB")
@@ -482,11 +641,63 @@ def looks_like_statue(
             surr_pale = float(((schroma < 28) & (surr_val >= 0.50)).mean())
             if inner_cool >= 0.45 and inner_warm < 0.12 and (surr_sky >= 0.45 or surr_pale >= 0.45):
                 return True
+    # Gilded statue with a dark painted face (Egyptian ka statue in a case).
+    # Gold nemes lives on the sides; the inner is low-chroma paint plus maybe a
+    # glass-case flash. A person in a gold hat still has a warm-skin inner.
+    # Runs before the colour-share gate: the face itself is black paint.
+    face_box = np.zeros((h, w), dtype=bool)
+    fy0, fy1 = int(h * 0.34), max(int(h * 0.66), int(h * 0.34) + 1)
+    fx0, fx1 = int(w * 0.34), max(int(w * 0.66), int(w * 0.34) + 1)
+    face_box[fy0:fy1, fx0:fx1] = True
+    hsv_all = np.asarray(Image.fromarray(arr.astype(np.uint8)).convert("HSV"), dtype=np.float32)
+    val_all = hsv_all[:, :, 2] / 255.0
+    inner_keep = face_box & (val_all < 0.82)
+    gold_map = _orange_gold_mask(arr)
+    ring_gold = float(gold_map[~face_box].mean()) if (~face_box).any() else 0.0
+    if int(inner_keep.sum()) >= 80 and ring_gold >= 0.16:
+        fchroma = np.maximum(np.maximum(arr[:, :, 0], arr[:, :, 1]), arr[:, :, 2]) - np.minimum(
+            np.minimum(arr[:, :, 0], arr[:, :, 1]), arr[:, :, 2]
+        )
+        fwarm = (arr[:, :, 0] > arr[:, :, 1] + 6) & (arr[:, :, 0] > arr[:, :, 2] + 8)
+        if (
+            float((fchroma[inner_keep] < 24).mean()) >= 0.68
+            and float(fwarm[inner_keep].mean()) < 0.14
+            and _edge_strength(core) >= 7.0
+        ):
+            stats = _scene_stats(photo_path, photo_id)
+            if stats is not None:
+                scene_gold, scene_gray, scene_color, _scene_sand, scene_cool = stats
+                if (
+                    scene_cool < 0.12
+                    and scene_gray >= 0.38
+                    and scene_color >= 0.28
+                    and scene_gold >= 0.05
+                ):
+                    return True
     if color_n < 0.4:
         return False
     # Gold / brass Buddhas: yellow metal fills the head, almost no pink skin.
     if gold_n >= 0.68 and skin_n < 0.12:
         return True
+    # Soft-focus gilded ornament (gondola seahorse): a little of the metal
+    # reads as skin. Needs a gold-heavy colour scene with real brightness
+    # range so tungsten portraits stay named. Crop-only stays False.
+    if gold_n >= 0.72 and skin_n < 0.16 and float(_orange_gold_mask(core).mean()) >= 0.65:
+        edges = _edge_strength(core)
+        if 3.5 <= edges <= 6.5:
+            stats = _scene_stats(photo_path, photo_id)
+            if stats is not None:
+                scene_gold, scene_gray, scene_color, _scene_sand, scene_cool = stats
+                luma_std = _scene_luma_std(photo_path, photo_id)
+                if (
+                    scene_gold >= 0.50
+                    and scene_color >= 0.80
+                    and scene_cool < 0.06
+                    and 0.15 <= scene_gray <= 0.25
+                    and luma_std is not None
+                    and luma_std >= 50
+                ):
+                    return True
     if yellow_n >= 0.50 and skin_n < 0.12 and float(sat.mean()) >= 0.42:
         return True
     if green_n >= 0.33 and skin_n < 0.25:
@@ -524,7 +735,7 @@ def looks_like_statue(
         if inner_gold >= 0.52:
             stats = _scene_stats(photo_path, photo_id)
             if stats is not None:
-                scene_gold, _scene_gray, scene_color = stats
+                scene_gold, _scene_gray, scene_color = stats[0], stats[1], stats[2]
                 if 0.08 <= scene_gold <= 0.40 and scene_color >= 0.45:
                     return True
     # Painted temple relief / door god: gold ornamental headdress, brown
@@ -578,6 +789,281 @@ def looks_like_statue(
             scene_sand, scene_cool = stats[3], stats[4]
             if scene_cool >= 0.22 and scene_sand >= 0.18:
                 return True
+    # Carved limestone / sandstone in a grey museum room (Egyptian stelae).
+    # Beige reads as skin, but the crop is the same stone as the photo, with
+    # carved edges, a grey wall, and no sky. Crop-only calls stay False.
+    stats = _scene_stats(photo_path, photo_id)
+    if stats is not None:
+        _scene_gold, scene_gray, scene_color, scene_sand, scene_cool = stats
+        sand_n = float(_sand_mask(core).mean())
+        pink_n = float(pink.mean())
+        if (
+            0.50 <= scene_gray <= 0.82
+            and 0.30 <= scene_color <= 0.70
+            and scene_cool < 0.08
+            and scene_sand >= 0.12
+            and sand_n >= 0.28
+            and pink_n < 0.16
+            and _edge_strength(core) >= 8.0
+        ):
+            scene_mean = _scene_mean_rgb(photo_path, photo_id)
+            if scene_mean is not None:
+                crop_mean = core.reshape(-1, 3).mean(0)
+                if float(np.linalg.norm(crop_mean - scene_mean)) <= 28:
+                    return True
+    # Ochre sandstone / painted temple wall filling the frame (Egyptian relief).
+    # The "face" is the same orange-gold stone as the photo. Smooth paint on
+    # stone has low edges, so texture is not required. Warm indoor portraits
+    # are not 85%+ gold. Crop-only stays False.
+    stats = _scene_stats(photo_path, photo_id)
+    if stats is not None:
+        scene_gold, scene_gray, _scene_color, _scene_sand, scene_cool = stats
+        crop_gold = float(_orange_gold_mask(core).mean())
+        if (
+            scene_gold >= 0.85
+            and scene_cool < 0.08
+            and scene_gray < 0.15
+            and crop_gold >= 0.50
+        ):
+            luma_std = _scene_luma_std(photo_path, photo_id)
+            scene_mean = _scene_mean_rgb(photo_path, photo_id)
+            if luma_std is not None and luma_std >= 6.0 and scene_mean is not None:
+                crop_mean = core.reshape(-1, 3).mean(0)
+                if float(np.linalg.norm(crop_mean - scene_mean)) <= 25:
+                    return True
+    # White marble temple idol: gold halo/crown, pale low-chroma inner face,
+    # grey shrine around it. A person in a gold hat keeps warm skin in the inner.
+    # Crop-only stays False.
+    stats = _scene_stats(photo_path, photo_id)
+    if stats is not None:
+        _scene_gold, scene_gray, scene_color, _scene_sand, scene_cool = stats
+        top = arr[: max(int(h * 0.40), 1)]
+        inner = arr[
+            int(h * 0.32) : max(int(h * 0.68), int(h * 0.32) + 1),
+            int(w * 0.28) : max(int(w * 0.72), int(w * 0.28) + 1),
+        ]
+        ir, ig, ib = inner[:, :, 0], inner[:, :, 1], inner[:, :, 2]
+        ichroma = np.maximum(np.maximum(ir, ig), ib) - np.minimum(np.minimum(ir, ig), ib)
+        inner_hsv = np.asarray(Image.fromarray(inner.astype(np.uint8)).convert("HSV"), dtype=np.float32)
+        inner_val = float(inner_hsv[:, :, 2].mean() / 255.0)
+        inner_pink = float(((ir > ig + 24) & (ir > ib + 20)).mean())
+        if (
+            scene_cool < 0.12
+            and scene_gray >= 0.40
+            and scene_color >= 0.28
+            and float(_orange_gold_mask(top).mean()) >= 0.40
+            and float(_orange_gold_mask(inner).mean()) <= 0.12
+            and float((ichroma < 20).mean()) >= 0.55
+            and 0.35 <= inner_val <= 0.75
+            and inner_pink < 0.12
+        ):
+            return True
+    # Painted putto / cartouche on a wall map: flesh-coloured fresco in a
+    # gilt frame around painted sea + land. Crop-only stays False. Outdoor
+    # groups and train windows have blue, but not a gold picture-frame.
+    if _scene_framed_painted_map(photo_path, photo_id):
+        ring = np.ones((h, w), dtype=bool)
+        ring[
+            int(h * 0.28) : max(int(h * 0.72), int(h * 0.28) + 1),
+            int(w * 0.28) : max(int(w * 0.72), int(w * 0.28) + 1),
+        ] = False
+        surr = arr[ring]
+        sr, sg, sb = surr[:, 0], surr[:, 1], surr[:, 2]
+        schroma = np.maximum(np.maximum(sr, sg), sb) - np.minimum(np.minimum(sr, sg), sb)
+        surr_blue = float(((sb > sr + 8) & (sb > sg + 4) & (schroma >= 12)).mean())
+        surr_green = float(((sg > sr + 2) & (sg >= sb - 8) & (schroma >= 12)).mean())
+        mapped = arr[
+            int(h * 0.32) : max(int(h * 0.68), int(h * 0.32) + 1),
+            int(w * 0.28) : max(int(w * 0.72), int(w * 0.28) + 1),
+        ]
+        mr, mg, mb = mapped[:, :, 0], mapped[:, :, 1], mapped[:, :, 2]
+        inner_skin = float(((mr > mg + 6) & (mr > mb + 8)).mean())
+        inner_pink = float(((mr > mg + 24) & (mr > mb + 20)).mean())
+        if (
+            surr_blue >= 0.10
+            and surr_green >= 0.06
+            and inner_skin >= 0.70
+            and inner_pink <= 0.40
+        ):
+            return True
+    # Terracotta / stone bust against a window in a gilt gallery. Smooth carved
+    # head, window fill, gold picture-frame. People walking the hall have
+    # sharper faces and are not tight-cropped on a window. Crop-only stays False.
+    if _edge_strength(core) <= 2.2 and gold_n >= 0.30 and float(sat.mean()) <= 0.42:
+        ring = np.ones((h, w), dtype=bool)
+        ring[
+            int(h * 0.28) : max(int(h * 0.72), int(h * 0.28) + 1),
+            int(w * 0.28) : max(int(w * 0.72), int(w * 0.28) + 1),
+        ] = False
+        surr = arr[ring]
+        sr, sg, sb = surr[:, 0], surr[:, 1], surr[:, 2]
+        schroma = np.maximum(np.maximum(sr, sg), sb) - np.minimum(np.minimum(sr, sg), sb)
+        surr_blue = float(((sb > sr + 8) & (sb > sg + 4) & (schroma >= 12)).mean())
+        if surr_blue >= 0.42 and _scene_gilt_picture_frame(photo_path, photo_id):
+            return True
+    # Painted mural / illustrated panel: a smooth gold-crowned face in a
+    # colourful scene with some painted sky or trees. Real outdoor sky is
+    # cooler than 0.28. Skin is too red to count as metal gold. Crop-only stays False.
+    if _edge_strength(core) <= 2.2:
+        top = arr[: max(int(h * 0.40), 1)]
+        tr, tg, _tb = top[:, :, 0], top[:, :, 1], top[:, :, 2]
+        crown = _orange_gold_mask(top) & ((tr - tg) <= 42)
+        if float(crown.mean()) >= 0.50:
+            stats = _scene_stats(photo_path, photo_id)
+            if stats is not None:
+                _sg, _sgray, scene_color, _ssand, scene_cool = stats
+                if 0.12 <= scene_cool <= 0.25 and scene_color >= 0.85:
+                    return True
+    # Gallery painting of a bronze/ink statue: hatched drawing, gold
+    # highlights, hanging on a grey indoor wall. Crop-only stays False.
+    if _edge_strength(core) >= 8.0:
+        top = arr[: max(int(h * 0.40), 1)]
+        inner = arr[
+            int(h * 0.32) : max(int(h * 0.68), int(h * 0.32) + 1),
+            int(w * 0.28) : max(int(w * 0.72), int(w * 0.28) + 1),
+        ]
+        ir, ig, ib = inner[:, :, 0], inner[:, :, 1], inner[:, :, 2]
+        inner_pink = float(((ir > ig + 24) & (ir > ib + 20)).mean())
+        if (
+            float(_orange_gold_mask(top).mean()) >= 0.25
+            and gray_n >= 0.30
+            and inner_pink < 0.12
+        ):
+            stats = _scene_stats(photo_path, photo_id)
+            if stats is not None:
+                _sg, scene_gray, scene_color, _ssand, scene_cool = stats
+                if scene_gray >= 0.40 and scene_cool < 0.10 and scene_color >= 0.45:
+                    return True
+    # Org-chart / slide badge: pale lettering on a flat saturated disc, grey
+    # projector screen around it. Distant faces on overcast days stay named.
+    # Crop-only stays False.
+    inner = arr[
+        int(h * 0.28) : max(int(h * 0.72), int(h * 0.28) + 1),
+        int(w * 0.28) : max(int(w * 0.72), int(w * 0.28) + 1),
+    ]
+    ir, ig, ib = inner[:, :, 0], inner[:, :, 1], inner[:, :, 2]
+    ichroma = np.maximum(np.maximum(ir, ig), ib) - np.minimum(np.minimum(ir, ig), ib)
+    inner_hsv = np.asarray(Image.fromarray(inner.astype(np.uint8)).convert("HSV"), dtype=np.float32)
+    inner_sat = inner_hsv[:, :, 1] / 255.0
+    inner_val = inner_hsv[:, :, 2] / 255.0
+    inner_pink = (ir > ig + 24) & (ir > ib + 20)
+    fill_n = float(((inner_sat >= 0.42) & inner_pink & (inner_val <= 0.82)).mean())
+    light_n = float((inner_val >= 0.78).mean())
+    if (
+        0.28 <= fill_n <= 0.70
+        and light_n >= 0.12
+        and float(inner_pink.mean()) >= 0.90
+        and float(ichroma.std()) >= 20.0
+        and _edge_strength(core) <= 4.0
+    ):
+        stats = _scene_stats(photo_path, photo_id)
+        if stats is not None:
+            _sg, scene_gray, scene_color, _ssand, scene_cool = stats
+            if scene_gray >= 0.75 and scene_cool < 0.08 and 0.15 <= scene_color <= 0.45:
+                scene_mean = _scene_mean_rgb(photo_path, photo_id)
+                if scene_mean is not None:
+                    crop_mean = core.reshape(-1, 3).mean(0)
+                    if float(np.linalg.norm(crop_mean - scene_mean)) >= 60:
+                        return True
+    # Printed mosaic on a museum plaque: pale photo-frame corners, tesserae
+    # grain, grey floor. Live portraits against a white wall stay named.
+    # Crop-only stays False.
+    if 6.0 <= _edge_strength(core) <= 9.0:
+        cy, cx = max(int(h * 0.14), 1), max(int(w * 0.14), 1)
+        corners = np.concatenate(
+            [
+                arr[:cy, :cx].reshape(-1, 3),
+                arr[:cy, -cx:].reshape(-1, 3),
+                arr[-cy:, :cx].reshape(-1, 3),
+                arr[-cy:, -cx:].reshape(-1, 3),
+            ],
+            0,
+        )
+        cr, cg, cb = corners[:, 0], corners[:, 1], corners[:, 2]
+        cchroma = np.maximum(np.maximum(cr, cg), cb) - np.minimum(np.minimum(cr, cg), cb)
+        cval = np.maximum(np.maximum(cr, cg), cb) / 255.0
+        pale_n = float(((cchroma < 28) & (cval >= 0.55)).mean())
+        if 0.68 <= pale_n <= 0.82 and float((cchroma < 20).mean()) >= 0.70:
+            inner = arr[
+                int(h * 0.28) : max(int(h * 0.72), int(h * 0.28) + 1),
+                int(w * 0.28) : max(int(w * 0.72), int(w * 0.28) + 1),
+            ]
+            ir, ig, ib = inner[:, :, 0], inner[:, :, 1], inner[:, :, 2]
+            if float(((ir > ig + 24) & (ir > ib + 20)).mean()) >= 0.90:
+                stats = _scene_stats(photo_path, photo_id)
+                if stats is not None:
+                    _sg, scene_gray, scene_color, _ssand, scene_cool = stats
+                    if scene_gray >= 0.72 and scene_cool < 0.06 and 0.30 <= scene_color <= 0.45:
+                        scene_mean = _scene_mean_rgb(photo_path, photo_id)
+                        if scene_mean is not None:
+                            crop_mean = core.reshape(-1, 3).mean(0)
+                            if float(np.linalg.norm(crop_mean - scene_mean)) >= 75:
+                                return True
+    # Red porphyry / marble battle relief: the crop is the same dark red
+    # stone as the wall. Tight face crops are darker; a glossy horse-and-rider
+    # box is brighter but still magenta-red (G≈B), not orange skin. Crop-only
+    # stays False. A person in front of it has a different-coloured face.
+    if _edge_strength(core) >= 7.0:
+        inner = arr[
+            int(h * 0.32) : max(int(h * 0.68), int(h * 0.32) + 1),
+            int(w * 0.28) : max(int(w * 0.72), int(w * 0.28) + 1),
+        ]
+        ir, ig, ib = inner[:, :, 0], inner[:, :, 1], inner[:, :, 2]
+        inner_val = float(np.maximum(np.maximum(ir, ig), ib).mean() / 255.0)
+        crop_mean = core.reshape(-1, 3).mean(0)
+        # Magenta-red stone (B≈G). Beige sand and orange skin have G>>B.
+        porphyry_hue = (
+            float(crop_mean[0]) > float(crop_mean[1]) + 8
+            and float(crop_mean[0]) > float(crop_mean[2]) + 8
+            and float(crop_mean[2]) >= float(crop_mean[1]) - 6
+            and abs(float(crop_mean[1]) - float(crop_mean[2])) <= 16
+        )
+        if 0.20 <= inner_val <= 0.70 and porphyry_hue:
+            stats = _scene_stats(photo_path, photo_id)
+            if stats is not None:
+                scene_gold, scene_gray, scene_color, _ssand, scene_cool = stats
+                if (
+                    scene_color >= 0.70
+                    and scene_gray < 0.22
+                    and scene_gold < 0.08
+                    and scene_cool < 0.12
+                ):
+                    scene_mean = _scene_mean_rgb(photo_path, photo_id)
+                    if scene_mean is not None:
+                        dist = float(np.linalg.norm(crop_mean - scene_mean))
+                        # Glossy large boxes sit closer to the wall colour than
+                        # a live face; allow more pink in the crop when so.
+                        if dist <= (28 if float(pink.mean()) >= 0.55 else 42):
+                            return True
+    # Printed movie-poster / cartoon face on a street building: painted cream
+    # paper, title lettering, ink outlines. A person under the sky has cool
+    # surround, not poster paper. Crop-only stays False.
+    if 3.2 <= _edge_strength(core) <= 6.5 and gold_n >= 0.52 and skin_n < 0.32 and _poster_lettering(arr):
+        ring = np.ones((h, w), dtype=bool)
+        ring[
+            int(h * 0.28) : max(int(h * 0.72), int(h * 0.28) + 1),
+            int(w * 0.28) : max(int(w * 0.72), int(w * 0.28) + 1),
+        ] = False
+        surr = arr[ring]
+        sr, sg, sb = surr[:, 0], surr[:, 1], surr[:, 2]
+        schroma = np.maximum(np.maximum(sr, sg), sb) - np.minimum(np.minimum(sr, sg), sb)
+        shsv = np.asarray(Image.fromarray(arr.astype(np.uint8)).convert("HSV"), dtype=np.float32)
+        shue = shsv[:, :, 0][ring] * (360.0 / 255.0)
+        ssat = shsv[:, :, 1][ring] / 255.0
+        sval = shsv[:, :, 2][ring] / 255.0
+        ring_cool = float(((shue >= 80) & (shue <= 260) & (schroma >= 12) & (ssat >= 0.12)).mean())
+        ring_pale = float(((schroma < 28) & (sval >= 0.62)).mean())
+        if ring_cool <= 0.11 and 0.10 <= ring_pale <= 0.28:
+            stats = _scene_stats(photo_path, photo_id)
+            if stats is not None:
+                scene_gold, scene_gray, scene_color, _ssand, scene_cool = stats
+                if (
+                    scene_cool >= 0.20
+                    and scene_gold < 0.05
+                    and scene_gray >= 0.45
+                    and scene_color >= 0.40
+                ):
+                    return True
     return False
 
 

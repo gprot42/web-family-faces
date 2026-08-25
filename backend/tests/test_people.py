@@ -1150,6 +1150,94 @@ def test_inherit_mega_leftover_names_faces_that_match_manual_person(tmp_path, mo
     assert leftover >= 1
 
 
+def test_match_unknown_does_not_inherit_unlike_small_cluster_leftovers(tmp_path, monkeypatch):
+    """One named face in a mixed group must not stamp cartoons and guests as that person."""
+    _setup(tmp_path, monkeypatch)
+    crops = tmp_path / "crops"
+    crops.mkdir()
+    monkeypatch.setattr(config, "CROP_DIR", crops)
+    person = create_person("Darren Cole")
+    darren = embedding_to_bytes(l2_normalize(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)))
+    other = embedding_to_bytes(l2_normalize(np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)))
+    conn = connect()
+    conn.execute("INSERT INTO clusters (status, created_at) VALUES ('named', ?)", (now_iso(),))
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/album/a.jpg", "a", 100, 100, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, person_id, assigned_how, cluster_id, created_at)
+           VALUES (1,0,0,10,10,0.9,'ok',?,?, 'manual', 1, ?)""",
+        (darren, person["id"], now_iso()),
+    )
+    for i, emb in enumerate((other, other, other), start=2):
+        conn.execute(
+            "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+            (f"/album/p{i}.jpg", f"h{i}", 100, 100, now_iso()),
+        )
+        conn.execute(
+            """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, cluster_id, created_at)
+               VALUES (?,0,0,10,10,0.9,'ok',?,1,?)""",
+            (i, emb, now_iso()),
+        )
+    conn.commit()
+    conn.close()
+    match_unknown()
+    conn = connect()
+    named = conn.execute(
+        "SELECT COUNT(*) AS n FROM faces WHERE person_id = ?", (person["id"],)
+    ).fetchone()["n"]
+    leftover = conn.execute(
+        "SELECT COUNT(*) AS n FROM faces WHERE cluster_id = 1 AND person_id IS NULL"
+    ).fetchone()["n"]
+    conn.close()
+    assert named == 1
+    assert leftover == 3
+
+
+def test_revoke_unmatched_auto_names_clears_inherited_lookalikes(tmp_path, monkeypatch):
+    from photosort.match import revoke_unmatched_auto_names
+
+    _setup(tmp_path, monkeypatch)
+    crops = tmp_path / "crops"
+    crops.mkdir()
+    monkeypatch.setattr(config, "CROP_DIR", crops)
+    person = create_person("Darren Cole")
+    darren = embedding_to_bytes(l2_normalize(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)))
+    other = embedding_to_bytes(l2_normalize(np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)))
+    conn = connect()
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/a.jpg", "a", 100, 100, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, person_id, assigned_how, created_at)
+           VALUES (1,0,0,10,10,0.9,'ok',?,?, 'manual', ?)""",
+        (darren, person["id"], now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, person_id, assigned_how, created_at)
+           VALUES (1,20,0,30,10,0.9,'ok',?,?, 'auto', ?)""",
+        (other, person["id"], now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, person_id, assigned_how, created_at)
+           VALUES (1,40,0,50,10,0.9,'ok',?,?, 'auto', ?)""",
+        (darren, person["id"], now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    dropped = revoke_unmatched_auto_names()
+    assert 2 in dropped
+    assert 3 not in dropped
+    conn = connect()
+    rows = {r["id"]: r for r in conn.execute("SELECT id, person_id, assigned_how FROM faces")}
+    conn.close()
+    assert rows[1]["assigned_how"] == "manual"
+    assert rows[2]["person_id"] is None
+    assert rows[3]["person_id"] == person["id"]
+
+
 def test_revoke_cluster_names_keeps_manual(tmp_path, monkeypatch):
     conn = _setup(tmp_path, monkeypatch)
     conn.execute("INSERT INTO clusters (status, created_at) VALUES ('unknown', ?)", (now_iso(),))
@@ -3860,6 +3948,67 @@ def test_suppress_like_junk_keeps_a_skin_crop_even_if_embeddings_match(tmp_path,
     assert extra == 0
     assert row["assigned_how"] is None
     assert row["quality"] == "ok"
+
+
+def test_suppress_like_junk_hides_similar_limestone_in_a_museum(tmp_path, monkeypatch):
+    """After Not a person on one stele, a matching stone crop in a museum photo is hidden."""
+    from PIL import Image
+    from photosort import config, faces as faces_mod, match as match_mod
+
+    _setup(tmp_path, monkeypatch)
+    crops = tmp_path / "crops"
+    thumbs = tmp_path / "thumbs"
+    crops.mkdir()
+    thumbs.mkdir()
+    monkeypatch.setattr(config, "CROP_DIR", crops)
+    monkeypatch.setattr(config, "THUMB_DIR", thumbs)
+    monkeypatch.setattr(faces_mod, "THUMB_DIR", thumbs)
+    monkeypatch.setattr(match_mod, "connect", connect)
+    rng = np.random.default_rng(1)
+    crop = np.clip(
+        np.array([122, 108, 92], dtype=np.float32) + rng.normal(0, 5, (80, 80, 3)),
+        0,
+        255,
+    ).astype(np.uint8)
+    for y in range(0, 80, 3):
+        crop[y] = (102, 92, 78)
+    Image.fromarray(crop).save(crops / "2.jpg")
+    scene = np.full((120, 200, 3), (120, 118, 116), dtype=np.uint8)
+    scene[15:105, 50:149] = (122, 108, 92)
+    museum = tmp_path / "museum.png"
+    museum2 = tmp_path / "museum-2.png"
+    Image.fromarray(scene).save(museum)
+    Image.fromarray(scene).save(museum2)
+    Image.fromarray(scene).save(thumbs / "2.jpg")
+    vec = embedding_to_bytes(l2_normalize(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)))
+    conn = connect()
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        (str(museum), "m1", 200, 120, now_iso()),
+    )
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        (str(museum2), "m2", 200, 120, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, assigned_how, created_at)
+           VALUES (1,0,0,10,10,0.9,'unidentifiable',?,'junk',?)""",
+        (vec, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, embedding, created_at)
+           VALUES (2,0,0,10,10,0.9,'ok',?,?)""",
+        (vec, now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    extra = suppress_like_junk(threshold=0.5)
+    conn = connect()
+    row = conn.execute("SELECT assigned_how, quality FROM faces WHERE id = 2").fetchone()
+    conn.close()
+    assert extra == 1
+    assert row["assigned_how"] == "junk"
+    assert row["quality"] == "unidentifiable"
 
 
 def test_junk_cluster_http_does_not_recluster(tmp_path, monkeypatch):
