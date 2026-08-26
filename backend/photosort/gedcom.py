@@ -193,9 +193,31 @@ def parse_gedcom(text: str) -> dict[str, Any]:
                 "marriage": _event(_child(rec, "MARR")),
             }
 
+    _link_family_pointers(people, families)
     if not people:
         raise GedcomError("That file has no people in it.")
     return {"source": source, "people": people, "families": families}
+
+
+def _append_unique(items: list[str], value: str) -> None:
+    if value and value not in items:
+        items.append(value)
+
+
+def _link_family_pointers(people: dict[str, dict[str, Any]], families: dict[str, dict[str, Any]]) -> None:
+    """Fill FAMC/FAMS from FAM records. Some exports only write HUSB/WIFE/CHIL."""
+    for fam in families.values():
+        fid = fam.get("id") or ""
+        if not fid:
+            continue
+        for pid in (fam.get("husband"), fam.get("wife")):
+            person = people.get(pid or "")
+            if person:
+                _append_unique(person["fams"], fid)
+        for cid in fam.get("children") or []:
+            person = people.get(cid or "")
+            if person:
+                _append_unique(person["famc"], fid)
 
 
 def _brief(person: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -257,7 +279,12 @@ def _catalog_hit(person: dict[str, Any], index: dict[str, dict[str, Any]]) -> di
     return None
 
 
-def person_detail(tree: dict[str, Any], person_id: str, catalog: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+def person_detail(
+    tree: dict[str, Any],
+    person_id: str,
+    catalog: dict[str, dict[str, Any]] | None = None,
+    entire: bool = False,
+) -> dict[str, Any]:
     people = tree.get("people") or {}
     families = tree.get("families") or {}
     person = people.get(person_id)
@@ -300,7 +327,7 @@ def person_detail(tree: dict[str, Any], person_id: str, catalog: dict[str, dict[
         "spouses": spouses,
         "children": children,
         "catalog": _catalog_hit(person, catalog),
-        "chart": family_chart(tree, person_id, catalog),
+        "chart": family_chart(tree, person_id, catalog, entire=entire),
     }
     return payload
 
@@ -317,7 +344,76 @@ def _ancestor_role(generation: int) -> str:
     return "ancestors"
 
 
-def family_chart(tree: dict[str, Any], person_id: str, catalog: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+def _person_generations(tree: dict[str, Any], focus_id: str) -> dict[str, int]:
+    """Generation of each person relative to focus: 0 = same generation, -1 = parents."""
+    people = tree.get("people") or {}
+    families = tree.get("families") or {}
+    gen: dict[str, int] = {focus_id: 0}
+    queue = [focus_id]
+    i = 0
+    while i < len(queue):
+        pid = queue[i]
+        i += 1
+        g = gen[pid]
+        person = people.get(pid) or {}
+
+        def offer(nid: str | None, ng: int) -> None:
+            if not nid or nid not in people or nid in gen:
+                return
+            gen[nid] = ng
+            queue.append(nid)
+
+        for fid in person.get("famc") or []:
+            fam = families.get(fid) or {}
+            for parent in (fam.get("husband"), fam.get("wife")):
+                offer(parent, g - 1)
+            for kid in fam.get("children") or []:
+                offer(kid, g)
+        for fid in person.get("fams") or []:
+            fam = families.get(fid) or {}
+            other = fam.get("wife") if fam.get("husband") == pid else fam.get("husband")
+            offer(other, g)
+            for kid in fam.get("children") or []:
+                offer(kid, g + 1)
+    for _ in range(len(families) + 2):
+        changed = False
+        for fam in families.values():
+            parts = [pid for pid in (fam.get("husband"), fam.get("wife")) if pid in gen]
+            if len(parts) == 2 and gen[parts[0]] != gen[parts[1]]:
+                g = gen[parts[0]] if abs(gen[parts[0]]) <= abs(gen[parts[1]]) else gen[parts[1]]
+                if gen[parts[0]] != g or gen[parts[1]] != g:
+                    gen[parts[0]] = g
+                    gen[parts[1]] = g
+                    changed = True
+            if parts:
+                pg = min(gen[pid] for pid in parts)
+                for kid in fam.get("children") or []:
+                    if kid in gen and gen[kid] != pg + 1:
+                        gen[kid] = pg + 1
+                        changed = True
+                    elif kid in people and kid not in gen:
+                        gen[kid] = pg + 1
+                        changed = True
+        if not changed:
+            break
+    focus_year = ((people.get(focus_id) or {}).get("birth") or {}).get("year")
+    for pid, person in people.items():
+        if pid in gen:
+            continue
+        year = (person.get("birth") or {}).get("year")
+        if focus_year and year:
+            gen[pid] = int(round((int(year) - int(focus_year)) / 28.0))
+        else:
+            gen[pid] = 0
+    return gen
+
+
+def family_chart(
+    tree: dict[str, Any],
+    person_id: str,
+    catalog: dict[str, dict[str, Any]] | None = None,
+    entire: bool = False,
+) -> dict[str, Any]:
     """Nodes and family unions around one person, for drawing a tree."""
     people = tree.get("people") or {}
     families = tree.get("families") or {}
@@ -358,9 +454,35 @@ def family_chart(tree: dict[str, Any], person_id: str, catalog: dict[str, dict[s
             "children": kids,
             "marriage": fam.get("marriage"),
         }
-        if generation:
+        if generation is not None:
             item["generation"] = generation
         unions.append(item)
+
+    if entire:
+        gens = _person_generations(tree, person_id)
+        for pid, g in gens.items():
+            add_person(pid)
+            if pid in nodes:
+                nodes[pid]["generation"] = g
+        for fid, fam in families.items():
+            parts = [pid for pid in (fam.get("husband"), fam.get("wife")) if pid]
+            couple = [gens[pid] for pid in parts if pid in gens]
+            g = min(couple) if couple else 0
+            if person_id in parts:
+                role = "own"
+            elif g < 0:
+                role = _ancestor_role(-g)
+            elif g > 0:
+                role = "descendants"
+            else:
+                role = "kin"
+            add_union(fid, role, g)
+        return {
+            "focus": person_id,
+            "scope": "all",
+            "nodes": list(nodes.values()),
+            "unions": unions,
+        }
 
     add_person(person_id)
     seen_walk: set[str] = set()
@@ -497,8 +619,8 @@ def summary() -> dict[str, Any]:
     return {k: v for k, v in loaded.items() if k != "_tree"}
 
 
-def get_person(person_id: str) -> dict[str, Any]:
+def get_person(person_id: str, entire: bool = False) -> dict[str, Any]:
     loaded = load_tree()
     if not loaded:
         raise FileNotFoundError("No GEDCOM file is loaded.")
-    return person_detail(loaded["_tree"], xref_id(person_id))
+    return person_detail(loaded["_tree"], xref_id(person_id), entire=entire)

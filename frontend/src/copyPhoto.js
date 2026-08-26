@@ -1,5 +1,20 @@
 import { readFullscreenLabels } from "./nametag.js";
 
+const FACE_TONES = ["#c45a32", "#1f8a7a", "#d4a017", "#3d7ec9", "#c44d7a", "#4a8f3a", "#7b5ea7", "#e07a2f"];
+
+function visibleFaces(faces) {
+  return [...(faces || [])]
+    .filter((f) => f && f.assigned_how !== "junk")
+    .sort((a, b) => (Number(a.x1) || 0) - (Number(b.x1) || 0) || (Number(a.id) || 0) - (Number(b.id) || 0));
+}
+
+function namedLabel(face) {
+  const name = String(face?.person_name || "").trim();
+  if (name && name !== "unnamed" && !name.startsWith("Unknown name of person")) return name;
+  if (face?.person_id) return name || "unnamed";
+  return "";
+}
+
 const COPY_LONG_EDGE = 2560;
 const TAG_EDGE = 8;
 
@@ -188,19 +203,98 @@ function canvasToPng(canvas) {
   });
 }
 
-export async function imageBlobForClipboard(photo) {
+export function tagsFromFaces(photo, imgW, imgH) {
+  const w = Number(imgW) || Number(photo?.width) || 0;
+  const h = Number(imgH) || Number(photo?.height) || 0;
+  if (!w || !h) return null;
+  const faces = visibleFaces(photo?.faces || []).filter((face) => namedLabel(face));
+  const items = [];
+  faces.forEach((face, i) => {
+    const label = namedLabel(face);
+    const n = i + 1;
+    const x1 = Number(face.x1) || 0;
+    const y1 = Number(face.y1) || 0;
+    const x2 = Number(face.x2) || 0;
+    const y2 = Number(face.y2) || 0;
+    const leftPct = face.tag_x != null && Number.isFinite(Number(face.tag_x)) ? Number(face.tag_x) : ((x1 + x2) / 2 / w) * 100;
+    const topPct =
+      face.tag_y != null && Number.isFinite(Number(face.tag_y))
+        ? Number(face.tag_y)
+        : Math.max(2.5, (y1 / h) * 100 - 4);
+    const fontSize = Math.max(12, Math.min(22, w / 55));
+    const tagH = fontSize + 10;
+    const nW = tagH - 6;
+    const tagW = Math.min(w * 0.42, Math.max(64, String(label).length * fontSize * 0.62 + nW + 20));
+    items.push({
+      x: (leftPct / 100) * w - tagW / 2,
+      y: (topPct / 100) * h - tagH / 2,
+      w: tagW,
+      h: tagH,
+      text: `${n} ${label}`,
+      label,
+      n: String(n),
+      nX: 4,
+      nY: 3,
+      nW,
+      nH: nW,
+      bg: FACE_TONES[i % FACE_TONES.length],
+      fg: "#fffdfa",
+      border: "transparent",
+      fontSize,
+      fontWeight: "650",
+      fontFamily: "system-ui, sans-serif",
+    });
+  });
+  if (!items.length) return null;
+  return { imgW: w, imgH: h, items };
+}
+
+export function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename || "photo.jpg";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export async function imageBlobForClipboard(photo, { labels } = {}) {
   const shown = displayedPhotoImage(photo);
-  const labelsOn = readFullscreenLabels();
-  const tags = labelsOn && shown ? readVisibleNameTags(shown) : null;
-  if (shown) return drawToClipboardCanvas(shown, photo.rotation, tags);
-  const url = photo.file_url || photo.thumb_url || `/api/photos/${photo.id}/file`;
+  const wantLabels = labels === undefined ? readFullscreenLabels() : Boolean(labels);
+  let tags = wantLabels && shown ? readVisibleNameTags(shown) : null;
+  if (wantLabels && !tags) {
+    const w = shown?.naturalWidth || Number(photo?.width) || 0;
+    const h = shown?.naturalHeight || Number(photo?.height) || 0;
+    tags = tagsFromFaces(photo, w, h);
+  }
+  if (shown) return drawToClipboardCanvas(shown, photo.rotation, wantLabels ? tags : null);
+  const url = photo.file_url || photo.view_url || photo.thumb_url || `/api/photos/${photo.id}/file`;
   const res = await fetch(url);
   if (!res.ok) throw new Error("Could not read this photo.");
   const blob = await res.blob();
   const bitmap = await createImageBitmap(blob);
   try {
-    return await drawToClipboardCanvas(bitmap, photo.rotation, null);
+    const drawn = wantLabels ? tagsFromFaces(photo, bitmap.width, bitmap.height) : null;
+    return await drawToClipboardCanvas(bitmap, photo.rotation, drawn);
   } finally {
     bitmap.close?.();
   }
+}
+
+export async function downloadPhotoFile(photo, { labels = false } = {}) {
+  const base = String(photo?.filename || `photo-${photo?.id || "file"}`).replace(/[/\\]+/g, "_");
+  if (!labels) {
+    const url = photo.file_url || photo.view_url || `/api/photos/${photo.id}/file`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("Could not read this photo.");
+    const blob = await res.blob();
+    const name = photo.file_url ? base : base.replace(/\.[^.]+$/, "") + ".jpg";
+    saveBlob(blob, name);
+    return;
+  }
+  const png = await imageBlobForClipboard(photo, { labels: true });
+  const stem = base.replace(/\.[^.]+$/, "");
+  saveBlob(png, `${stem}-labeled.png`);
 }

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import { ALL_FOLDERS_EVENT, addedFolderPaths, folderBreadcrumb, folderDisplayName, folderIsIndexed, folderLabel, FOLDER_TITLE_MAX, isFolderStarred, normalizeFolderPath, photoInFolders, readFolderTitles, readImportFolders, readStarredFolders, setFolderTitle, toggleStarredFolder, writeFolderTitles, writeImportFolders, writeStarredFolders } from "../folders.js";
+import { ALL_FOLDERS_EVENT, addedFolderPaths, folderBreadcrumb, folderDisplayName, folderIsIndexed, folderLabel, FOLDER_TITLE_MAX, isFolderStarred, normalizeFolderPath, photoAlbumName, photoInFolders, readFolderTitles, readImportFolders, readStarredFolders, setFolderTitle, toggleStarredFolder, writeFolderTitles, writeImportFolders, writeStarredFolders } from "../folders.js";
 import { PHOTO_CHANGE_EVENT } from "../photoMenu.js";
 import JobGauge from "../components/JobGauge.jsx";
 import { beginPlay } from "../play.js";
@@ -1573,7 +1573,7 @@ function AlbumBlock({ folder, label, photos, meta, current, onSelect, resetting,
                 overlayTags={labelsOn}
               />
               <div className="photo-caption">
-                {p.taken_at ? p.taken_at.slice(0, 10) : p.filename}
+                {[p.taken_at ? p.taken_at.slice(0, 10) : null, p.filename].filter(Boolean).join(" · ")}
                 {p.comment ? <div className="photo-comment-snip">{p.comment}</div> : null}
               </div>
             </div>
@@ -1725,7 +1725,7 @@ function PhotoByPerson({ personFilter }) {
       {sections.length === 0 ? (
         <p className="hint">
           {!people.length
-            ? "Name someone on To name first. View by person then lists each person separately."
+            ? "Name someone on Clusters to name first. View by person then lists each person separately."
             : personFilter
               ? "Loading photos…"
               : "Pick a person to see their photos."}
@@ -1774,7 +1774,7 @@ function PhotoByPerson({ personFilter }) {
                     }}
                   />
                   <div className="meta">
-                    {p.filename}
+                    {[p.filename, photoAlbumName(p.path)].filter(Boolean).join(" · ")}
                     {p.comment ? <div className="photo-comment-snip">{p.comment}</div> : null}
                   </div>
                 </div>

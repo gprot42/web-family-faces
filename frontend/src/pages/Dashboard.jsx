@@ -196,7 +196,7 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
           <p className="eyebrow">Summary</p>
           <h1>Who is in this folder</h1>
           <p className="lede">
-            Choose albums, find known faces, then name each group. Photos stay where they are.
+            Choose albums, find known faces, then name each cluster. Photos stay where they are.
           </p>
         </div>
       </div>
@@ -337,7 +337,7 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
             onClick={resumeLatest}
             {...tip(
               failed.type === "identify"
-                ? "Continue matching unnamed groups to the catalog, then look the rest up with Grok."
+                ? "Continue matching unnamed clusters to the catalog, then look the rest up with Grok."
                 : "Continue from photos already in the catalog. Already indexed files are not read again.",
             )}
           >
@@ -350,14 +350,14 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
         <div
           className="card stat"
           {...tip(
-            "How many people you have identified and stored in Faces in DB View. You typed a name, confirmed a lookup, or chose Unknown name of person. All of them are in the local database, not written onto the photos. Named vs still unnamed is only whether they have a real name yet.",
+            "People stored in Faces in DB View — not unnamed faces. Named means you typed a name or confirmed a lookup. Unknown name of person means you saved a lookalike cluster as a person without a real name yet. Open Faces in DB View, choose All, and look under Unknown name of person. This is not Clusters to name.",
           )}
         >
           <div className="k">People in the database</div>
           <div className="v">{stats ? num(stats.people) : "—"}</div>
           <div className="s">
             {stats
-              ? `${num(stats.people_named)} named · ${num(stats.people_unknown)} still unnamed`
+              ? `${num(stats.people_named)} named · ${num(stats.people_unknown)} Unknown name of person`
               : "identified by you and stored locally"}
           </div>
         </div>
@@ -378,16 +378,15 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
         <div
           className="card stat"
           {...tip(
-            "People marked Unknown, plus faces waiting on the To name page.",
+            "Unnamed faces still waiting. The smaller number is cluster groups: faces that look like the same person, listed on Clusters to name so you can name many at once.",
           )}
         >
-          <div className="k">Still to name</div>
-          <div className="v">
-            {stats ? num((stats.people_unknown ?? 0) + (stats.faces_unknown ?? 0)) : "—"}
-          </div>
+          <div className="k">Faces to name</div>
+          <div className="v">{stats ? num(stats.faces_unknown) : "—"}</div>
           <div className="s">
-            {`${num(stats?.people_unknown)} people without a name`}
-            {stats?.faces_unknown ? <><br />{num(stats.faces_unknown)} faces on To name</> : null}
+            {stats?.unknown_clusters
+              ? `${num(stats.unknown_clusters)} cluster group${stats.unknown_clusters === 1 ? "" : "s"}`
+              : "Unnamed faces waiting"}
           </div>
         </div>
         <div
@@ -411,12 +410,10 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
           type="button"
           className="secondary"
           onClick={() => nav("/to-name")}
-          {...tip("Groups of unnamed faces. Name a group once instead of photo by photo.")}
+          {...tip("Clusters of unnamed faces that look like one person. Name a cluster once instead of photo by photo.")}
         >
-          To name
-          {(stats?.unknown_clusters || stats?.faces_unknown)
-            ? ` · ${stats.unknown_clusters || stats.faces_unknown}`
-            : ""}
+          Go to Clusters to name
+          {stats?.unknown_clusters ? ` · ${num(stats.unknown_clusters)}` : ""}
         </button>
         <button
           type="button"
@@ -424,16 +421,16 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
           onClick={() => nav("/review")}
           {...tip("Faces the matcher named. Keep the right ones. Reject the rest.")}
         >
-          Check names
+          Go to Check names
           {stats?.faces_auto ? ` · ${stats.faces_auto}` : ""}
         </button>
         <button
           type="button"
           className="secondary"
-          onClick={() => nav("/people")}
-          {...tip("People you have identified, stored in the local database.")}
+          onClick={() => nav("/people?group=all")}
+          {...tip("All people in the catalog, including those saved as Unknown name of person.")}
         >
-          Faces in DB View
+          Go to Faces in DB View
         </button>
       </div>
 

@@ -7,10 +7,12 @@ import { faceWhen } from "../ages.js";
 import ViewSwitch from "../components/ViewSwitch.jsx";
 import PersonPicker from "../components/PersonPicker.jsx";
 import FamousLookup from "../components/FamousLookup.jsx";
+import NameSuggest from "../components/NameSuggest.jsx";
 import { PhotoTagRow } from "../components/PhotoTags.jsx";
 import { emitCatalogChange, PHOTO_CHANGE_EVENT, showPhotoMenu } from "../photoMenu.js";
 import { patchCachedPerson } from "../peopleCache.js";
 import { clearPersonPos, personShotHash, readPersonPos, writePersonPos } from "../albumPos.js";
+import { completeUniqueFirstName, matchPeople, uniqueCatalogPerson } from "../nameSuggest.js";
 
 const PERSON_CATEGORIES = [
   { id: "", label: "Not set" },
@@ -31,6 +33,7 @@ export default function PersonDetail() {
   const [notesState, setNotesState] = useState("idle");
   const [nickState, setNickState] = useState("idle");
   const [saveState, setSaveState] = useState("idle");
+  const [namePick, setNamePick] = useState(-1);
   const [err, setErr] = useState("");
   const loadGen = useRef(0);
 
@@ -39,7 +42,8 @@ export default function PersonDetail() {
     const p = await api.person(id);
     if (gen !== loadGen.current) return p;
     setPerson(p);
-    setName(p.name);
+    setName(p.unknown_name ? "" : p.name);
+    setNamePick(-1);
     setNickname(p.nickname || "");
     setNotes(p.notes || "");
     setNotesState("idle");
@@ -67,12 +71,52 @@ export default function PersonDetail() {
     if (next.nickname !== undefined) setNickname(next.nickname || "");
   }
 
+  function catalogHits(query = name) {
+    return matchPeople(query, people, { excludeId: id });
+  }
+
+  function exactCatalogPerson(query = name) {
+    const q = String(query || "").trim().toLowerCase();
+    if (!q) return null;
+    return (
+      people.find((p) => !p.unknown_name && String(p.name || "").trim().toLowerCase() === q) || null
+    );
+  }
+
+  function catalogPerson(query = name, { useHighlight = false } = {}) {
+    const hits = catalogHits(query);
+    if (useHighlight && namePick >= 0 && hits[namePick]) return hits[namePick];
+    return uniqueCatalogPerson(query, people, { excludeId: id }) || exactCatalogPerson(query);
+  }
+
+  async function joinCatalog(target) {
+    if (!target || String(target.id) === String(id) || saveState === "saving") return;
+    setName(target.name);
+    setNamePick(-1);
+    setErr("");
+    setSaveState("saving");
+    try {
+      await api.mergePerson(target.id, id);
+      emitCatalogChange();
+      nav(`/people/${target.id}`);
+    } catch (ex) {
+      setSaveState("idle");
+      setErr(ex.message || "Could not join this with that person.");
+      await load();
+    }
+  }
+
   async function saveName(event) {
     event?.preventDefault();
     event?.stopPropagation();
     const typed = event?.target && "value" in event.target ? event.target.value : name;
     const next = String(typed ?? name).trim();
     if (!next || saveState === "saving") return;
+    const picked = catalogPerson(next, { useHighlight: namePick >= 0 });
+    if (picked) {
+      await joinCatalog(picked);
+      return;
+    }
     setErr("");
     setSaveState("saving");
     setPerson((cur) => (cur ? { ...cur, name: next, unknown_name: false } : cur));
@@ -169,9 +213,15 @@ export default function PersonDetail() {
   useEffect(() => {
     function onChange(event) {
       const next = event.detail;
-      if (!next?.id || next.tags === undefined) return;
+      if (!next?.id) return;
       setPerson((cur) => {
         if (!cur) return cur;
+        if (next.hidden) {
+          const shots = (cur.shots || []).filter((shot) => Number(shot.photo_id) !== Number(next.id));
+          const faces = (cur.faces || []).filter((face) => Number(face.photo_id) !== Number(next.id));
+          return { ...cur, shots, faces, face_count: shots.length };
+        }
+        if (next.tags === undefined) return cur;
         const shots = (cur.shots || []).map((shot) =>
           Number(shot.photo_id) === Number(next.id) ? { ...shot, tags: next.tags || [] } : shot,
         );
@@ -212,6 +262,8 @@ export default function PersonDetail() {
   if (!person) return <p className="hint">Loading…</p>;
 
   const cover = person.cover_url || shots[0]?.crop_url || shots[0]?.thumb_url;
+  const nameHits = catalogHits();
+  const highlightedCatalog = catalogPerson(name, { useHighlight: namePick >= 0 });
 
   return (
     <div className="person-page">
@@ -229,69 +281,136 @@ export default function PersonDetail() {
               {shots.length} photo{shots.length === 1 ? "" : "s"} with this name
             </p>
           </div>
-          <div className="row person-sticky-actions">
-            <button
-              type="button"
-              className="secondary"
-              disabled={!shots.length}
-              onClick={() =>
-                beginPlay(nav, shots, {
-                  kind: "person",
-                  title: person.unknown_name ? "Name unknown" : person.name,
-                  personId: person.id,
-                  from: `/people/${person.id}`,
-                })
-              }
-              {...tip("Play this person's photos in date order, names on. Fullscreen.")}
-            >
-              Play person
-            </button>
-            {shots.length ? (
+          <ViewSwitch photoId={shots[0]?.photo_id} personId={person.id} />
+        </div>
+        <div className="row person-sticky-actions">
+          <button
+            type="button"
+            className="secondary"
+            disabled={!shots.length}
+            onClick={() =>
+              beginPlay(nav, shots, {
+                kind: "person",
+                title: person.unknown_name ? "Name unknown" : person.name,
+                personId: person.id,
+                from: `/people/${person.id}`,
+              })
+            }
+            {...tip("Play this person's photos in date order, names on. Fullscreen.")}
+          >
+            Play person
+          </button>
+          {shots.length ? (
+            <span className="person-download" role="group" aria-label="Download photos">
               <a
                 className="btn secondary"
                 href={`/api/people/${person.id}/photos.zip`}
-                {...tip("Save a zip of every photo this person is named in. Album files stay where they are.")}
+                {...tip("Save a zip of these pictures. Uses the original when it is on disk, otherwise the local preview. Album files stay where they are.")}
               >
                 Download photos
               </a>
-            ) : (
-              <button type="button" className="secondary" disabled>
-                Download photos
-              </button>
-            )}
-            <Link
-              className="btn secondary"
-              to={`/tree?person=${person.id}`}
-              {...tip("Open this person on the Family tree page, centered among their relatives.")}
-            >
-              Show in family tree
-            </Link>
-            <ViewSwitch photoId={shots[0]?.photo_id} personId={person.id} />
-          </div>
+              <a
+                className="btn secondary"
+                href={`/api/people/${person.id}/photos.zip?labels=1`}
+                {...tip("Save a zip of copies with name tags drawn on. Originals are not changed.")}
+              >
+                With labels
+              </a>
+            </span>
+          ) : (
+            <button type="button" className="secondary" disabled>
+              Download photos
+            </button>
+          )}
+          <Link
+            className="btn secondary"
+            to={`/tree?person=${person.id}`}
+            {...tip("Open this person on the Family tree page, centered among their relatives.")}
+          >
+            Show in family tree
+          </Link>
         </div>
         <form className="row person-sticky-name" onSubmit={saveName}>
-          <input
-            className="grow"
-            value={name}
-            aria-label="Person name"
-            disabled={saveState === "saving"}
-            onChange={(e) => {
-              setName(e.target.value);
-              if (saveState === "saved") setSaveState("idle");
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                e.stopPropagation();
-                saveName(e);
-              }
-            }}
-          />
+          <div className="person-name-field">
+            <input
+              className="grow"
+              value={name}
+              placeholder="Type their name"
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+              aria-label="Person name"
+              aria-autocomplete="list"
+              aria-expanded={nameHits.length > 0}
+              disabled={saveState === "saving"}
+              onChange={(e) => {
+                const value = e.target.value;
+                const shrinking = value.length < String(name || "").length;
+                const unique = shrinking ? null : completeUniqueFirstName(value, people, { excludeId: id });
+                setName(unique ? unique.name : value);
+                setNamePick(-1);
+                if (saveState === "saved") setSaveState("idle");
+              }}
+              onKeyDown={(e) => {
+                const hits = catalogHits();
+                if (e.key === "ArrowDown" && hits.length) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setNamePick((cur) => (cur < 0 ? 0 : Math.min(hits.length - 1, cur + 1)));
+                  return;
+                }
+                if (e.key === "ArrowUp" && hits.length) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setNamePick((cur) => (cur <= 0 ? 0 : cur - 1));
+                  return;
+                }
+                if (e.key === "Tab" && hits.length) {
+                  const person = catalogPerson(name, { useHighlight: true }) || hits[0];
+                  if (person) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setName(person.name);
+                    setNamePick(-1);
+                  }
+                  return;
+                }
+                if (e.key === "Escape" && hits.length) {
+                  e.preventDefault();
+                  setNamePick(-1);
+                  return;
+                }
+                const hitNum = Number(e.key);
+                if (hitNum >= 1 && hitNum <= hits.length) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  joinCatalog(hits[hitNum - 1]);
+                  return;
+                }
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  saveName(e);
+                }
+              }}
+            />
+            <NameSuggest
+              query={name}
+              people={people}
+              excludeId={id}
+              activeIndex={namePick}
+              onPick={joinCatalog}
+            />
+          </div>
           <button
             type="submit"
             className={saveState === "saved" ? "saved" : undefined}
             disabled={!name.trim() || saveState === "saving"}
-            {...tip("Change the displayed name. Photo files are not edited. Enter saves.")}
+            {...tip(
+              highlightedCatalog
+                ? `Join this with ${highlightedCatalog.name} from the catalog. Photo files are not edited.`
+                : "Change the displayed name. If they are already in the catalog, this identity joins them. Photo files are not edited. Enter saves.",
+            )}
           >
             {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : "Save name"}
           </button>

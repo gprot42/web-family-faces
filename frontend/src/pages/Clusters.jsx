@@ -541,7 +541,7 @@ export default function Clusters({ onChange, stats }) {
     try {
       const result = await api.junkCluster(id, faceIds);
       if (!result.cleared) {
-        throw new Error(result.message || "That group was regrouped. Click Not a person again.");
+        throw new Error(result.message || "That cluster was regrouped. Click Not a person again.");
       }
       await refresh();
       onChange?.();
@@ -567,7 +567,7 @@ export default function Clusters({ onChange, stats }) {
     try {
       const result = await api.unknownCluster(id, category, faceIds);
       if (!result.assigned) {
-        throw new Error(result.message || "That group was regrouped. Click Unknown again.");
+        throw new Error(result.message || "That cluster was regrouped. Click Unknown again.");
       }
       await refresh();
       onChange?.();
@@ -635,11 +635,11 @@ export default function Clusters({ onChange, stats }) {
     <div className="to-name-page">
       {identifyAsk ? (
         <ConfirmAsk
-          title="Identify all unnamed groups?"
+          title="Identify all unnamed clusters?"
           body={
             lookupOk
-              ? "Match groups to people already in the catalog, then look remaining groups up. Auto names go to Check names. Mixed or huge groups are skipped. Files stay where they are."
-              : "Match groups to people already in the catalog. Add an xAI key or SuperGrok in Settings to also look remaining groups up. Auto names go to Check names. Files stay where they are."
+              ? "Match clusters to people already in the catalog, then look remaining clusters up. Auto names go to Check names. Mixed or huge clusters are skipped. Files stay where they are."
+              : "Match clusters to people already in the catalog. Add an xAI key or SuperGrok in Settings to also look remaining clusters up. Auto names go to Check names. Files stay where they are."
           }
           onCancel={() => setIdentifyAsk(false)}
           onConfirm={startIdentify}
@@ -654,13 +654,19 @@ export default function Clusters({ onChange, stats }) {
           <div className={`to-name-sticky${identifying || identifyPaused ? " busy" : ""}`}>
             <div className="page-head">
               <div>
-                <p className="eyebrow">Inbox{groupTotal ? ` · ${groupTotal.toLocaleString()} groups` : ""}</p>
-                <h1>Faces to name</h1>
+                <p className="eyebrow">
+                  Inbox
+                  {groupTotal ? ` · ${groupTotal.toLocaleString()} clusters` : ""}
+                  {stats?.faces_unknown
+                    ? ` · ${Number(stats.faces_unknown).toLocaleString()} faces`
+                    : ""}
+                </p>
+                <h1>Clusters to name</h1>
                 {identifying || identifyPaused ? null : (
                   <p className="lede">
-                    Each group is faces that look like one person at a similar age. Name the group on the
+                    Each cluster is faces that look like one person at a similar age. Name the cluster on the
                     right. Identify all first matches people already in the catalog, then looks remaining
-                    groups up. AI on a group looks that one up. Catalog matches still go to Check names.
+                    clusters up. AI on a cluster looks that one up. Catalog matches still go to Check names.
                     You can keep naming by hand while it runs. If two people were mixed, click the extra
                     faces on the left.
                   </p>
@@ -674,8 +680,8 @@ export default function Clusters({ onChange, stats }) {
                     onClick={() => setIdentifyAsk(true)}
                     {...tip(
                       lookupOk
-                        ? "Name every unnamed group that looks sure: people already in the catalog first, then AI lookup. Check names still lists auto matches. Mixed or large groups are skipped. Use AI on a group to look that one up."
-                        : "Names groups that match people already in the catalog. Add an xAI key or SuperGrok in Settings to also look remaining groups up.",
+                        ? "Name every unnamed cluster that looks sure: people already in the catalog first, then AI lookup. Check names still lists auto matches. Mixed or large clusters are skipped. Use AI on a cluster to look that one up."
+                        : "Names clusters that match people already in the catalog. Add an xAI key or SuperGrok in Settings to also look remaining clusters up.",
                     )}
                   >
                     Identify all
@@ -694,17 +700,17 @@ export default function Clusters({ onChange, stats }) {
           ) : null}
           {identifyNote ? (
             <div className="save-note" role="status">
-              {identifyNote}. Groups named from the catalog also appear under Check names.
+              {identifyNote}. Clusters named from the catalog also appear under Check names.
             </div>
           ) : null}
           {saved ? (
             <div className="save-note" role="status" aria-live="polite">
-              Saved {saved.name}. {saved.faces} face{saved.faces === 1 ? "" : "s"} in that group
+              Saved {saved.name}. {saved.faces} face{saved.faces === 1 ? "" : "s"} in that cluster
               {saved.also ? ` · ${saved.also} more matched` : ""}.
               {saved.leftover
-                ? ` ${saved.leftover} face${saved.leftover === 1 ? "" : "s"} still unnamed in that group — name or split them below.`
+                ? ` ${saved.leftover} face${saved.leftover === 1 ? "" : "s"} still unnamed in that cluster — name or split them below.`
                 : items.length
-                  ? " Next group is below."
+                  ? " Next cluster is below."
                   : " Nothing left to name here."}
             </div>
           ) : null}
@@ -763,7 +769,7 @@ export default function Clusters({ onChange, stats }) {
             />
             <div className="cluster-or">or click or drag someone already named</div>
             <p className="hint">
-              Applies to the highlighted group
+              Applies to the highlighted cluster
               {items.find((c) => c.id === activeId)
                 ? ` · ${items.find((c) => c.id === activeId).face_count} face${items.find((c) => c.id === activeId).face_count === 1 ? "" : "s"}`
                 : ""}
@@ -781,7 +787,7 @@ export default function Clusters({ onChange, stats }) {
                 onHide={(p) => setHiddenPeople(hidePerson(p.id))}
                 onUnhide={(p) => setHiddenPeople(showPerson(p.id))}
                 onToggleHidden={() => setShowHiddenPeople((on) => !on)}
-                hint="Click to name the highlighted group, or drag onto Name this person."
+                hint="Click to name the highlighted cluster, or drag onto Name this person."
                 onPick={(p) => {
                   const target = items.find((c) => c.id === activeId) || items[0];
                   if (target) assignToPerson(target.id, p, catById[target.id] || "");
@@ -929,12 +935,12 @@ function ClusterCard({
         </div>
         <p className="hint cluster-select-hint">
           {cluster.faces?.length && cluster.face_count > cluster.faces.length
-            ? "Naming applies only to the faces below, not the rest of this group."
+            ? "Naming applies only to the faces below, not the rest of this cluster."
             : canSplit
               ? "Click a face to see the whole photo. Mark any face that is not this person."
               : "Click the face to see the whole photo."}
         </p>
-        <div className="crops" role={canSplit ? "group" : undefined} aria-label={canSplit ? "Faces in this group" : undefined}>
+        <div className="crops" role={canSplit ? "group" : undefined} aria-label={canSplit ? "Faces in this cluster" : undefined}>
           {cluster.faces.map((f) => {
             const selected = picked.includes(f.id);
             const photoTo = f.photo_id ? `/photos/${f.photo_id}` : null;
@@ -966,7 +972,7 @@ function ClusterCard({
                     }}
                     {...tip(
                       selected
-                        ? "This face will leave the group."
+                        ? "This face will leave the cluster."
                         : "Mark if this face is someone else.",
                     )}
                   >
@@ -983,7 +989,7 @@ function ClusterCard({
             className="secondary"
             disabled={!near || !picked.length}
             onClick={() => api.splitCluster(cluster.id, picked).then(onChange)}
-            {...tip("Take the faces you clicked out of this group so you can name them separately.")}
+            {...tip("Take the faces you clicked out of this cluster so you can name them separately.")}
           >
             {picked.length === 1
               ? "Name this face separately"
@@ -1073,8 +1079,8 @@ function ClusterCard({
               disabled={!canSave}
               {...tip(
                 highlightedCatalog
-                  ? `Use ${highlightedCatalog.name} from the catalog for this whole group.`
-                  : "Give this whole group one new name. You will not have to name each photo.",
+                  ? `Use ${highlightedCatalog.name} from the catalog for this whole cluster.`
+                  : "Give this whole cluster one new name. You will not have to name each photo.",
               )}
             >
               <svg viewBox="0 0 16 16" aria-hidden="true">

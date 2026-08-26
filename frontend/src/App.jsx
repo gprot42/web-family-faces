@@ -183,11 +183,11 @@ export default function App() {
           </FolderViewLink>
           <NavLink
             to="/to-name"
-            {...tip("Groups of unnamed faces. Name a whole group at once instead of photo by photo.")}
+            {...tip("Clusters of unnamed faces that look like one person. Name a cluster once instead of photo by photo.")}
           >
-            To name
-            {(stats?.unknown_clusters ?? stats?.faces_unknown) ? (
-              <span className="nav-count">{stats.unknown_clusters ?? stats.faces_unknown}</span>
+            Clusters to name
+            {stats?.unknown_clusters ? (
+              <span className="nav-count">{stats.unknown_clusters}</span>
             ) : null}
           </NavLink>
           <NavLink

@@ -20,6 +20,7 @@ import { emitCatalogChange, emitPhotoChange, PHOTO_CHANGE_EVENT, showPhotoMenu }
 import { clearRematchUndo, readRematchUndo, writeRematchUndo } from "../rematchUndo.js";
 import { peekUndo, popUndo, pushFaceUndo, pushUndo, undoCount } from "../editUndo.js";
 import { folderHashFrom, personIdFrom, personShotHash, readAlbumPos, writeAlbumPos, writePersonPos } from "../albumPos.js";
+import { photoAlbumName } from "../folders.js";
 
 const ZOOM_MIN = 0.25;
 const ZOOM_MAX = 4;
@@ -189,7 +190,6 @@ export default function PhotoDetail() {
   const [toolsDragging, setToolsDragging] = useState(false);
   const stageRef = useRef(null);
   const fullRef = useRef(null);
-  const zoomBarRef = useRef(null);
   const toolsRef = useRef(null);
   const toolsPosNow = useRef(toolsPos);
   const toolsSaved = useRef(toolsPos);
@@ -409,7 +409,13 @@ export default function PhotoDetail() {
     pickingBusyNow.current = false;
     setPickingFace(false);
     setPickingBusy(false);
-    load();
+    setErr("");
+    load().catch((ex) => {
+      setPhoto(null);
+      setErr(ex.message || "Could not open this photo.");
+      setFull(false);
+      exitBrowserFullscreen();
+    });
     setZoom(ZOOM_FIT);
     setPan({ x: 0, y: 0 });
     setUndoRematch(readRematchUndo(id));
@@ -451,6 +457,7 @@ export default function PhotoDetail() {
     }
     if (err === lastLoggedErr.current) return;
     lastLoggedErr.current = err;
+    if (err === "Photo not found") return;
     api.reportError(err, { page: "photo", photo_id: Number(id) || null }).catch(() => {});
   }, [err, id]);
 
@@ -577,40 +584,6 @@ export default function PhotoDetail() {
     document.getElementById(`face-card-${active}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [active]);
 
-  function placeZoomBar() {
-    const fullEl = fullRef.current;
-    const bar = zoomBarRef.current;
-    if (!fullEl || !bar || !fullNow.current) return;
-    const fw = fullEl.clientWidth;
-    const fh = fullEl.clientHeight;
-    if (fw < 80 || fh < 80) return;
-    const rot = ((Number(photo?.rotation) || 0) % 360 + 360) % 360;
-    const swapped = rot === 90 || rot === 270;
-    const pw = Math.max(1, Number(swapped ? photo?.height : photo?.width) || 1);
-    const ph = Math.max(1, Number(swapped ? photo?.width : photo?.height) || 1);
-    const ar = pw / ph;
-    const fitW = Math.min(fw, fh * ar);
-    const fitH = Math.min(fh, fw / ar);
-    const visW = fitW * ZOOM_FIT;
-    const visH = fitH * ZOOM_FIT;
-    const visRight = (fw + visW) / 2;
-    const visBottom = (fh + visH) / 2;
-    const tw = bar.offsetWidth || 168;
-    const th = bar.offsetHeight || 40;
-    const dock = 92;
-    let x = visRight + 10;
-    let y = visBottom - th - 8;
-    if (x + tw > fw - 12) x = visRight - tw - 10;
-    if (x + tw > fw - 12) x = fw - tw - 12;
-    if (y + th > fh - dock) y = fh - th - dock;
-    if (y < 72) y = 72;
-    x = Math.max(12, x);
-    bar.style.right = "auto";
-    bar.style.bottom = "auto";
-    bar.style.left = `${Math.round(x)}px`;
-    bar.style.top = `${Math.round(y)}px`;
-  }
-
   useEffect(() => {
     const el = full ? fullRef.current : stageRef.current;
     if (!el) return undefined;
@@ -621,14 +594,11 @@ export default function PhotoDetail() {
       el.style.setProperty("--stage-w", `${Math.max(0, Math.floor(box.width))}px`);
       el.style.setProperty("--stage-h", `${Math.max(0, Math.floor(box.height))}px`);
       el.style.setProperty("--photo-ar", String(w / h));
-      placeZoomBar();
     }
     applySize();
-    const id = window.requestAnimationFrame(placeZoomBar);
     const ro = new ResizeObserver(applySize);
     ro.observe(el);
     return () => {
-      window.cancelAnimationFrame(id);
       ro.disconnect();
     };
   }, [photo?.id, photo?.width, photo?.height, photo?.rotation, full]);
@@ -1929,6 +1899,15 @@ export default function PhotoDetail() {
       .map((f) => f.id);
     if (!ids.length) return;
     ids.forEach((fid) => rememberFaceChange(fid, "hiding this face"));
+    const hide = new Set(ids.map(Number));
+    const painted = (photo.faces || []).map((f) =>
+      hide.has(Number(f.id))
+        ? { ...f, person_id: null, person_name: null, assigned_how: "junk", quality: "unidentifiable" }
+        : f,
+    );
+    setPhoto((cur) => (cur ? { ...cur, faces: painted } : cur));
+    emitPhotoChange({ ...photo, faces: painted });
+    emitCatalogChange();
     setErr("");
     setNote("Hiding unnamed faces…");
     try {
@@ -1946,6 +1925,26 @@ export default function PhotoDetail() {
   }
 
   if (!photo) {
+    if (err) {
+      const missing = err === "Photo not found";
+      return (
+        <div className="photo-page">
+          <div className="page-head">
+            <div className="photo-head-id">
+              <div className="photo-head-nav">
+                <BackButton to={backTo()} onClick={goBack} />
+              </div>
+              <h1>{missing ? "Photo not in catalog" : "Could not open this photo"}</h1>
+              <p className="lede">
+                {missing
+                  ? "This picture was already removed from Family Faces. Right-click cannot delete it again. The original file was not deleted."
+                  : err}
+              </p>
+            </div>
+          </div>
+        </div>
+      );
+    }
     const eager = photoSrc || photoImgUrl(id, "thumb");
     const eagerImg = eager ? (
       <img src={eager} alt="" fetchPriority="high" decoding="async" />
@@ -1990,6 +1989,62 @@ export default function PhotoDetail() {
     beginTaggingFace(f.id);
   }
 
+  function ZoomTools({ className = "" }) {
+    return (
+      <div className={`zoom-tools ${className}`.trim()} role="group" aria-label="Zoom">
+        <button
+          type="button"
+          disabled={zoom >= ZOOM_MAX}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            nudgeZoom(1);
+          }}
+          {...tip("Zoom in a step, up to 400%. Shortcut +")}
+        >
+          +
+        </button>
+        <button
+          type="button"
+          className="zoom-level"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            cycleZoom();
+          }}
+          {...tip("Cycle 75% → 100% → 200% → 400%. Shortcut 0 fits the photo at 75%.")}
+        >
+          {Math.round(zoom * 100)}%
+        </button>
+        <button
+          type="button"
+          disabled={zoom <= ZOOM_MIN}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            nudgeZoom(-1);
+          }}
+          {...tip("Zoom out. Shortcut −")}
+        >
+          −
+        </button>
+        <button
+          type="button"
+          aria-pressed={zoom >= ZOOM_MAX - 0.05}
+          disabled={zoom >= ZOOM_MAX}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            zoomTo(ZOOM_MAX);
+          }}
+          {...tip("Zoom the photo to 400%.")}
+        >
+          400%
+        </button>
+      </div>
+    );
+  }
+
   const seq = photoSequence(photo);
 
   return (
@@ -2002,7 +2057,7 @@ export default function PhotoDetail() {
             onClick={goBack}
             {...tip(
               String(loc.state?.from || "").startsWith("/to-name")
-                ? "Return to Faces to name."
+                ? "Return to Clusters to name."
                 : String(loc.state?.from || "").startsWith("/review")
                   ? "Return to Check names."
                   : personId
@@ -2018,6 +2073,7 @@ export default function PhotoDetail() {
             {[
               photo.taken_at ? photo.taken_at.slice(0, 10) : "No date",
               seq?.label,
+              photoAlbumName(photo.path),
               `${visibleFaces.length} face(s)`,
             ]
               .filter(Boolean)
@@ -2058,60 +2114,6 @@ export default function PhotoDetail() {
                   Next
                 </Link>
               ) : null}
-            </div>
-            <div className="zoom-tools" role="group" aria-label="Zoom">
-              <button
-                type="button"
-                className="secondary"
-                disabled={zoom >= ZOOM_MAX}
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  nudgeZoom(1);
-                }}
-                {...tip("Zoom in a step, up to 400%. Shortcut +")}
-              >
-                +
-              </button>
-              <button
-                type="button"
-                className="zoom-level"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  cycleZoom();
-                }}
-                {...tip("Cycle 75% → 100% → 200% → 400%. Shortcut 0 fits the photo at 75%.")}
-              >
-                {Math.round(zoom * 100)}%
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                disabled={zoom <= ZOOM_MIN}
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  nudgeZoom(-1);
-                }}
-                {...tip("Zoom out. Shortcut −")}
-              >
-                −
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                aria-pressed={zoom >= ZOOM_MAX - 0.05}
-                disabled={zoom >= ZOOM_MAX}
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  zoomTo(ZOOM_MAX);
-                }}
-                {...tip("Zoom the photo to 400%.")}
-              >
-                400%
-              </button>
             </div>
           </div>
           <div className="photo-head-actions" role="toolbar" aria-label="Photo">
@@ -2363,6 +2365,7 @@ export default function PhotoDetail() {
             )}
             <NamesToggle className="photo-labels-chip" />
           </div>
+          <ZoomTools className="photo-stage-zoombar" />
         </div>
         <aside>
           {listedFaces.map((f) => {
@@ -2440,7 +2443,11 @@ export default function PhotoDetail() {
                   onClick={(e) => e.stopPropagation()}
                   onChange={(e) => {
                     const value = e.target.value;
-                    const unique = completeUniqueFirstName(value, people, { excludeId: f.person_id });
+                    const prev = Object.prototype.hasOwnProperty.call(drafts, f.id) ? drafts[f.id] : draftName(f);
+                    const shrinking = value.length < String(prev || "").length;
+                    const unique = shrinking
+                      ? null
+                      : completeUniqueFirstName(value, people, { excludeId: f.person_id });
                     setDrafts((cur) => ({ ...cur, [f.id]: unique ? unique.name : value }));
                     setNamePick(-1);
                     if (savedId === f.id) setSavedId(null);
@@ -2819,76 +2826,21 @@ export default function PhotoDetail() {
               Previous
             </button>
           ) : null}
-          {photo.next_id || play?.ids?.length ? (
-            <div className="photo-full-east" onClick={(e) => e.stopPropagation()}>
-            <button
-              type="button"
-              className="photo-full-nav next"
-              onClick={(e) => {
-                e.stopPropagation();
-                goPlay(1);
-              }}
-              {...tip(play?.ids?.length ? "Next photo in this play list. Shortcut →" : "Next photo in the album. Shortcut →")}
-            >
-              Next
-            </button>
-            </div>
-          ) : null}
-          <div
-            ref={zoomBarRef}
-            className="photo-full-zoombar"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="zoom-tools" role="group" aria-label="Zoom">
-            <button
-              type="button"
-              disabled={zoom >= ZOOM_MAX}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                nudgeZoom(1);
-              }}
-              {...tip("Zoom in a step, up to 400%. Shortcut +")}
-            >
-              +
-            </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                cycleZoom();
-              }}
-              {...tip("Cycle 75% → 100% → 200% → 400%. Shortcut 0 fits the photo at 75%.")}
-            >
-              {Math.round(zoom * 100)}%
-            </button>
-            <button
-              type="button"
-              disabled={zoom <= ZOOM_MIN}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                nudgeZoom(-1);
-              }}
-              {...tip("Zoom out. Shortcut −")}
-            >
-              −
-            </button>
-            <button
-              type="button"
-              aria-pressed={zoom >= ZOOM_MAX - 0.05}
-              disabled={zoom >= ZOOM_MAX}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                zoomTo(ZOOM_MAX);
-              }}
-              {...tip("Zoom the photo to 400%.")}
-            >
-              400%
-            </button>
-            </div>
+          <div className="photo-full-east" onClick={(e) => e.stopPropagation()}>
+            {photo.next_id || play?.ids?.length ? (
+              <button
+                type="button"
+                className="photo-full-nav next"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  goPlay(1);
+                }}
+                {...tip(play?.ids?.length ? "Next photo in this play list. Shortcut →" : "Next photo in the album. Shortcut →")}
+              >
+                Next
+              </button>
+            ) : null}
+            <ZoomTools className="photo-full-zoombar" />
           </div>
           <div
             ref={toolsRef}
@@ -3030,15 +2982,27 @@ export default function PhotoDetail() {
           </div>
           {play?.ids?.length ? (
             <p className="photo-full-caption">
-              {play.title || "Play"}
-              {playIndex() >= 0 ? ` · ${playIndex() + 1} of ${play.ids.length}` : ""}
+              {[
+                play.title || "Play",
+                playIndex() >= 0 ? `${playIndex() + 1} of ${play.ids.length}` : "",
+                photo.filename,
+                photoAlbumName(photo.path),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             </p>
-          ) : seq ? (
+          ) : (
             <p className="photo-full-caption">
-              Photo {seq.index} of {seq.count}
-              {photo.taken_at ? ` · ${photo.taken_at.slice(0, 10)}` : ""}
+              {[
+                photo.filename,
+                photoAlbumName(photo.path),
+                seq ? `Photo ${seq.index} of ${seq.count}` : "",
+                photo.taken_at ? photo.taken_at.slice(0, 10) : "",
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             </p>
-          ) : null}
+          )}
           {photo.comment ? <p className="photo-full-comment">{photo.comment}</p> : null}
           {imagineOpen ? (
             <div className="photo-imagine-full" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>

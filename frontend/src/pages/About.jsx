@@ -22,7 +22,7 @@ export default function About() {
           <code>.photosort.json</code> so a copied folder stays labelled.{" "}
           <strong>Purge faces from database</strong> in Settings clears the app catalog only —
           those JSON files stay. Finding known faces is read-only. Close the app any time;{" "}
-          <strong>Name people</strong> picks up where you left off.
+          <strong>Clusters to name</strong> picks up where you left off.
         </p>
       </section>
 

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
-import { imageBlobForClipboard } from "../copyPhoto.js";
+import { downloadPhotoFile, imageBlobForClipboard } from "../copyPhoto.js";
 import { applyFullscreenLabels, readFullscreenLabels } from "../nametag.js";
 import { emitCatalogChange, emitPhotoChange, subscribePhotoMenu } from "../photoMenu.js";
 import { clearRematchUndo, readRematchUndo, writeRematchUndo } from "../rematchUndo.js";
@@ -114,6 +114,19 @@ export default function PhotoMenu() {
     }
   }
 
+  async function downloadPhoto(labels) {
+    if (busy) return;
+    setBusy(labels ? "download-labels" : "download");
+    try {
+      await downloadPhotoFile(menu.photo, { labels });
+      setMenu(null);
+    } catch (ex) {
+      window.alert(ex.message || "Could not download this photo.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function rotate(direction) {
     if (busy) return;
     setBusy(true);
@@ -138,10 +151,8 @@ export default function PhotoMenu() {
     try {
       const next = await api.patchPhoto(menu.photo.id, { hidden: true });
       emitPhotoChange({ ...next, hidden: true });
+      emitCatalogChange();
       setMenu(null);
-      if (window.location.pathname === `/photos/${menu.photo.id}`) {
-        nav(-1);
-      }
     } catch (ex) {
       window.alert(ex.message || "Could not remove this photo from the catalog.");
     } finally {
@@ -275,6 +286,12 @@ export default function PhotoMenu() {
     >
       <button type="button" role="menuitem" disabled={!!busy} onClick={copyPhoto}>
         {busy === "copy" ? "Copying…" : "Copy photo"}
+      </button>
+      <button type="button" role="menuitem" disabled={!!busy} onClick={() => downloadPhoto(false)}>
+        {busy === "download" ? "Saving…" : "Download photo"}
+      </button>
+      <button type="button" role="menuitem" disabled={!!busy} onClick={() => downloadPhoto(true)}>
+        {busy === "download-labels" ? "Saving…" : "Download with labels"}
       </button>
       <button type="button" role="menuitem" disabled={!!busy} onClick={() => rotate("left")}>
         Rotate left

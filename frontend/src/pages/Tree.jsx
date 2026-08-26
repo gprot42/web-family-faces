@@ -110,7 +110,7 @@ function NameSearch({
   );
 }
 
-function FamilyChart({ chart, onOpen, full, onToggleFull }) {
+function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire }) {
   const layout = useMemo(() => layoutFamilyTree(chart), [chart]);
   const stageRef = useRef(null);
   const zoomRef = useRef(1);
@@ -164,17 +164,18 @@ function FamilyChart({ chart, onOpen, full, onToggleFull }) {
   }
 
   useEffect(() => {
+    const run = entire ? fit : centerOnFocus;
     const id = window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(centerOnFocus);
+      window.requestAnimationFrame(run);
     });
-    const t = window.setTimeout(centerOnFocus, 60);
-    const t2 = window.setTimeout(centerOnFocus, 280);
+    const t = window.setTimeout(run, 60);
+    const t2 = window.setTimeout(run, 280);
     return () => {
       window.cancelAnimationFrame(id);
       window.clearTimeout(t);
       window.clearTimeout(t2);
     };
-  }, [full, layout.focus, layout.width, layout.height]);
+  }, [entire, full, layout.focus, layout.width, layout.height]);
 
   useEffect(() => {
     const el = stageRef.current;
@@ -311,6 +312,20 @@ function FamilyChart({ chart, onOpen, full, onToggleFull }) {
         <button type="button" onClick={fit} {...tip("Fit the whole tree in view")}>
           Fit
         </button>
+        {onToggleEntire ? (
+          <button
+            type="button"
+            aria-pressed={entire}
+            onClick={onToggleEntire}
+            {...tip(
+              entire
+                ? "Show only this person, their ancestors, spouse, and children."
+                : "Show every person in this GEDCOM file.",
+            )}
+          >
+            Entire tree
+          </button>
+        ) : null}
         {onToggleFull ? (
           <button
             type="button"
@@ -329,6 +344,7 @@ export default function Tree() {
   const [params, setParams] = useSearchParams();
   const nav = useNavigate();
   const selected = (params.get("p") || "").trim();
+  const entire = (params.get("view") || "").trim().toLowerCase() === "all";
   const catalogFromUrl = (params.get("person") || "").trim();
   const fileRef = useRef(null);
   const [data, setData] = useState(null);
@@ -399,7 +415,7 @@ export default function Tree() {
     let cancel = false;
     setPersonBusy(true);
     api
-      .gedcomPerson(selected)
+      .gedcomPerson(selected, entire ? { view: "all" } : {})
       .then((next) => {
         if (!cancel) setPerson(next);
       })
@@ -415,7 +431,7 @@ export default function Tree() {
     return () => {
       cancel = true;
     };
-  }, [selected, data?.loaded, data?.filename]);
+  }, [selected, entire, data?.loaded, data?.filename]);
 
   useEffect(() => {
     if (!catalogFromUrl || !data?.loaded) return;
@@ -700,10 +716,17 @@ export default function Tree() {
               {person ? (
                 <>
                   <FamilyChart
-                    key={person.id}
+                    key={`${person.id}:${entire ? "all" : "one"}`}
                     chart={person.chart}
                     onOpen={openPerson}
                     full={full}
+                    entire={entire}
+                    onToggleEntire={() => {
+                      const next = new URLSearchParams(params);
+                      if (entire) next.delete("view");
+                      else next.set("view", "all");
+                      setParams(next, { replace: true });
+                    }}
                     onToggleFull={full ? exitFull : enterFull}
                   />
                   {full ? null : (

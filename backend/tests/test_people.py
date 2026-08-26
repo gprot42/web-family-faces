@@ -1098,6 +1098,59 @@ def test_list_clusters_includes_named_group_with_leftovers(tmp_path, monkeypatch
     assert items[0]["face_count"] == 4
 
 
+def test_list_clusters_skips_faces_on_hidden_photos(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from photosort import catalog, originals
+    from photosort.main import app
+
+    conn = _setup(tmp_path, monkeypatch)
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setattr(config, "DATA_DIR", data)
+    monkeypatch.setattr(config, "BACKUP_DIR", data / "backups")
+    monkeypatch.setattr(catalog, "DB_PATH", config.DB_PATH)
+    monkeypatch.setattr(catalog, "BACKUP_DIR", data / "backups")
+    monkeypatch.setattr(originals, "DATA_DIR", data)
+    (data / "backups").mkdir()
+    conn.execute("INSERT INTO clusters (status, created_at) VALUES ('unknown', ?)", (now_iso(),))
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, hidden, created_at) VALUES (?,?,?,?,?,?)",
+        ("/hidden.jpg", "hid", 100, 100, 1, now_iso()),
+    )
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/keep-a.jpg", "a", 100, 100, now_iso()),
+    )
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/keep-b.jpg", "b", 100, 100, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, cluster_id, created_at)
+           VALUES (1,0,0,10,10,0.99,'ok',1,?)""",
+        (now_iso(),),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, cluster_id, created_at)
+           VALUES (2,0,0,10,10,0.5,'ok',1,?)""",
+        (now_iso(),),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, cluster_id, created_at)
+           VALUES (3,0,0,10,10,0.4,'ok',1,?)""",
+        (now_iso(),),
+    )
+    conn.commit()
+    conn.close()
+    items = TestClient(app).get("/api/clusters").json()["items"]
+    assert items
+    photos = [face["photo_id"] for face in items[0]["faces"]]
+    assert 1 not in photos
+    assert sorted(photos) == [2, 3]
+    missing = TestClient(app).get("/api/photos/1")
+    assert missing.status_code == 404
+
+
 def test_inherit_mega_leftover_names_faces_that_match_manual_person(tmp_path, monkeypatch):
     from photosort.match import inherit_named_cluster_leftovers
 

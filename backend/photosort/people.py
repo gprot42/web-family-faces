@@ -1470,10 +1470,42 @@ def get_person(person_id: int) -> dict[str, Any] | None:
         conn.close()
 
 
-def person_zip_filename(name: str) -> str:
+def person_zip_filename(name: str, *, labels: bool = False) -> str:
     text = re.sub(r"[^\w]+", "-", (name or "").strip(), flags=re.UNICODE)
     text = text.strip("-") or "person"
-    return f"{text[:60]}-photos.zip"
+    suffix = "-photos-labeled.zip" if labels else "-photos.zip"
+    return f"{text[:60]}{suffix}"
+
+
+_JPEG_ZIP_SUFFIXES = {".jpg", ".jpeg", ".jpe"}
+
+
+def _local_photo_file(photo_id: int) -> Path | None:
+    """Preview kept on this Mac when the original album is unmounted."""
+    from . import config as config_mod
+
+    pid = int(photo_id)
+    for folder in (config_mod.VIEW_DIR, config_mod.THUMB_DIR):
+        local = folder / f"{pid}.jpg"
+        try:
+            if local.is_file() and local.stat().st_size > 0:
+                return local
+        except OSError:
+            continue
+    return None
+
+
+def _download_file_for_shot(shot: dict[str, Any]) -> Path | None:
+    original = Path(str(shot.get("path") or ""))
+    try:
+        if original.is_file():
+            return original
+    except OSError:
+        pass
+    pid = shot.get("photo_id")
+    if pid is None:
+        return None
+    return _local_photo_file(int(pid))
 
 
 def unique_zip_name(path: Path, photo_id: int, used: set[str]) -> str:
@@ -1501,7 +1533,8 @@ def list_person_download_entries(person_id: int) -> dict[str, Any] | None:
             return None
         faces = conn.execute(
             """
-            SELECT f.id, f.photo_id, f.det_score, ph.path, ph.taken_at, ph.sha256
+            SELECT f.id, f.photo_id, f.det_score, ph.path, ph.taken_at, ph.sha256,
+                   ph.width, ph.height, ph.rotation
             FROM faces f
             JOIN photos ph ON ph.id = f.photo_id
             WHERE f.person_id = ?
@@ -1513,14 +1546,27 @@ def list_person_download_entries(person_id: int) -> dict[str, Any] | None:
         ).fetchall()
         shots = display_faces(drop_preview_rows([dict(f) for f in faces]))
         used: set[str] = set()
-        entries: list[tuple[Path, str]] = []
+        entries: list[dict[str, Any]] = []
         missing = 0
         for shot in shots:
-            src = Path(str(shot.get("path") or ""))
-            if not src.is_file():
+            original = Path(str(shot.get("path") or ""))
+            src = _download_file_for_shot(shot)
+            if src is None:
                 missing += 1
                 continue
-            entries.append((src, unique_zip_name(src, int(shot["photo_id"]), used)))
+            name_src = original if original.name else src
+            if src != original and name_src.suffix.lower() not in _JPEG_ZIP_SUFFIXES:
+                name_src = name_src.with_suffix(".jpg")
+            entries.append(
+                {
+                    "src": src,
+                    "arcname": unique_zip_name(name_src, int(shot["photo_id"]), used),
+                    "photo_id": int(shot["photo_id"]),
+                    "width": int(shot.get("width") or 0),
+                    "height": int(shot.get("height") or 0),
+                    "rotation": int(shot.get("rotation") or 0),
+                }
+            )
         return {
             "name": row["name"],
             "filename": person_zip_filename(row["name"]),
@@ -1532,17 +1578,68 @@ def list_person_download_entries(person_id: int) -> dict[str, Any] | None:
         conn.close()
 
 
-def write_person_photo_zip(person_id: int, dest: Path) -> dict[str, Any] | None:
-    """Copy named originals into dest. Album files are only read."""
-    from zipfile import ZIP_STORED, ZipFile
+def _label_faces_on_photos(photo_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    ids = [int(pid) for pid in photo_ids if pid]
+    if not ids:
+        return {}
+    conn = connect()
+    init_db(conn)
+    try:
+        marks = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"""
+            SELECT f.id, f.photo_id, f.x1, f.y1, f.x2, f.y2, f.person_id, f.assigned_how,
+                   f.tag_x, f.tag_y, p.name AS person_name
+            FROM faces f
+            LEFT JOIN people p ON p.id = f.person_id
+            WHERE f.photo_id IN ({marks})
+              AND IFNULL(f.assigned_how, '') != 'junk'
+            """,
+            ids,
+        ).fetchall()
+        by_photo: dict[int, list[dict[str, Any]]] = {pid: [] for pid in ids}
+        for row in rows:
+            by_photo.setdefault(int(row["photo_id"]), []).append(dict(row))
+        return by_photo
+    finally:
+        conn.close()
+
+
+def write_person_photo_zip(person_id: int, dest: Path, *, labels: bool = False) -> dict[str, Any] | None:
+    """Copy named originals into dest, or JPEG copies with name tags. Album files are only read."""
+    from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
     listing = list_person_download_entries(person_id)
     if listing is None:
         return None
+    listing["filename"] = person_zip_filename(listing["name"], labels=labels)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with ZipFile(dest, "w", compression=ZIP_STORED, allowZip64=True) as zf:
-        for src, arcname in listing["entries"]:
-            zf.write(src, arcname)
+    if not labels:
+        with ZipFile(dest, "w", compression=ZIP_STORED, allowZip64=True) as zf:
+            for item in listing["entries"]:
+                zf.write(item["src"], item["arcname"])
+        listing["path"] = dest
+        return listing
+    from .label_draw import labeled_jpeg_bytes
+
+    faces_by_photo = _label_faces_on_photos([int(item["photo_id"]) for item in listing["entries"]])
+    used: set[str] = set()
+    with ZipFile(dest, "w", compression=ZIP_DEFLATED, allowZip64=True) as zf:
+        for item in listing["entries"]:
+            stem = Path(item["arcname"]).stem
+            arcname = unique_zip_name(Path(f"{stem}-labeled.jpg"), int(item["photo_id"]), used)
+            try:
+                data = labeled_jpeg_bytes(
+                    item["src"],
+                    faces_by_photo.get(int(item["photo_id"])) or [],
+                    photo_id=int(item["photo_id"]),
+                    photo_w=int(item.get("width") or 0),
+                    photo_h=int(item.get("height") or 0),
+                    rotation=int(item.get("rotation") or 0),
+                )
+            except Exception:
+                continue
+            zf.writestr(arcname, data)
     listing["path"] = dest
     return listing
 
@@ -1844,7 +1941,8 @@ def cluster_preview_face_ids(cluster_id: int, limit: int | None = None) -> list[
             WHERE f.cluster_id = ?
               AND f.person_id IS NULL
               AND f.quality = 'ok'
-              AND IFNULL(assigned_how, '') != 'junk'
+              AND IFNULL(f.assigned_how, '') != 'junk'
+              AND IFNULL(ph.hidden, 0) = 0
             ORDER BY f.det_score DESC, f.id
             LIMIT ?
             """,

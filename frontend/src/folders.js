@@ -20,6 +20,13 @@ export function folderLabel(path) {
   return parts[parts.length - 1] || path;
 }
 
+/** Album folder that contains a photo file. */
+export function photoAlbumName(path) {
+  const parts = String(path || "").split("/").filter(Boolean);
+  if (parts.length < 2) return "";
+  return parts[parts.length - 2];
+}
+
 /** Last two path segments so “Old” is not shown without its parent album. */
 export function folderBreadcrumb(path) {
   const parts = String(path || "").split("/").filter(Boolean);

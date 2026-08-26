@@ -309,9 +309,10 @@ def get_gedcom() -> dict[str, Any]:
 
 
 @app.get("/api/gedcom/people/{xref}")
-async def get_gedcom_person(xref: str) -> dict[str, Any]:
+async def get_gedcom_person(xref: str, view: str | None = Query(default=None)) -> dict[str, Any]:
+    entire = str(view or "").strip().lower() in {"all", "entire", "full"}
     try:
-        return await asyncio.to_thread(gedcom_mod.get_person, xref)
+        return await asyncio.to_thread(gedcom_mod.get_person, xref, entire)
     except FileNotFoundError:
         raise HTTPException(404, "Load a .ged file first.") from None
     except KeyError:
@@ -1469,6 +1470,7 @@ def list_clusters() -> dict[str, Any]:
                 AND f.person_id IS NULL
                 AND f.quality = 'ok'
                 AND IFNULL(f.assigned_how, '') != 'junk'
+                AND IFNULL(ph.hidden, 0) = 0
                 AND {preview}
             ) ranked
             WHERE rn <= 48
@@ -1902,14 +1904,14 @@ def _unlink_temp(path: Path) -> None:
 
 
 @app.get("/api/people/{person_id}/photos.zip")
-def download_person_photos(person_id: int):
+def download_person_photos(person_id: int, labels: bool = False):
     import tempfile
 
     handle = tempfile.NamedTemporaryFile(prefix="photosort-person-", suffix=".zip", delete=False)
     handle.close()
     dest = Path(handle.name)
     try:
-        built = people_mod.write_person_photo_zip(person_id, dest)
+        built = people_mod.write_person_photo_zip(person_id, dest, labels=labels)
     except Exception:
         _unlink_temp(dest)
         raise
@@ -1920,8 +1922,15 @@ def download_person_photos(person_id: int):
         _unlink_temp(dest)
         raise HTTPException(
             404,
-            "None of this person's photos are on disk. Mount the album if it is on a NAS.",
+            "None of this person's photos are on this Mac. Mount the album if it is on a NAS.",
         )
+    if labels:
+        from zipfile import ZipFile
+
+        with ZipFile(dest) as zf:
+            if not zf.namelist():
+                _unlink_temp(dest)
+                raise HTTPException(500, "Could not draw names on those photos.")
     return FileResponse(
         dest,
         media_type="application/zip",

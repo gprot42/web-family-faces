@@ -205,7 +205,12 @@ export const api = {
     return request(`/api/search?${params}`);
   },
   gedcom: () => request("/api/gedcom"),
-  gedcomPerson: (id) => request(`/api/gedcom/people/${encodeURIComponent(id)}`),
+  gedcomPerson: (id, opts = {}) => {
+    const q = new URLSearchParams();
+    if (opts.view) q.set("view", opts.view);
+    const qs = q.toString();
+    return request(`/api/gedcom/people/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`);
+  },
   uploadGedcom: async (file) => {
     const body = new FormData();
     body.append("file", file);

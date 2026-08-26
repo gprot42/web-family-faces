@@ -163,6 +163,7 @@ export default function People() {
   }, [people, group]);
   const named = useMemo(() => grouped.filter((p) => !p.unknown_name), [grouped]);
   const unnamed = useMemo(() => grouped.filter((p) => p.unknown_name), [grouped]);
+  const unknownTotal = useMemo(() => people.filter((p) => p.unknown_name).length, [people]);
   const inFolder = useMemo(() => new Set(people.map((p) => p.id)), [people]);
   const visible = suggestions.filter((s) => {
     if (ignored.has(pairKey(s.person_a.id, s.person_b.id))) return false;
@@ -262,6 +263,13 @@ export default function People() {
         </details>
       ) : null}
 
+      {group !== "all" && unknownTotal && !unnamed.length ? (
+        <p className="hint">
+          {unknownTotal} {unknownTotal === 1 ? "person" : "people"} saved as Unknown name of person{" "}
+          {unknownTotal === 1 ? "is" : "are"} under All or Not set.
+        </p>
+      ) : null}
+
       {named.length ? (
         <section className="folder-block">
           <h2>
@@ -284,11 +292,12 @@ export default function People() {
       {unnamed.length ? (
         <section className="folder-block">
           <h2>
-            Name unknown
+            Unknown name of person
             <span className="hint"> · {unnamed.length}</span>
           </h2>
           <p className="hint" style={{ marginTop: -4, marginBottom: 12 }}>
-            Identified as people and stored in the database, without a name yet. Open one to rename them.
+            You saved these as people with Unknown name of person, so they stay in the database until
+            you rename them. They are not the unnamed faces on Clusters to name.
           </p>
           <div className="people-grid">
             {unnamed.map((p) => (
@@ -355,8 +364,8 @@ export default function People() {
       {ready && !people.length && !err ? (
         <div className="card empty">
           {folder
-            ? `No identified faces from ${folder} are in the database yet. Name someone on To name, or pick another folder.`
-            : "No identified faces in the database yet. Name someone on To name and they are stored here."}
+            ? `No identified faces from ${folder} are in the database yet. Name someone on Clusters to name, or pick another folder.`
+            : "No identified faces in the database yet. Name someone on Clusters to name and they are stored here."}
         </div>
       ) : null}
       {ready && people.length && !grouped.length ? (

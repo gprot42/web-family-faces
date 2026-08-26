@@ -179,6 +179,22 @@ def test_save_and_http_roundtrip(tmp_path, monkeypatch):
     assert client.get("/api/gedcom").json()["loaded"] is False
 
 
+def test_entire_chart_includes_the_whole_file():
+    tree = gedcom.parse_gedcom(SAMPLE.decode())
+    around = gedcom.family_chart(tree, "I3", catalog={})
+    entire = gedcom.family_chart(tree, "I3", catalog={}, entire=True)
+    assert around.get("scope") != "all"
+    assert entire["scope"] == "all"
+    assert {n["id"] for n in entire["nodes"]} == set(tree["people"])
+    assert len(entire["unions"]) == len(tree["families"])
+    alice = next(n for n in entire["nodes"] if n["id"] == "I3")
+    assert alice["generation"] == 0
+    john = next(n for n in entire["nodes"] if n["id"] == "I1")
+    assert john["generation"] == -1
+    henry = next(n for n in entire["nodes"] if n["id"] == "I8")
+    assert henry["generation"] == -4
+
+
 def test_family_chart_walks_great_grandparents():
     tree = gedcom.parse_gedcom(SAMPLE.decode())
     chart = gedcom.family_chart(tree, "I1", catalog={})
@@ -189,6 +205,39 @@ def test_family_chart_walks_great_grandparents():
     assert by_role["grandparents"][0]["partners"] == ["I6", "I7"]
     assert by_role["ancestors"][0]["partners"] == ["I8", "I9"]
     assert by_role["ancestors"][0]["generation"] == 3
+
+
+FAM_ONLY = b"""0 HEAD
+1 SOUR Grok
+0 @I1@ INDI
+1 NAME John /DENNIS/
+1 SEX M
+0 @I2@ INDI
+1 NAME Elizabeth //
+1 SEX F
+0 @I3@ INDI
+1 NAME Frederick William /DENNIS/
+1 SEX M
+0 @F1@ FAM
+1 HUSB @I1@
+1 WIFE @I2@
+1 CHIL @I3@
+0 TRLR
+"""
+
+
+def test_parse_gedcom_infers_links_from_fam_records():
+    tree = gedcom.parse_gedcom(FAM_ONLY.decode())
+    assert tree["people"]["I1"]["fams"] == ["F1"]
+    assert tree["people"]["I2"]["fams"] == ["F1"]
+    assert tree["people"]["I3"]["famc"] == ["F1"]
+    frederick = gedcom.person_detail(tree, "I3", catalog={})
+    assert [p["name"] for p in frederick["parents"]] == ["John DENNIS", "Elizabeth"]
+    john = gedcom.person_detail(tree, "I1", catalog={})
+    assert john["spouses"][0]["spouse"]["name"] == "Elizabeth"
+    assert [c["name"] for c in john["children"]] == ["Frederick William DENNIS"]
+    chart = john["chart"]
+    assert any(u["role"] == "own" and u["children"] == ["I3"] for u in chart["unions"])
 
 
 def test_rejects_file_with_no_people(tmp_path, monkeypatch):

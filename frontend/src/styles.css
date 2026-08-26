@@ -296,11 +296,15 @@ a.app-brand.active {
   color: var(--accent-ink);
 }
 .nav a {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 9px 12px;
   border-radius: 10px;
   color: var(--sidebar-muted);
   margin-bottom: 4px;
+  overflow: hidden;
 }
 .nav a.active, .nav a:hover {
   background: var(--accent-soft);
@@ -313,14 +317,13 @@ a.app-brand.active {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 .nav-count {
-  float: right;
+  flex: 0 0 auto;
   font-size: 0.75rem;
   font-weight: 650;
   background: var(--accent);
   color: var(--on-accent);
   border-radius: 99px;
   padding: 1px 8px;
-  margin-top: 2px;
 }
 .nav-help,
 .nav-foot {
@@ -441,6 +444,7 @@ a.app-brand.active {
 .person-sticky-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 14px;
   margin: 0 0 10px;
 }
@@ -457,28 +461,57 @@ a.app-brand.active {
   display: none;
 }
 .person-sticky-id {
-  flex: 1 1 auto;
+  flex: 1 1 12rem;
   min-width: 0;
 }
 .person-sticky-id h1 {
   margin: 0 0 2px;
   font-size: 1.7rem;
   line-height: 1.15;
+  overflow-wrap: break-word;
 }
 .person-sticky-id .lede {
   margin: 0;
+  max-width: none;
 }
 .person-sticky-actions {
-  flex: 0 0 auto;
   align-items: center;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
+  margin: 0 0 10px;
 }
-.person-sticky-name {
+.person-download {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.row.person-sticky-name {
   margin: 0;
+  align-items: flex-start;
 }
 .person-sticky-name + .person-sticky-name {
   margin-top: 8px;
+}
+.person-name-field {
+  flex: 1 1 12rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.person-name-field .grow {
+  width: 100%;
+  min-width: 0;
+}
+.person-sticky-name .name-suggest {
+  margin: 4px 0 0;
+}
+.person-sticky-name .name-suggest-item {
+  justify-content: flex-start;
+  text-align: left;
+}
+.person-sticky-name > button {
+  flex: 0 0 auto;
 }
 .person-sticky .person-chips {
   position: relative;
@@ -1913,19 +1946,30 @@ button.saved {
   white-space: nowrap;
   box-sizing: border-box;
 }
-.photo-head-tools .zoom-tools {
-  display: inline-flex;
+.zoom-tools.photo-stage-zoombar {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  bottom: auto;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
   flex-wrap: nowrap;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--paper);
+  align-items: stretch;
+  gap: 4px;
   max-width: none;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--card) 92%, transparent);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--ink) 12%, transparent);
 }
-.photo-head-tools .zoom-tools button {
-  min-width: 36px;
-  padding: 0 10px;
+.zoom-tools.photo-stage-zoombar button {
+  width: 100%;
+  min-width: 44px;
+  min-height: 44px;
+  height: 44px;
+  padding: 0 12px;
   box-shadow: none;
 }
 .photo-seq {
@@ -2202,11 +2246,25 @@ button.saved {
 .photo-full-east .photo-full-nav.next:hover {
   transform: none;
 }
+.photo-full-east .photo-full-zoombar,
 .photo-full-zoombar {
-  position: absolute;
-  right: 16px;
-  bottom: 96px;
-  z-index: 8;
+  position: static;
+  right: auto;
+  bottom: auto;
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 4px;
+  max-width: none;
+  padding: 6px;
+  border: 1px solid rgba(255, 253, 250, 0.28);
+  border-radius: 16px;
+  background: rgba(12, 10, 8, 0.62);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  color: #fffdfa;
+  font-size: 0.88rem;
   pointer-events: auto;
 }
 .photo-full-tools {
@@ -2341,35 +2399,24 @@ button.saved {
   background: rgba(255, 253, 250, 0.16);
 }
 .photo-full-tools button:disabled { opacity: 0.35; }
-.photo-full-zoombar .zoom-tools {
-  display: inline-flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 0;
-  max-width: none;
-  padding: 2px;
-  border: 1px solid rgba(255, 253, 250, 0.28);
-  border-radius: 999px;
-  background: rgba(12, 10, 8, 0.62);
-  color: #fffdfa;
-  font-size: 0.84rem;
-  pointer-events: auto;
-}
-.photo-full-zoombar .zoom-tools button,
+.photo-full-east .photo-full-zoombar button,
+.photo-full-zoombar button,
 .photo-full-zoombar .zoom-level {
   color: #fffdfa;
   background: transparent;
   border: 0;
-  min-width: 34px;
-  min-height: 34px;
-  height: 34px;
-  padding: 0 8px;
-  font-size: 0.84rem;
+  width: 100%;
+  min-width: 48px;
+  min-height: 44px;
+  height: 44px;
+  padding: 0 12px;
+  font-size: 0.92rem;
   box-shadow: none;
   pointer-events: auto;
 }
-.photo-full-zoombar .zoom-tools button:hover,
-.photo-full-zoombar .zoom-tools button[aria-pressed="true"] {
+.photo-full-east .photo-full-zoombar button:hover,
+.photo-full-zoombar button:hover,
+.photo-full-zoombar button[aria-pressed="true"] {
   background: rgba(255, 253, 250, 0.14);
   transform: none;
 }
@@ -2379,13 +2426,15 @@ button.saved {
   left: 50%;
   transform: translateX(-50%);
   margin: 0;
+  max-width: min(90vw, 760px);
   color: #fffdfa;
   font-size: 1rem;
   font-weight: 650;
   letter-spacing: 0.02em;
+  text-align: center;
   text-shadow: 0 1px 8px rgba(0, 0, 0, 0.55);
   pointer-events: none;
-  white-space: nowrap;
+  white-space: normal;
 }
 .photo-full-hint {
   position: absolute;
@@ -2985,7 +3034,9 @@ html.to-name-resizing * {
   box-shadow: 0 6px 16px color-mix(in srgb, var(--ink) 8%, transparent);
   font-weight: 650;
 }
-.ged-card:hover {
+.ged-card:hover,
+.ged-card:focus-visible {
+  z-index: 4;
   transform: none;
   border-color: var(--accent);
   box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 18%, transparent);
@@ -3025,6 +3076,10 @@ html.to-name-resizing * {
 }
 .ged-zoom.zoom-tools button {
   width: 100%;
+}
+.ged-zoom.zoom-tools button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--on-accent);
 }
 .ged-caption {
   font-size: 0.92rem;
@@ -4458,9 +4513,18 @@ kbd {
   .photo-full-east {
     right: 12px;
   }
-  .photo-full-zoombar {
-    right: 12px;
-    bottom: 120px;
+  .zoom-tools.photo-stage-zoombar {
+    right: 8px;
+    top: 8px;
+    bottom: auto;
+    flex-direction: row;
+    padding: 4px;
+  }
+  .zoom-tools.photo-stage-zoombar button {
+    width: auto;
+    min-width: 40px;
+    min-height: 40px;
+    height: 40px;
   }
   .photo-full-dock {
     max-width: calc(100% - 24px);

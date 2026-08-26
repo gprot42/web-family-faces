@@ -40,10 +40,10 @@ export default function Help() {
         </section>
 
         <section className="card help-block">
-          <h2>2. Name people</h2>
+          <h2>2. Clusters to name</h2>
           <p>
-            Click <strong>Name people</strong> (or <Link to="/to-name">To name</Link>). Type a
-            name on the largest group. That name is applied to the whole group, and to other
+            Click <Link to="/to-name">Clusters to name</Link>. Type a
+            name on the largest cluster. That name is applied to the whole cluster, and to other
             faces that clearly match.
           </p>
           <ul>
@@ -54,31 +54,33 @@ export default function Help() {
             <li>
               <strong>Unknown name of person</strong> keeps them as a person when you do not know
               the name yet. They are stored in the database and can be renamed later on Faces in DB View.
-              On that page you can also mark someone Family, Work, or Other.
+              Type in <strong>Save name</strong> to search people already in the catalog; pick a match
+              to join this identity with them, or save a new name. On that page you can also mark
+              someone Family, Work, or Other.
             </li>
             <li>
-              <strong>AI</strong> on a To name group (or <strong>Look up famous face</strong> on a
+              <strong>AI</strong> on a Clusters to name cluster (or <strong>Look up famous face</strong> on a
               photo) sends that face crop (never the original photo) plus text clues: filename,
               folder, dates, EXIF, and people already named nearby. Grok can search public photos.
               You still confirm the name. You can reply “try again” or “not this person” and see how
               sure it is.
             </li>
             <li>
-              <strong>Identify all</strong> on To name asks Yes or No, then matches groups to people already in the
-              catalog, then looks remaining groups up. Only very sure names are applied (about 80%+
+              <strong>Identify all</strong> on Clusters to name asks Yes or No, then matches clusters to people already in the
+              catalog, then looks remaining clusters up. Only very sure names are applied (about 80%+
               for someone already in the catalog, 90%+ for a new public figure). Catalog
-              matches still appear under Check names. Use <strong>AI</strong> on a group to look
+              matches still appear under Check names. Use <strong>AI</strong> on a cluster to look
               that one up without waiting for the batch.
             </li>
             <li><strong>Not a person</strong> is for statues, paintings, or objects. They stay hidden, and similar ones are ignored later.</li>
             <li>
-              On To name, <strong>×</strong> on a named face in the right-hand list hides them from
+              On Clusters to name, <strong>×</strong> on a named face in the right-hand list hides them from
               tagging. They stay in Faces in DB View. <strong>Hidden from tagging</strong> shows
               them again.
             </li>
             <li>
               <Link to="/review">Check names</Link> lists faces the matcher attached on its own.
-              Keep the right ones. Not this person sends a face back to To name.
+              Keep the right ones. Not this person sends a face back to Clusters to name.
             </li>
             <li>
               <strong>Search</strong> in the bottom right looks up a person by name, or matches a
@@ -97,8 +99,12 @@ export default function Help() {
             <strong>Find a better photo</strong> to try the next cover; right-click again for another.
             Use <strong>Search</strong> in
             the bottom right to find someone by name, or upload a snapshot to match a picture already
-            in the catalog. On a person page, <strong>Download photos</strong> saves a zip of every
-            picture they are named in; the album files stay where they are.{" "}
+            in the catalog. On a person page, type in <strong>Save name</strong> to search people already
+            in the catalog. Pick a match to join this identity with them; Enter uses the unique match.
+            A name that is not in the catalog is saved on this card.{" "}
+            <strong>Download photos</strong> saves a zip of every
+            picture they are named in; <strong>With labels</strong> saves copies with name tags drawn
+            on. Album files stay where they are.{" "}
             <strong>Show in family tree</strong> opens that person on the Family tree page.
             A child and an
             80-year-old will usually be two cards — only join them if you are sure they are the same
@@ -113,6 +119,7 @@ export default function Help() {
             FamilySearch, Gramps, or MacFamilyTree. Choose a <code>.ged</code> file to see people,
             ancestors as far as the file goes, spouses, and children drawn as a tree. Search by name to jump to someone.
             Scroll or pinch to zoom, drag to move, and click a person to center the tree on them.
+            <strong> Entire tree</strong> shows everyone in the file, not only this person’s close relatives.
             Full screen expands the tree; Esc or Exit leaves it.
             The file is stored on this Mac. If a name already exists
             in Faces in DB View, you can jump to that person. Photo originals are not touched.
@@ -186,7 +193,7 @@ export default function Help() {
             <strong>Remove unnamed</strong> hides every unnamed face on this photo as not a person.
             Named people stay. Undo puts the boxes back. Other photos are not changed.
           </div>
-          <div>Right-click a photo to copy it, rotate it, add a tag, add a face, re-identify unnamed faces, sharpen a temporary Grok preview, change it with a Grok prompt, remove a named person or an unnamed face, remove all unnamed faces, or delete it from the catalog. <strong>Copy photo</strong> includes the name tags when they are shown on the picture. The original file stays where it is.</div>
+          <div>Right-click a photo to copy it, rotate it, add a tag, add a face, re-identify unnamed faces, sharpen a temporary Grok preview, change it with a Grok prompt, remove a named person or an unnamed face, remove all unnamed faces, or delete it from the catalog. <strong>Copy photo</strong> includes the name tags when they are shown on the picture. <strong>Download photo</strong> saves the file; <strong>Download with labels</strong> saves a copy with name tags. The original file stays where it is.</div>
           <div>
             <strong>Add a note</strong> on a photo is about the picture. <strong>Add a tag</strong> is
             a short label (Christmas, school, 2018): right-click the photo, type in Add a tag, press
@@ -195,11 +202,12 @@ export default function Help() {
             in DB View are about the person. All of them stay in the catalog, never on the original
             file.
           </div>
-          <div>Click the photo for fullscreen · drag the dotted handle on the options bar to move it · Hide labels / Show labels on the picture (<kbd>l</kbd>) · ← → other photos · <kbd>+</kbd> / <kbd>−</kbd> or pinch to zoom · <kbd>0</kbd> or click to fit · any other key or click to exit</div>
+          <div>Click the photo for fullscreen · drag the dotted handle on the options bar to move it · Hide labels / Show labels on the picture (<kbd>l</kbd>) · ← → other photos · zoom controls sit on the right of the picture · <kbd>+</kbd> / <kbd>−</kbd> or pinch to zoom · <kbd>0</kbd> or click to fit · any other key or click to exit</div>
           <div>
             <strong>Play album</strong> or <strong>Play person</strong> walks the pictures in date
             order, 2.5 seconds each (change this in Settings). <kbd>space</kbd> pause · <kbd>esc</kbd> exit.
-            <strong> Download photos</strong> on a person page saves those pictures as a zip.
+            <strong> Download photos</strong> on a person page saves those pictures as a zip;
+            <strong> With labels</strong> draws names on copies.
           </div>
         </div>
       </section>

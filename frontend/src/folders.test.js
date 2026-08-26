@@ -5,6 +5,7 @@ import {
   folderDisplayName,
   FOLDER_TITLES_KEY,
   isFolderStarred,
+  photoAlbumName,
   readFolderTitles,
   readStarredFolders,
   setFolderTitle,
@@ -52,6 +53,15 @@ test("starred folders round-trip through localStorage", () => {
   writeStarredFolders(["/a/Kyoto/", "/a/Kyoto", "/a/Mexico"]);
   assert.equal(localStorage.getItem(STARRED_FOLDERS_KEY), JSON.stringify(["/a/Kyoto", "/a/Mexico"]));
   assert.deepEqual(readStarredFolders(), ["/a/Kyoto", "/a/Mexico"]);
+});
+
+test("photoAlbumName is the folder that contains the file", () => {
+  assert.equal(
+    photoAlbumName("/Volumes/photos/2025 - London - Darrens 50th/1G8A0283.JPG"),
+    "2025 - London - Darrens 50th",
+  );
+  assert.equal(photoAlbumName("1G8A0283.JPG"), "");
+  assert.equal(photoAlbumName(""), "");
 });
 
 test("folderBreadcrumb keeps a short name with its parent album", () => {

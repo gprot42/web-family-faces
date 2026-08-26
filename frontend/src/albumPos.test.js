@@ -30,12 +30,12 @@ test("personShotHash names the timeline tile", () => {
   assert.equal(personShotHash(""), "");
 });
 
-test("clusterHash names a To name group", () => {
+test("clusterHash names a Clusters to name cluster", () => {
   assert.equal(clusterHash(52), "cluster-52");
   assert.equal(clusterHash(""), "");
 });
 
-test("clusterIdFrom reads a To name back link", () => {
+test("clusterIdFrom reads a Clusters to name back link", () => {
   assert.equal(clusterIdFrom("/to-name#cluster-52"), 52);
   assert.equal(clusterIdFrom("#cluster-52"), 52);
   assert.equal(clusterIdFrom("cluster-52"), 52);

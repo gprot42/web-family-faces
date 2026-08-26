@@ -115,7 +115,363 @@ function shiftPositive(pos) {
   return { width: maxX + CARD_W + PAD, height: maxY + CARD_H + PAD };
 }
 
+function layoutEntireTree(chart) {
+  const focusId = chart?.focus;
+  const nodeMap = Object.fromEntries((chart?.nodes || []).map((n) => [n.id, n]));
+  const unions = chart?.unions || [];
+  const pos = {};
+  if (!focusId) {
+    return { nodes: [], edges: [], width: 400, height: 240, focus: focusId };
+  }
+  if (!nodeMap[focusId]) nodeMap[focusId] = { id: focusId, name: focusId, generation: 0 };
+
+  const spouseGap = 16;
+  pos[focusId] = { x: 0, y: 0 };
+
+  function placeId(id, x, y) {
+    if (!id || !nodeMap[id] || pos[id]) return;
+    pos[id] = { x, y };
+  }
+
+  function membersOf(union) {
+    const parts = [...new Set((union.partners || []).filter((id) => nodeMap[id]))];
+    const kids = [...new Set((union.children || []).filter((id) => nodeMap[id]))];
+    return { parts, kids };
+  }
+
+  for (let step = 0; step < unions.length + 8; step += 1) {
+    let progressed = false;
+    const ranked = [...unions].sort((a, b) => {
+      const sa = (a.partners || []).filter((id) => pos[id]).length * 10 + (a.children || []).filter((id) => pos[id]).length;
+      const sb = (b.partners || []).filter((id) => pos[id]).length * 10 + (b.children || []).filter((id) => pos[id]).length;
+      return sb - sa;
+    });
+    for (const union of ranked) {
+      const { parts, kids } = membersOf(union);
+      const placedParts = parts.filter((id) => pos[id]);
+      const placedKids = kids.filter((id) => pos[id]);
+      if (!placedParts.length && !placedKids.length) continue;
+
+      if (placedParts.length && placedParts.length < parts.length) {
+        const y = pos[placedParts[0]].y;
+        let x = Math.max(...placedParts.map((id) => pos[id].x)) + CARD_W + spouseGap;
+        for (const id of parts) {
+          if (pos[id]) continue;
+          placeId(id, x, y);
+          x += CARD_W + spouseGap;
+          progressed = true;
+        }
+      }
+      if (placedKids.length && parts.some((id) => !pos[id])) {
+        const y = Math.min(...placedKids.map((id) => pos[id].y)) - ROW;
+        const missing = parts.filter((id) => !pos[id]);
+        const total = missing.length * CARD_W + Math.max(0, missing.length - 1) * spouseGap;
+        let x = midX(placedKids, pos) - total / 2;
+        missing.forEach((id, i) => {
+          placeId(id, x + i * (CARD_W + spouseGap), y);
+          progressed = true;
+        });
+      }
+      const nowParts = parts.filter((id) => pos[id]);
+      const missingKids = kids.filter((id) => !pos[id]);
+      if (nowParts.length && missingKids.length) {
+        const y = Math.min(...nowParts.map((id) => pos[id].y)) + ROW;
+        const total = missingKids.length * CARD_W + Math.max(0, missingKids.length - 1) * GAP_X;
+        let x = midX(nowParts, pos) - total / 2;
+        missingKids.forEach((id, i) => {
+          placeId(id, x + i * (CARD_W + GAP_X), y);
+          progressed = true;
+        });
+      }
+    }
+    if (progressed) continue;
+    const nextId = (chart.nodes || [])
+      .map((n) => n.id)
+      .concat(unions.flatMap((u) => [...(u.partners || []), ...(u.children || [])]))
+      .find((id) => id && nodeMap[id] && !pos[id]);
+    if (!nextId) break;
+    const xs = Object.values(pos).map((p) => p.x);
+    placeId(nextId, (xs.length ? Math.max(...xs) : 0) + CARD_W + GAP_X * 4, 0);
+  }
+
+  for (const node of chart.nodes || []) {
+    if (pos[node.id]) continue;
+    const xs = Object.values(pos).map((p) => p.x);
+    pos[node.id] = { x: (xs.length ? Math.max(...xs) : 0) + CARD_W + GAP_X, y: 0 };
+  }
+
+  function sameY(a, b) {
+    return Math.abs(a - b) <= 8;
+  }
+
+  function spanOf(ids) {
+    const pts = ids.map((id) => pos[id]).filter(Boolean);
+    if (!pts.length) return { x: 0, right: 0, mid: 0, width: 0 };
+    const x = Math.min(...pts.map((p) => p.x));
+    const right = Math.max(...pts.map((p) => p.x + CARD_W));
+    return { x, right, mid: (x + right) / 2, width: right - x };
+  }
+
+  function descendantsOf(seed) {
+    const out = new Set(seed.filter((id) => id && pos[id]));
+    const stack = [...out];
+    while (stack.length) {
+      const id = stack.pop();
+      for (const union of unions) {
+        const parts = union.partners || [];
+        if (!parts.includes(id)) continue;
+        for (const p of parts) {
+          if (!p || !pos[p] || out.has(p)) continue;
+          out.add(p);
+          stack.push(p);
+        }
+        for (const k of union.children || []) {
+          if (!k || !pos[k] || out.has(k)) continue;
+          out.add(k);
+          stack.push(k);
+        }
+      }
+    }
+    return out;
+  }
+
+  function unitForPerson(id, y) {
+    const spouses = [];
+    for (const union of unions) {
+      const parts = (union.partners || []).filter((p) => p && nodeMap[p]);
+      if (!parts.includes(id)) continue;
+      for (const p of parts) {
+        if (p === id) continue;
+        if (!pos[p]) placeId(p, (pos[id]?.x || 0) + CARD_W + spouseGap, y);
+        else if (sameY(pos[p].y, y) || Math.abs(pos[p].y - y) <= ROW / 2) pos[p].y = y;
+        if (pos[p] && sameY(pos[p].y, y) && !spouses.includes(p)) spouses.push(p);
+      }
+    }
+    spouses.sort((a, b) => pos[a].x - pos[b].x || String(a).localeCompare(String(b)));
+    if (!spouses.length) return [id];
+    if (spouses.length === 1) {
+      return pos[spouses[0]].x < pos[id].x ? [spouses[0], id] : [id, spouses[0]];
+    }
+    const left = spouses.filter((s) => pos[s].x < pos[id].x);
+    const right = spouses.filter((s) => pos[s].x >= pos[id].x);
+    if (!left.length) return [spouses[0], id, ...spouses.slice(1)];
+    if (!right.length) return [...spouses.slice(0, -1), id, spouses[spouses.length - 1]];
+    return [...left, id, ...right];
+  }
+
+  function layoutUnit(unit, y, startX) {
+    let x = startX;
+    unit.forEach((id, i) => {
+      if (!pos[id]) placeId(id, x, y);
+      if (i) x += spouseGap;
+      pos[id].y = y;
+      pos[id].x = x;
+      x += CARD_W;
+    });
+    return x;
+  }
+
+  function packUnionKids(union) {
+    const { parts, kids } = membersOf(union);
+    const placedParts = parts.filter((id) => pos[id]);
+    if (!placedParts.length || !kids.length) return;
+    const parentY = Math.min(...placedParts.map((id) => pos[id].y));
+    const childY = parentY + ROW;
+    const childList = kids.filter((id) => nodeMap[id]);
+    if (!childList.length) return;
+    for (const id of childList) {
+      if (!pos[id]) placeId(id, 0, childY);
+      pos[id].y = childY;
+    }
+    const slots = childList.map((id) => {
+      const unit = unitForPerson(id, childY);
+      for (const p of unit) {
+        if (!pos[p]) placeId(p, 0, childY);
+        pos[p].y = childY;
+      }
+      const own = unit.length * CARD_W + Math.max(0, unit.length - 1) * spouseGap;
+      const below = [...descendantsOf(unit)].filter((pid) => pos[pid] && pos[pid].y > childY + 8);
+      const belowW = below.length ? spanOf(below).width : 0;
+      return { unit, own, width: Math.max(own, belowW) };
+    });
+    const total = slots.reduce((sum, slot, i) => sum + slot.width + (i ? GAP_X : 0), 0);
+    let x = midX(placedParts, pos) - total / 2;
+    for (const slot of slots) {
+      const treeIds = [...descendantsOf(slot.unit)];
+      layoutUnit(slot.unit, childY, x + (slot.width - slot.own) / 2);
+      const below = treeIds.filter((id) => pos[id] && !slot.unit.includes(id));
+      if (below.length) {
+        const dx = spanOf(slot.unit).mid - spanOf(below).mid;
+        if (Math.abs(dx) >= 1) {
+          for (const id of below) pos[id].x += dx;
+        }
+      }
+      x += slot.width + GAP_X;
+    }
+  }
+
+  function blocksOnRow(y) {
+    const used = new Set();
+    const blocks = [];
+    function addBlock(ids) {
+      const unique = ids.filter((id) => pos[id] && sameY(pos[id].y, y) && !used.has(id));
+      if (!unique.length) return;
+      unique.forEach((id) => used.add(id));
+      const sp = spanOf(unique);
+      blocks.push({ ids: unique, x: sp.x, right: sp.right });
+    }
+    for (const union of unions) {
+      const { kids } = membersOf(union);
+      const onRow = [];
+      for (const kid of kids) {
+        if (!pos[kid] || !sameY(pos[kid].y, y)) continue;
+        for (const id of unitForPerson(kid, y)) {
+          if (!onRow.includes(id)) onRow.push(id);
+        }
+      }
+      addBlock(onRow);
+    }
+    for (const id of Object.keys(pos)) {
+      if (!sameY(pos[id].y, y) || used.has(id)) continue;
+      addBlock(unitForPerson(id, y));
+    }
+    return blocks;
+  }
+
+  function packRowSubtrees(y) {
+    const blocks = blocksOnRow(y);
+    blocks.sort((a, b) => a.x - b.x || String(a.ids[0]).localeCompare(String(b.ids[0])));
+    for (let i = 1; i < blocks.length; i += 1) {
+      const minX = blocks[i - 1].right + GAP_X;
+      if (blocks[i].x >= minX) continue;
+      const dx = minX - blocks[i].x;
+      const earlier = new Set(blocks.slice(0, i).flatMap((block) => [...descendantsOf(block.ids)]));
+      for (const id of descendantsOf(blocks[i].ids)) {
+        if (earlier.has(id) || !pos[id]) continue;
+        pos[id].x += dx;
+      }
+      const sp = spanOf(blocks[i].ids);
+      blocks[i].x = sp.x;
+      blocks[i].right = sp.right;
+    }
+  }
+
+  for (const union of unions) {
+    const { parts } = membersOf(union);
+    const placed = parts.filter((id) => pos[id]);
+    if (placed.length < 2) continue;
+    const y = pos[placed[0]].y;
+    for (const id of placed) {
+      if (sameY(pos[id].y, y)) pos[id].y = y;
+    }
+  }
+
+  const parentYOf = (union) => {
+    const parts = membersOf(union).parts.filter((id) => pos[id]);
+    return parts.length ? Math.min(...parts.map((id) => pos[id].y)) : Infinity;
+  };
+  [...unions]
+    .sort((a, b) => parentYOf(b) - parentYOf(a) || String(a.id).localeCompare(String(b.id)))
+    .forEach(packUnionKids);
+
+  const rows = [...new Set(Object.values(pos).map((p) => p.y))].sort((a, b) => a - b);
+  for (const y of rows) packRowSubtrees(y);
+  for (const y of rows) resolveRow(pos, y);
+
+  const size = shiftPositive(pos);
+  const edges = [];
+
+  function marriageEdge(union) {
+    const parts = (union.partners || []).map((id) => pos[id]).filter(Boolean);
+    if (parts.length < 2) return null;
+    parts.sort((a, b) => a.x - b.x);
+    if (Math.abs(parts[0].y - parts[1].y) > 8) return null;
+    const y = parts[0].y + CARD_H / 2;
+    return {
+      type: "marriage",
+      x1: parts[0].x + CARD_W,
+      y1: y,
+      x2: parts[1].x,
+      y2: y,
+      label: union.marriage?.year ? String(union.marriage.year) : "",
+    };
+  }
+
+  function descentEdges(union) {
+    const partners = (union.partners || []).filter((id) => pos[id]);
+    if (!partners.length) return [];
+    const parentY = Math.min(...partners.map((id) => pos[id].y));
+    const kids = (union.children || []).filter(
+      (id) => pos[id] && Math.abs(pos[id].y - (parentY + ROW)) < ROW / 2,
+    );
+    if (!kids.length) return [];
+    const mx = midX(partners, pos);
+    const joinY = parentY + CARD_H;
+    const childY = Math.min(...kids.map((id) => pos[id].y));
+    const barY = childY - 26;
+    const kidPts = kids
+      .map((id) => ({ x: pos[id].x + CARD_W / 2, y: pos[id].y, id }))
+      .sort((a, b) => a.x - b.x);
+    const ownFamily = new Set(kids);
+    for (const kid of kids) {
+      for (const id of unitForPerson(kid, childY)) ownFamily.add(id);
+    }
+    const splitters = Object.keys(pos).filter((id) => {
+      if (ownFamily.has(id) || !pos[id] || Math.abs(pos[id].y - childY) > 8) return false;
+      return true;
+    });
+    function blocked(x1, x2) {
+      const lo = Math.min(x1, x2);
+      const hi = Math.max(x1, x2);
+      return splitters.some((id) => {
+        const cx = pos[id].x + CARD_W / 2;
+        return cx > lo + 4 && cx < hi - 4;
+      });
+    }
+    const clusters = [];
+    for (const pt of kidPts) {
+      const last = clusters[clusters.length - 1];
+      if (!last || blocked(last[last.length - 1].x, pt.x)) clusters.push([pt]);
+      else last.push(pt);
+    }
+    const lines = [{ type: "stem", x1: mx, y1: joinY, x2: mx, y2: barY }];
+    for (const cluster of clusters) {
+      const left = cluster[0].x;
+      const right = cluster[cluster.length - 1].x;
+      let barLo = left;
+      let barHi = right;
+      if (clusters.length === 1 && !blocked(mx, left) && !blocked(mx, right)) {
+        barLo = Math.min(left, mx);
+        barHi = Math.max(right, mx);
+      }
+      if (barHi - barLo > 1) lines.push({ type: "stem", x1: barLo, y1: barY, x2: barHi, y2: barY });
+      for (const pt of cluster) {
+        lines.push({ type: "arrow", x1: pt.x, y1: barY, x2: pt.x, y2: pt.y - 6 });
+      }
+    }
+    return lines;
+  }
+
+  for (const union of unions) {
+    const placedPartners = (union.partners || []).filter((id) => pos[id]);
+    if (placedPartners.length >= 2) {
+      const m = marriageEdge(union);
+      if (m) edges.push(m);
+    }
+    edges.push(...descentEdges(union));
+  }
+
+  const nodes = Object.entries(pos).map(([id, p]) => ({
+    ...(nodeMap[id] || { id, name: id }),
+    x: p.x,
+    y: p.y,
+    focus: id === focusId,
+  }));
+  return { nodes, edges, width: size.width, height: size.height, focus: focusId };
+}
+
 export function layoutFamilyTree(chart) {
+  if (chart?.scope === "all") return layoutEntireTree(chart);
   const focusId = chart?.focus;
   const nodeMap = Object.fromEntries((chart?.nodes || []).map((n) => [n.id, n]));
   const unions = chart?.unions || [];

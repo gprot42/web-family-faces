@@ -108,12 +108,20 @@ export default function FamousLookup({
           type="button"
           className={`secondary lookup-launch${compact ? " cluster-ai" : ""}`}
           disabled={loading || disabled}
-          aria-label={loading ? "Looking up this group" : "Look up this group with AI"}
+          aria-label={
+            loading
+              ? compact
+                ? "Looking up this cluster"
+                : "Looking up this face"
+              : compact
+                ? "Look up this cluster with AI"
+                : "Look up this face with AI"
+          }
           onClick={run}
           {...tip(
             available
               ? compact
-                ? "Look this group up with AI. Only a face crop is sent — not the original photo. You still choose the name."
+                ? "Look this cluster up with AI. Only a face crop is sent — not the original photo. You still choose the name."
                 : "Send this face crop — not the original photo — plus filename, dates, EXIF, and already-named people. You still choose the name."
               : "Open Settings and paste an xAI key, or sign in with SuperGrok. Only a face crop is sent.",
           )}

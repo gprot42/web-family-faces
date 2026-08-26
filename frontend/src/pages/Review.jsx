@@ -332,7 +332,7 @@ export default function Review({ onChange }) {
           <h1>Check auto names</h1>
           <p className="lede">
             The matcher attached these names. Keep the ones that are right. Not this person sends
-            the face back to To name. Names you typed yourself are not listed here.
+            the face back to Clusters to name. Names you typed yourself are not listed here.
           </p>
         </div>
       </div>
@@ -340,7 +340,7 @@ export default function Review({ onChange }) {
       {loading ? (
         <div className="card empty">Loading auto-named faces…</div>
       ) : !groups.length ? (
-        <div className="card empty">No auto-named faces waiting. Name someone on To name, then come back after Find Known Faces.</div>
+        <div className="card empty">No auto-named faces waiting. Name someone on Clusters to name, then come back after Find Known Faces.</div>
       ) : (
         <p className="hint" style={{ marginTop: -8, marginBottom: 18 }}>
           {count} face{count === 1 ? "" : "s"} to check.
