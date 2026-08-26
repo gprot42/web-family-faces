@@ -124,12 +124,32 @@ export function uniqueCatalogPerson(query, people, { excludeId } = {}) {
 }
 
 export function completeUniqueFirstName(query, people, { excludeId } = {}) {
+  if (/\s/.test(String(query || "").trim())) return null;
   const unique = uniqueFirstName(query, people, { excludeId });
   if (!unique) return null;
   const q = String(query || "").trim().toLowerCase();
   const { first, nickFirst } = firstTokens(unique);
   if (first === q || nickFirst === q) return unique;
   return null;
+}
+
+/** Select the filled-in rest of a name so more typing replaces it instead of appending. */
+export function selectCompletedSuffix(input, typed, filled) {
+  if (!input || typeof input.setSelectionRange !== "function") return;
+  const from = String(typed || "");
+  const to = String(filled || "");
+  if (to.length <= from.length || !to.toLowerCase().startsWith(from.toLowerCase())) return;
+  const start = from.length;
+  const end = to.length;
+  const apply = () => {
+    try {
+      input.setSelectionRange(start, end);
+    } catch {
+      /* ignore */
+    }
+  };
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(apply);
+  else apply();
 }
 
 export function splitNameMatch(query, name) {

@@ -14,7 +14,7 @@ import PersonPicker from "../components/PersonPicker.jsx";
 import FamousLookup from "../components/FamousLookup.jsx";
 import ImaginePrompt from "../components/ImaginePrompt.jsx";
 import NameSuggest from "../components/NameSuggest.jsx";
-import { completeUniqueFirstName, matchPeople, uniqueCatalogPerson } from "../nameSuggest.js";
+import { completeUniqueFirstName, matchPeople, selectCompletedSuffix, uniqueCatalogPerson } from "../nameSuggest.js";
 import { loadCachedPeople, saveCachedPeople } from "../peopleCache.js";
 import { emitCatalogChange, emitPhotoChange, PHOTO_CHANGE_EVENT, showPhotoMenu } from "../photoMenu.js";
 import { clearRematchUndo, readRematchUndo, writeRematchUndo } from "../rematchUndo.js";
@@ -201,6 +201,7 @@ export default function PhotoDetail() {
   const drag = useRef(null);
   const didDrag = useRef(false);
   const skipFullClick = useRef(false);
+  const openedFullAt = useRef(0);
   const advancing = useRef(false);
   const stayNamed = useRef(false);
   fullNow.current = full;
@@ -339,7 +340,7 @@ export default function PhotoDetail() {
     setFaceNotes({});
     setFaceNoteOpen(null);
     const firstUnknown = (data.faces || []).find(
-      (f) => !f.person_id && f.quality === "ok" && f.assigned_how !== "junk",
+      (f) => !f.person_id && f.assigned_how !== "junk",
     );
     const nextId = (firstUnknown || data.faces?.[0] || {}).id || null;
     setActive(nextId);
@@ -663,6 +664,12 @@ export default function PhotoDetail() {
     return true;
   }
 
+  function showFullscreen() {
+    skipFullClick.current = true;
+    openedFullAt.current = Date.now();
+    setFull(true);
+  }
+
   function onPanStart(e) {
     if (pickingNow.current) return;
     if (e.button != null && e.button !== 0) return;
@@ -670,6 +677,7 @@ export default function PhotoDetail() {
       return;
     }
     if (zoomNow.current <= ZOOM_FIT) return;
+    if (!fullNow.current) return;
     e.preventDefault();
     const p = panNow.current;
     didDrag.current = false;
@@ -1193,7 +1201,7 @@ export default function PhotoDetail() {
   function pickCatalogName(face, typed, { useHighlight = false } = {}) {
     const hits = catalogHits(face, typed);
     if (useHighlight && namePick >= 0 && hits[namePick]) return hits[namePick];
-    return uniqueCatalogPerson(typed, people, { excludeId: face?.person_id });
+    return uniqueCatalogPerson(typed, people, { excludeId: face?.person_id }) || (hits.length === 1 ? hits[0] : null);
   }
 
   function applyCatalogPerson(person, face) {
@@ -2117,6 +2125,18 @@ export default function PhotoDetail() {
             </div>
           </div>
           <div className="photo-head-actions" role="toolbar" aria-label="Photo">
+            <button
+              type="button"
+              className="secondary"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                showFullscreen();
+              }}
+              {...tip("Open this photo fullscreen. Click the picture, or Esc to come back.")}
+            >
+              Fullscreen
+            </button>
             <NamesToggle />
             <LabelLayoutToggle />
             {(photo.faces || []).some((f) => f.person_id && f.assigned_how !== "junk") ? (
@@ -2241,7 +2261,7 @@ export default function PhotoDetail() {
             onPointerMove={onPanMove}
             onPointerUp={onPanEnd}
             onPointerCancel={onPanEnd}
-            {...tip("Click the photo for fullscreen. Scroll, pinch, or + / − to zoom. Drag when zoomed in.")}
+            {...tip("Click the photo for fullscreen. Scroll, pinch, or + / − to zoom.")}
           >
             <div
               className="stage-zoom"
@@ -2253,11 +2273,14 @@ export default function PhotoDetail() {
                 fallbackSrc={photo.thumb_url}
                 priority
                 activeId={active}
-                onFaceClick={(f) => openFace(f)}
+                onFaceClick={(f) => {
+                  if (didDrag.current) return;
+                  selectFace(f.id);
+                  showFullscreen();
+                }}
                 onPhotoClick={() => {
                   if (didDrag.current) return;
-                  if (clickResetsZoom()) return;
-                  setFull(true);
+                  showFullscreen();
                 }}
                 overlayTags={fullLabels}
                 showUnnamed
@@ -2443,17 +2466,22 @@ export default function PhotoDetail() {
                   onClick={(e) => e.stopPropagation()}
                   onChange={(e) => {
                     const value = e.target.value;
+                    const el = e.target;
                     const prev = Object.prototype.hasOwnProperty.call(drafts, f.id) ? drafts[f.id] : draftName(f);
                     const shrinking = value.length < String(prev || "").length;
                     const unique = shrinking
                       ? null
                       : completeUniqueFirstName(value, people, { excludeId: f.person_id });
-                    setDrafts((cur) => ({ ...cur, [f.id]: unique ? unique.name : value }));
+                    const next = unique ? unique.name : value;
+                    setDrafts((cur) => ({ ...cur, [f.id]: next }));
                     setNamePick(-1);
                     if (savedId === f.id) setSavedId(null);
+                    if (unique) selectCompletedSuffix(el, value, next);
                   }}
                   onBlur={(e) => {
-                    if (e.relatedTarget?.closest?.(".face-edit, .name-suggest, .person-tiles")) return;
+                    const t = e.relatedTarget;
+                    if (t?.closest?.(".name-suggest, .person-tiles")) return;
+                    if (t?.closest?.(`#face-card-${f.id}`)) return;
                     const next = draftName(f).trim();
                     if (next && next !== String(f.person_name || "").trim()) saveFaceName(f);
                   }}
@@ -2743,7 +2771,7 @@ export default function PhotoDetail() {
             if (pickingNow.current) skipFullClick.current = true;
           }}
           onClick={(e) => {
-            if (skipFullClick.current) {
+            if (skipFullClick.current || Date.now() - openedFullAt.current < 400) {
               skipFullClick.current = false;
               return;
             }
@@ -2874,13 +2902,13 @@ export default function PhotoDetail() {
             <button
               type="button"
               onClick={() => {
-                const current = (photo.faces || []).find(
-                  (item) => item.id === active && item.assigned_how !== "junk",
-                );
                 const unnamed = (photo.faces || []).find(
                   (item) => !item.person_id && item.assigned_how !== "junk",
                 );
-                beginTaggingFace((current || unnamed || face || photo.faces?.[0] || {}).id);
+                const current = (photo.faces || []).find(
+                  (item) => item.id === active && item.assigned_how !== "junk",
+                );
+                beginTaggingFace((unnamed || current || face || photo.faces?.[0] || {}).id);
               }}
               {...tip("Leave fullscreen and type names on the faces. Click a numbered face, or press 1–9, to name that person.")}
             >

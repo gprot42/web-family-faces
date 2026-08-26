@@ -23,6 +23,12 @@ test("uniqueFirstName fills a unique first name", () => {
   assert.equal(uniqueFirstName("lil", people)?.name, "Lila Cole");
   assert.equal(completeUniqueFirstName("lila", people)?.name, "Lila Cole");
   assert.equal(completeUniqueFirstName("lil", people), null);
+  assert.equal(completeUniqueFirstName("lila cole", people), null);
+});
+
+test("uniqueCatalogPerson still matches a unique name with a repeated last token", () => {
+  assert.equal(uniqueCatalogPerson("lila cole cole", people)?.name, "Lila Cole");
+  assert.equal(uniqueCatalogPerson("Darren Evans Evans", [{ id: 3, name: "Darren Evans" }])?.name, "Darren Evans");
 });
 
 test("uniqueFirstName stays quiet when two people share a prefix", () => {

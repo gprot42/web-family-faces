@@ -202,7 +202,7 @@ export default function Help() {
             in DB View are about the person. All of them stay in the catalog, never on the original
             file.
           </div>
-          <div>Click the photo for fullscreen · drag the dotted handle on the options bar to move it · Hide labels / Show labels on the picture (<kbd>l</kbd>) · ← → other photos · zoom controls sit on the right of the picture · <kbd>+</kbd> / <kbd>−</kbd> or pinch to zoom · <kbd>0</kbd> or click to fit · any other key or click to exit</div>
+          <div>Click the photo or <strong>Fullscreen</strong> after naming · drag the dotted handle on the options bar to move it · Hide labels / Show labels on the picture (<kbd>l</kbd>) · ← → other photos · zoom controls sit on the right of the picture · <kbd>+</kbd> / <kbd>−</kbd> or pinch to zoom · <kbd>0</kbd> or click to fit · any other key or click to exit</div>
           <div>
             <strong>Play album</strong> or <strong>Play person</strong> walks the pictures in date
             order, 2.5 seconds each (change this in Settings). <kbd>space</kbd> pause · <kbd>esc</kbd> exit.

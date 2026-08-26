@@ -12,7 +12,7 @@ import { PhotoTagRow } from "../components/PhotoTags.jsx";
 import { emitCatalogChange, PHOTO_CHANGE_EVENT, showPhotoMenu } from "../photoMenu.js";
 import { patchCachedPerson } from "../peopleCache.js";
 import { clearPersonPos, personShotHash, readPersonPos, writePersonPos } from "../albumPos.js";
-import { completeUniqueFirstName, matchPeople, uniqueCatalogPerson } from "../nameSuggest.js";
+import { completeUniqueFirstName, matchPeople, selectCompletedSuffix, uniqueCatalogPerson } from "../nameSuggest.js";
 
 const PERSON_CATEGORIES = [
   { id: "", label: "Not set" },
@@ -347,9 +347,11 @@ export default function PersonDetail() {
                 const value = e.target.value;
                 const shrinking = value.length < String(name || "").length;
                 const unique = shrinking ? null : completeUniqueFirstName(value, people, { excludeId: id });
-                setName(unique ? unique.name : value);
+                const next = unique ? unique.name : value;
+                setName(next);
                 setNamePick(-1);
                 if (saveState === "saved") setSaveState("idle");
+                if (unique) selectCompletedSuffix(e.target, value, next);
               }}
               onKeyDown={(e) => {
                 const hits = catalogHits();
