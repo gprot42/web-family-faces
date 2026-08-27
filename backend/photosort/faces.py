@@ -158,24 +158,107 @@ def _load_bgr(path: Path) -> np.ndarray:
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
 
-def _load_detect(photo_row) -> tuple[np.ndarray, float, float]:
-    """BGR image for the detector, plus scale back to the original pixel size."""
+def _catalog_rotation(photo_row) -> int:
+    try:
+        return int(photo_row["rotation"] or 0) % 360
+    except (KeyError, IndexError, TypeError, ValueError):
+        return 0
+
+
+def _rotate_pil(img: Image.Image, rot: int) -> Image.Image:
+    """Match on-screen clockwise rotate. Originals on disk stay as they are."""
+    rot = ((int(rot) % 360) + 360) % 360
+    if rot == 90:
+        return img.transpose(Image.Transpose.ROTATE_270)
+    if rot == 180:
+        return img.transpose(Image.Transpose.ROTATE_180)
+    if rot == 270:
+        return img.transpose(Image.Transpose.ROTATE_90)
+    return img
+
+
+def box_from_rotated(box: tuple[float, float, float, float], rot: int, orig_w: float, orig_h: float):
+    """Map a box from the clockwise-rotated detect image back onto the original file."""
+    x1, y1, x2, y2 = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
+    rot = ((int(rot) % 360) + 360) % 360
+    if rot == 0:
+        return (x1, y1, x2, y2)
+
+    def one(x: float, y: float) -> tuple[float, float]:
+        if rot == 90:
+            return (y, orig_h - x)
+        if rot == 180:
+            return (orig_w - x, orig_h - y)
+        if rot == 270:
+            return (orig_w - y, x)
+        return (x, y)
+
+    pts = [one(x1, y1), one(x2, y1), one(x1, y2), one(x2, y2)]
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    return (
+        max(0.0, min(xs)),
+        max(0.0, min(ys)),
+        min(float(orig_w), max(xs)),
+        min(float(orig_h), max(ys)),
+    )
+
+
+def box_to_rotated(box: tuple[float, float, float, float], rot: int, orig_w: float, orig_h: float):
+    """Map a box on the original file onto the clockwise-rotated detect image."""
+    x1, y1, x2, y2 = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
+    rot = ((int(rot) % 360) + 360) % 360
+    if rot == 0:
+        return (x1, y1, x2, y2)
+
+    def one(x: float, y: float) -> tuple[float, float]:
+        if rot == 90:
+            return (orig_h - y, x)
+        if rot == 180:
+            return (orig_w - x, orig_h - y)
+        if rot == 270:
+            return (y, orig_w - x)
+        return (x, y)
+
+    pts = [one(x1, y1), one(x2, y1), one(x1, y2), one(x2, y2)]
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    rw = orig_h if rot in (90, 270) else orig_w
+    rh = orig_w if rot in (90, 270) else orig_h
+    return (
+        max(0.0, min(xs)),
+        max(0.0, min(ys)),
+        min(float(rw), max(xs)),
+        min(float(rh), max(ys)),
+    )
+
+
+def _load_detect(photo_row) -> tuple[np.ndarray, float, float, int, float, float]:
+    """BGR image for the detector, plus scale back to the original pixel size.
+
+    Catalog rotation is applied so a photo you turned upright is detected upright.
+    Boxes are mapped back onto the original file coordinates.
+    """
     orig_w = float(photo_row["width"] or 0)
     orig_h = float(photo_row["height"] or 0)
+    rot = _catalog_rotation(photo_row)
     thumb = THUMB_DIR / f"{int(photo_row['id'])}.jpg"
     if thumb.is_file():
         img = Image.open(thumb)
         img.load()
-        rgb = np.array(img.convert("RGB"))
-        tw, th = img.size
-        sx = orig_w / tw if tw and orig_w else 1.0
-        sy = orig_h / th if th and orig_h else 1.0
-        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), sx, sy
-    bgr = _load_bgr(Path(photo_row["path"]))
-    h, w = bgr.shape[:2]
-    sx = orig_w / w if w and orig_w else 1.0
-    sy = orig_h / h if h and orig_h else 1.0
-    return bgr, sx, sy
+        img = img.convert("RGB")
+    else:
+        img = Image.fromarray(cv2.cvtColor(_load_bgr(Path(photo_row["path"])), cv2.COLOR_BGR2RGB))
+    img = _rotate_pil(img, rot)
+    rgb = np.array(img)
+    dw, dh = img.size
+    if rot in (90, 270):
+        sx = orig_h / dw if dw and orig_h else 1.0
+        sy = orig_w / dh if dh and orig_w else 1.0
+    else:
+        sx = orig_w / dw if dw and orig_w else 1.0
+        sy = orig_h / dh if dh and orig_h else 1.0
+    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), sx, sy, rot, orig_w, orig_h
 
 
 def _square_box(x1: float, y1: float, x2: float, y2: float, photo_w: int, photo_h: int) -> tuple[int, int, int, int]:
@@ -216,6 +299,7 @@ def save_crop(
     face_id: int,
     *,
     photo_id: int | None = None,
+    rotation: int = 0,
 ) -> Path:
     dest = CROP_DIR / f"{face_id}.jpg"
     w, h = int(photo_w or 0), int(photo_h or 0)
@@ -239,12 +323,54 @@ def save_crop(
         img = ImageOps.exif_transpose(img).convert("RGB")
     left, top, right, bottom = _square_box(x1, y1, x2, y2, w, h)
     crop = img.crop((left, top, right, bottom))
+    if rotation:
+        crop = _rotate_pil(crop, rotation)
     native = min(crop.size)
     crop = crop.resize((CROP_SIZE, CROP_SIZE), Image.Resampling.LANCZOS)
     # Sharpen after scale. Does not invent new identity features.
     percent = 165 if native < CROP_SIZE else 115
     crop = crop.filter(ImageFilter.UnsharpMask(radius=1.3, percent=percent, threshold=2))
     return save_image(crop, dest, format="JPEG", quality=92, optimize=True)
+
+
+def refresh_photo_crops(photo_id: int, conn=None) -> int:
+    """Rewrite face crops for the photo's current catalog rotation.
+
+    Crops are display-upright. Originals on disk are not changed.
+    """
+    own = conn is None
+    if own:
+        conn = connect()
+        init_db(conn)
+    try:
+        row = conn.execute("SELECT * FROM photos WHERE id = ?", (int(photo_id),)).fetchone()
+        if not row:
+            return 0
+        rot = _catalog_rotation(row)
+        faces = conn.execute(
+            "SELECT id, x1, y1, x2, y2 FROM faces WHERE photo_id = ?",
+            (int(photo_id),),
+        ).fetchall()
+        path = Path(row["path"])
+        n = 0
+        for face in faces:
+            try:
+                save_crop(
+                    path,
+                    int(row["width"] or 0),
+                    int(row["height"] or 0),
+                    (face["x1"], face["y1"], face["x2"], face["y2"]),
+                    int(face["id"]),
+                    photo_id=int(photo_id),
+                    rotation=rot,
+                )
+                n += 1
+            except Exception:
+                pass
+        return n
+    finally:
+        if own:
+            conn.close()
 
 
 def rebuild_all_crops() -> dict:
@@ -1200,11 +1326,66 @@ def box_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, 
     return inter / denom if denom else 0.0
 
 
+def same_face_box(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+    """True when two detector boxes are the same person, not two people sitting close."""
+    if box_iou(a, b) >= 0.45:
+        return True
+    ca = ((a[0] + a[2]) / 2, (a[1] + a[3]) / 2)
+    cb = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+    in_a = a[0] <= cb[0] <= a[2] and a[1] <= cb[1] <= a[3]
+    in_b = b[0] <= ca[0] <= b[2] and b[1] <= ca[1] <= b[3]
+    return in_a or in_b
+
+
+def _face_keep_score(row) -> tuple:
+    how = str(row["assigned_how"] or "")
+    named = 1 if row["person_id"] is not None and how != "junk" else 0
+    manual = 1 if how == "manual" else 0
+    return (named, manual, float(row["det_score"] or 0), int(row["id"] or 0))
+
+
+def merge_overlapping_faces(conn, photo_id: int) -> int:
+    """Drop duplicate detector boxes on one photo. Keeps the named / stronger box."""
+    rows = conn.execute(
+        """
+        SELECT id, x1, y1, x2, y2, det_score, person_id, assigned_how
+        FROM faces
+        WHERE photo_id = ?
+          AND IFNULL(assigned_how, '') != 'junk'
+        ORDER BY id
+        """,
+        (int(photo_id),),
+    ).fetchall()
+    drop: set[int] = set()
+    kept = []
+    for row in rows:
+        box = (float(row["x1"]), float(row["y1"]), float(row["x2"]), float(row["y2"]))
+        hit = None
+        for other in kept:
+            obox = (float(other["x1"]), float(other["y1"]), float(other["x2"]), float(other["y2"]))
+            if same_face_box(box, obox):
+                hit = other
+                break
+        if hit is None:
+            kept.append(row)
+            continue
+        if _face_keep_score(row) > _face_keep_score(hit):
+            drop.add(int(hit["id"]))
+            kept = [row if int(item["id"]) == int(hit["id"]) else item for item in kept]
+        else:
+            drop.add(int(row["id"]))
+    for face_id in drop:
+        conn.execute("DELETE FROM faces WHERE id = ?", (int(face_id),))
+    if drop:
+        conn.commit()
+    return len(drop)
+
+
 def scan_photo(conn, photo_row, analyzer) -> int:
     path = Path(photo_row["path"])
     thumb = THUMB_DIR / f"{int(photo_row['id'])}.jpg"
     try:
-        image, sx, sy = _load_detect(photo_row)
+        image, sx, sy, rot, orig_w, orig_h = _load_detect(photo_row)
     except Exception:
         # Original unmounted and no local preview: leave pending so Resume can retry.
         if not path.is_file() and not thumb.is_file():
@@ -1226,8 +1407,13 @@ def scan_photo(conn, photo_row, analyzer) -> int:
     count = 0
     for face in detected:
         raw = tuple(float(v) for v in face.bbox)
-        box = (raw[0] * sx, raw[1] * sy, raw[2] * sx, raw[3] * sy)
-        if any(box_iou(box, old) >= 0.72 for old in existing):
+        box = box_from_rotated(
+            (raw[0] * sx, raw[1] * sy, raw[2] * sx, raw[3] * sy),
+            rot,
+            orig_w,
+            orig_h,
+        )
+        if any(same_face_box(box, old) for old in existing):
             continue
         det_score = float(getattr(face, "det_score", 0.0))
         quality = _quality(det_score, box)
@@ -1265,6 +1451,7 @@ def scan_photo(conn, photo_row, analyzer) -> int:
                 box,
                 face_id,
                 photo_id=int(photo_row["id"]),
+                rotation=rot,
             )
             mark_statue_if_needed(conn, face_id)
         except Exception:
@@ -1272,6 +1459,7 @@ def scan_photo(conn, photo_row, analyzer) -> int:
         existing.append(box)
         count += 1
 
+    merge_overlapping_faces(conn, int(photo_row["id"]))
     conn.execute(
         "UPDATE photos SET scanned_at = ? WHERE id = ?",
         (now_iso(), photo_row["id"]),
@@ -1408,12 +1596,13 @@ def add_manual_face(photo_id: int, x1: float, y1: float, x2: float, y2: float) -
         if hit:
             return _reuse_face(conn, hit)
         try:
-            image, sx, sy = _load_detect(photo)
+            image, sx, sy, rot, orig_w, orig_h = _load_detect(photo)
         except Exception as exc:
             raise ValueError("Could not open this photo. Mount the album if it is on a NAS.") from exc
-        found = _detect_in_user_box(image, sx, sy, box)
+        found = _detect_in_user_box(image, sx, sy, box_to_rotated(box, rot, orig_w, orig_h))
         if found:
             det_box, det_score, blob, age, sex = found
+            det_box = box_from_rotated(det_box, rot, orig_w, orig_h)
             hit = _existing_in_box(det_box, existing)
             if hit:
                 return _reuse_face(conn, hit)
@@ -1458,6 +1647,7 @@ def add_manual_face(photo_id: int, x1: float, y1: float, x2: float, y2: float) -
                 det_box,
                 face_id,
                 photo_id=int(photo["id"]),
+                rotation=rot,
             )
         except Exception:
             pass

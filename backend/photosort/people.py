@@ -1439,7 +1439,8 @@ def get_person(person_id: int) -> dict[str, Any] | None:
             """
             SELECT f.id, f.photo_id, f.x1, f.y1, f.x2, f.y2, f.det_score, f.quality,
                    f.age_est, f.sex_est, f.person_id, f.cluster_id, f.assigned_how,
-                   f.created_at, f.embedding, ph.path, ph.taken_at, ph.width, ph.height, ph.sha256
+                   f.created_at, f.embedding, ph.path, ph.taken_at, ph.width, ph.height,
+                   ph.sha256, ph.rotation
             FROM faces f
             JOIN photos ph ON ph.id = f.photo_id
             WHERE f.person_id = ?
@@ -2716,7 +2717,7 @@ def list_auto_faces(
         if not order:
             return []
         ranked = f"""
-            SELECT f.id, f.photo_id, f.person_id, ph.path, ph.taken_at,
+            SELECT f.id, f.photo_id, f.person_id, ph.path, ph.taken_at, ph.rotation,
                    {photo_key} AS photo_key,
                    ROW_NUMBER() OVER (
                      PARTITION BY f.person_id, {photo_key}
@@ -2732,7 +2733,7 @@ def list_auto_faces(
         """
         if limit is None:
             face_sql = f"""
-                SELECT id, photo_id, person_id, path, taken_at, photo_key
+                SELECT id, photo_id, person_id, path, taken_at, rotation, photo_key
                 FROM ({ranked}) t
                 WHERE t.photo_rn = 1
                 ORDER BY t.person_id, t.id
@@ -2741,7 +2742,7 @@ def list_auto_faces(
         elif after_id is not None:
             lim = max(1, int(limit))
             face_sql = f"""
-                SELECT id, photo_id, person_id, path, taken_at, photo_key
+                SELECT id, photo_id, person_id, path, taken_at, rotation, photo_key
                 FROM ({ranked}) t
                 WHERE t.photo_rn = 1 AND t.id > ?
                 ORDER BY t.person_id, t.id
@@ -2752,8 +2753,8 @@ def list_auto_faces(
             off = max(0, int(offset or 0))
             lim = max(1, int(limit))
             face_sql = f"""
-                SELECT id, photo_id, person_id, path, taken_at, photo_key FROM (
-                    SELECT id, photo_id, person_id, path, taken_at, photo_key,
+                SELECT id, photo_id, person_id, path, taken_at, rotation, photo_key FROM (
+                    SELECT id, photo_id, person_id, path, taken_at, rotation, photo_key,
                            ROW_NUMBER() OVER (PARTITION BY person_id ORDER BY id) AS rn
                     FROM ({ranked}) u
                     WHERE u.photo_rn = 1

@@ -1062,52 +1062,94 @@ button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shado
 }
 .folder-index-tools {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px 18px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
   margin: 0 0 22px;
 }
 .folder-index-tools input[type="search"] {
-  width: min(100%, 22rem);
+  width: min(100%, 28rem);
   margin: 0;
 }
 .folder-decade-nav {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
   position: sticky;
   top: 8px;
   z-index: 2;
-  padding: 6px 0;
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  padding: 10px 12px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 70%, var(--paper));
   backdrop-filter: blur(8px);
 }
+.folder-decade-label {
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+  margin: 0 4px 0 2px;
+}
 .folder-decade-nav a {
-  padding: 5px 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 0 22px;
   border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--paper);
-  color: var(--ink);
-  font-size: 0.86rem;
-  font-weight: 600;
+  border: 2px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: color-mix(in srgb, var(--accent) 16%, var(--paper));
+  color: var(--accent-ink);
+  font-size: 1.125rem;
+  font-weight: 750;
+  letter-spacing: -0.02em;
   text-decoration: none;
-  box-shadow: none;
+  box-shadow: var(--btn-shadow);
 }
 .folder-decade-nav a:hover {
-  background: var(--secondary-hover);
-  transform: none;
+  background: color-mix(in srgb, var(--accent) 28%, var(--paper));
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  transform: translateY(-1px);
+  box-shadow: var(--btn-shadow-hover);
+}
+.folder-decade-nav a:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 28%, transparent);
 }
 .folder-decade-nav a.starred-jump {
-  background: color-mix(in srgb, var(--gold) 18%, var(--paper));
-  border-color: color-mix(in srgb, var(--gold) 42%, var(--line));
-  color: color-mix(in srgb, var(--gold) 35%, var(--ink));
+  background: var(--gold);
+  border-color: color-mix(in srgb, var(--gold) 40%, var(--ink));
+  color: var(--ink);
 }
 .folder-decade-nav a.starred-jump:hover {
-  background: color-mix(in srgb, var(--gold) 26%, var(--paper));
+  background: color-mix(in srgb, var(--gold) 82%, var(--paper));
+  border-color: color-mix(in srgb, var(--gold) 25%, var(--ink));
+}
+.folder-decade-nav a.starred-jump svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+@media (max-width: 640px) {
+  .folder-decade-label {
+    width: 100%;
+    margin: 0 0 2px;
+  }
+  .folder-decade-nav a {
+    min-height: 48px;
+    padding: 0 18px;
+    font-size: 1.05rem;
+  }
 }
 .folder-year {
   margin: 0 0 28px;
-  scroll-margin-top: 56px;
+  scroll-margin-top: 88px;
 }
 .folder-year h2 {
   margin: 0 0 12px;
@@ -1628,7 +1670,12 @@ button.person-chip[aria-pressed="true"] .hint {
 .labeled.zoomable { cursor: zoom-in; }
 .labeled.rot-90,
 .labeled.rot-270 {
-  aspect-ratio: var(--oh) / var(--ow);
+  position: relative;
+  aspect-ratio: var(--dw) / var(--dh);
+  width: min(var(--stage-w, 100%), calc(var(--stage-h, 70vh) * var(--dw) / var(--dh)));
+  height: min(var(--stage-h, 70vh), calc(var(--stage-w, 100%) * var(--dh) / var(--dw)));
+  max-width: 100%;
+  max-height: 100%;
 }
 .labeled-rot {
   position: relative;
@@ -1638,6 +1685,8 @@ button.person-chip[aria-pressed="true"] .hint {
   position: absolute;
   inset: 0;
   padding: 0;
+  width: auto;
+  height: auto;
 }
 .labeled.rot-90 .labeled-rot,
 .labeled.rot-270 .labeled-rot {
@@ -1651,7 +1700,20 @@ button.person-chip[aria-pressed="true"] .hint {
 .labeled.rot-180 .labeled-rot {
   transform: rotate(180deg);
 }
-.labeled-rot img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.labeled-rot img,
+.labeled.rot-90 .labeled-rot img,
+.labeled.rot-270 .labeled-rot img,
+.photo-page .labeled.rot-90 .labeled-inner.fit img,
+.photo-page .labeled.rot-270 .labeled-inner.fit img,
+.photo-full .labeled.rot-90 .labeled-rot img,
+.photo-full .labeled.rot-270 .labeled-rot img {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: contain;
+  display: block;
+}
 .labeled-inner { position: relative; display: block; padding-top: 22px; padding-bottom: 28px; }
 .labeled-inner.plain { padding-top: 0; padding-bottom: 0; }
 .labeled-inner.place-on { padding-top: 10px; padding-bottom: 10px; }
@@ -1698,7 +1760,9 @@ button.person-chip[aria-pressed="true"] .hint {
   position: absolute;
   display: inline-flex;
   align-items: center;
-  transform: translate(-50%, 6px);
+  transform-origin: 0 0;
+  --away: 8px;
+  transform: rotate(var(--unrot, 0deg)) translate(-50%, 6px);
   background: color-mix(in srgb, var(--face-tone, var(--chip-bg)) 78%, #1a1612);
   color: var(--on-photo);
   border: 1px solid color-mix(in srgb, var(--face-tone, var(--gold)) 70%, white);
@@ -1723,12 +1787,58 @@ button.person-chip[aria-pressed="true"] .hint {
   border-color: color-mix(in srgb, var(--face-tone, var(--gold)) 85%, white);
   box-shadow: 0 8px 20px color-mix(in srgb, var(--face-tone, #000) 28%, transparent);
 }
-.nametag.place-on, .nametag.place-on:hover { transform: translate(-50%, -50%); }
-.nametag.place-manual, .nametag.place-manual:hover { transform: translate(-50%, -50%); }
-.nametag.place-above, .nametag.place-above:hover { transform: translate(-50%, calc(-100% - 3px)); }
-.nametag.place-below, .nametag.place-below:hover { transform: translate(-50%, 3px); }
-.nametag.place-left, .nametag.place-left:hover { transform: translate(calc(-100% - 4px), -50%); }
-.nametag.place-right, .nametag.place-right:hover { transform: translate(4px, -50%); }
+.nametag.place-on, .nametag.place-on:hover,
+.nametag.place-manual, .nametag.place-manual:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(-50%, -50%);
+}
+.nametag.place-above, .nametag.place-above:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(-50%, calc(-100% - var(--away)));
+}
+.rot-90 .nametag.place-above, .rot-90 .nametag.place-above:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(var(--away), -50%);
+}
+.rot-180 .nametag.place-above, .rot-180 .nametag.place-above:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(-50%, var(--away));
+}
+.rot-270 .nametag.place-above, .rot-270 .nametag.place-above:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(calc(-100% - var(--away)), -50%);
+}
+.nametag.place-below, .nametag.place-below:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(-50%, var(--away));
+}
+.rot-90 .nametag.place-below, .rot-90 .nametag.place-below:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(calc(-100% - var(--away)), -50%);
+}
+.rot-180 .nametag.place-below, .rot-180 .nametag.place-below:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(-50%, calc(-100% - var(--away)));
+}
+.rot-270 .nametag.place-below, .rot-270 .nametag.place-below:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(var(--away), -50%);
+}
+.nametag.place-left, .nametag.place-left:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(calc(-100% - var(--away)), -50%);
+}
+.rot-90 .nametag.place-left, .rot-90 .nametag.place-left:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(-50%, calc(-100% - var(--away)));
+}
+.rot-180 .nametag.place-left, .rot-180 .nametag.place-left:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(var(--away), -50%);
+}
+.rot-270 .nametag.place-left, .rot-270 .nametag.place-left:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(-50%, var(--away));
+}
+.nametag.place-right, .nametag.place-right:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(var(--away), -50%);
+}
+.rot-90 .nametag.place-right, .rot-90 .nametag.place-right:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(-50%, var(--away));
+}
+.rot-180 .nametag.place-right, .rot-180 .nametag.place-right:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(calc(-100% - var(--away)), -50%);
+}
+.rot-270 .nametag.place-right, .rot-270 .nametag.place-right:hover {
+  transform: rotate(var(--unrot, 0deg)) translate(-50%, calc(-100% - var(--away)));
+}
 .nametag.movable { cursor: grab; touch-action: none; z-index: 6; }
 .nametag.movable:active, .nametag.dragging { cursor: grabbing; }
 .nametag.dragging { z-index: 8; }
@@ -1764,7 +1874,8 @@ button.person-chip[aria-pressed="true"] .hint {
   justify-content: center;
   gap: 8px;
   max-width: 92%;
-  transform: translate(-50%, calc(-100% - 14px));
+  transform-origin: 0 0;
+  transform: rotate(var(--unrot, 0deg)) translate(-50%, calc(-100% - 14px));
   z-index: 2;
 }
 .nametag-row::after { display: none; }
@@ -1824,7 +1935,7 @@ button.person-chip[aria-pressed="true"] .hint {
   position: absolute;
   left: 50%;
   top: 0;
-  transform: translate(-50%, -55%);
+  transform: translate(-50%, -55%) rotate(var(--unrot, 0deg));
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
@@ -2023,6 +2134,11 @@ button.saved {
   max-width: 100%;
   max-height: 100%;
 }
+.photo-page .labeled.rot-90,
+.photo-page .labeled.rot-270 {
+  width: min(var(--stage-w, 100%), calc(var(--stage-h, 100%) * var(--dw) / var(--dh)));
+  height: min(var(--stage-h, 100%), calc(var(--stage-w, 100%) * var(--dh) / var(--dw)));
+}
 .photo-page .labeled-inner.fit {
   padding: 0;
   width: auto;
@@ -2042,9 +2158,24 @@ button.saved {
   transform-origin: center center;
   will-change: transform;
 }
-.stage.zoomed { cursor: zoom-out; }
-.stage.zoomed:active { cursor: grabbing; }
+.stage.zoomed,
+.stage.zoomed .labeled,
+.stage.zoomed .labeled.zoomable,
+.stage.zoomed .face-box,
+.stage.zoomed .nametag,
+.stage.zoomed .nametag.movable { cursor: grab; }
+.stage.zoomed:active,
+.stage.zoomed:active .labeled,
+.stage.zoomed:active .face-box,
+.stage.zoomed:active .nametag { cursor: grabbing; }
 .stage.zoomed-out { cursor: zoom-in; }
+.stage img,
+.stage-zoom img,
+.labeled img,
+.photo-full img {
+  user-select: none;
+  -webkit-user-drag: none;
+}
 .zoom-tools {
   display: grid;
   grid-template-columns: auto auto;
@@ -2150,8 +2281,15 @@ button.saved {
   border-style: solid;
   background: rgba(201, 107, 74, 0.28);
 }
-.photo-full.zoomed { cursor: zoom-out; }
-.photo-full.zoomed:active { cursor: grabbing; }
+.photo-full.zoomed,
+.photo-full.zoomed .labeled,
+.photo-full.zoomed .face-box,
+.photo-full.zoomed .nametag,
+.photo-full.zoomed .nametag.movable { cursor: grab; }
+.photo-full.zoomed:active,
+.photo-full.zoomed:active .labeled,
+.photo-full.zoomed:active .face-box,
+.photo-full.zoomed:active .nametag { cursor: grabbing; }
 .photo-full.zoomed-out { cursor: zoom-in; }
 .photo-full-zoom {
   width: 100%;
@@ -2178,6 +2316,11 @@ button.saved {
   height: max-content;
   max-width: 100%;
   max-height: 100%;
+}
+.photo-full .labeled.rot-90,
+.photo-full .labeled.rot-270 {
+  width: min(var(--stage-w, 100%), calc(var(--stage-h, 100%) * var(--dw) / var(--dh)));
+  height: min(var(--stage-h, 100%), calc(var(--stage-w, 100%) * var(--dh) / var(--dw)));
 }
 .photo-full .labeled-inner,
 .photo-full .labeled-inner.fit {
@@ -4157,6 +4300,7 @@ kbd {
   background: var(--bg);
 }
 .folder-current.picked { background: var(--accent-soft); }
+.folder-current.partial { background: color-mix(in srgb, var(--accent-soft) 70%, transparent); }
 .folder-current-copy {
   display: flex;
   flex-direction: column;

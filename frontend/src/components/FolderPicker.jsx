@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { folderLabel, folderSelectionState, isAlbumPath, normalizeFolderPath, toggleAlbumPath } from "../folders.js";
+import {
+  folderLabel,
+  folderSelectionState,
+  isAlbumPath,
+  isSkipped,
+  normalizeFolderPath,
+  toggleFolderTick,
+} from "../folders.js";
 import { tip } from "../tip.js";
 
 function isVolumesPath(path) {
@@ -46,7 +53,7 @@ function FolderCheck({ checked, partial, disabled, name, onChange, tipProps }) {
   );
 }
 
-export default function FolderPicker({ onSelect, onClose, selected = [], startPath = "" }) {
+export default function FolderPicker({ onSelect, onClose, selected = [], excluded: excludedProp = [], startPath = "" }) {
   const [listing, setListing] = useState(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
@@ -56,21 +63,32 @@ export default function FolderPicker({ onSelect, onClose, selected = [], startPa
   const listRef = useRef(null);
   const pathRef = useRef(null);
   const [picked, setPicked] = useState(() => [...new Set((selected || []).filter(isAlbumPath))]);
+  const [excluded, setExcluded] = useState(() => [...new Set((excludedProp || []).filter(isAlbumPath))]);
+  const excludedRef = useRef(excluded);
+  excludedRef.current = excluded;
 
   function commit(next, opts = {}) {
     const clean = [...new Set((next || []).filter(isAlbumPath))];
+    const skip = [...new Set((opts.excluded ?? excluded).filter(isAlbumPath))];
     setPicked(clean);
-    onSelect(clean, opts);
+    setExcluded(skip);
+    onSelect(clean, { ...opts, excluded: skip });
     return clean;
   }
 
   function finish() {
     setPicked((cur) => {
       const clean = [...new Set((cur || []).filter(isAlbumPath))];
-      onSelect(clean, { scan: true });
+      const skip = [...new Set((excludedRef.current || []).filter(isAlbumPath))];
+      onSelect(clean, { scan: true, excluded: skip });
       return clean;
     });
     onClose();
+  }
+
+  function tickPath(path) {
+    const next = toggleFolderTick(path, picked, excluded);
+    commit(next.picked, { scan: false, excluded: next.excluded });
   }
 
   function includeLeaf(listing) {
@@ -116,7 +134,8 @@ export default function FolderPicker({ onSelect, onClose, selected = [], startPa
   }
 
   const current = listing?.path;
-  const currentSel = current ? folderSelectionState(current, picked) : { state: "none", inside: 0 };
+  const currentSel = current ? folderSelectionState(current, picked, excluded) : { state: "none", inside: 0 };
+  const hasChildAlbums = (listing?.entries || []).length > 0;
 
   async function connectNas(share) {
     setMounting(true);
@@ -231,7 +250,7 @@ export default function FolderPicker({ onSelect, onClose, selected = [], startPa
       event.preventDefault();
       const entry = entries[active];
       if (!entry || !isAlbumPath(entry.path)) return;
-      commit(toggleAlbumPath(entry.path, picked), { scan: false });
+      tickPath(entry.path);
     }
   }
 
@@ -252,8 +271,9 @@ export default function FolderPicker({ onSelect, onClose, selected = [], startPa
           <div>
             <h2>Choose photo folders</h2>
             <p className="hint">
-              Open an album to add it, or tick several. The app connects the Synology shares
-              itself. It only reads files — it never writes back to those folders.
+              Tick a folder to include every album inside it. Untick an album to skip it.
+              The app connects the Synology shares itself. It only reads files — it never writes
+              back to those folders.
             </p>
           </div>
           <button
@@ -315,7 +335,7 @@ export default function FolderPicker({ onSelect, onClose, selected = [], startPa
         <div className="breadcrumb">
           {current
             ? crumbParts(current).map((crumb) => {
-                const crumbState = folderSelectionState(crumb.path, picked).state;
+                const crumbState = folderSelectionState(crumb.path, picked, excluded).state;
                 return (
                   <button
                     key={crumb.path}
@@ -372,28 +392,38 @@ export default function FolderPicker({ onSelect, onClose, selected = [], startPa
         ) : null}
 
         {current && !isVolumesPath(current) ? (
-          <div className={`folder-current ${currentSel.state === "all" ? "picked" : ""}`}>
+          <div className={`folder-current ${currentSel.state === "all" ? "picked" : currentSel.state === "partial" ? "partial" : ""}`}>
             <FolderCheck
               checked={currentSel.state === "all"}
-              partial={false}
+              partial={currentSel.state === "partial"}
               name={folderLabel(current)}
               tipProps={tip(
                 currentSel.state === "all"
-                  ? `Remove ${folderLabel(current)} from the list. Albums you ticked inside stay.`
-                  : `Add ${folderLabel(current)} itself — the folder you are looking at, not just albums inside it.`,
+                  ? hasChildAlbums
+                    ? `Stop scanning ${folderLabel(current)} and every album inside it.`
+                    : `Remove ${folderLabel(current)} from the list.`
+                  : currentSel.state === "partial"
+                    ? `Include every album in ${folderLabel(current)} again.`
+                    : hasChildAlbums
+                      ? `Include ${folderLabel(current)} and every album inside it.`
+                      : `Add ${folderLabel(current)} to the list.`,
               )}
-              onChange={() => commit(toggleAlbumPath(current, picked), { scan: false })}
+              onChange={() => tickPath(current)}
             />
             <div className="folder-current-copy">
               <strong>
-                {(listing?.entries || []).length === 0 ? folderLabel(current) : `Include ${folderLabel(current)}`}
+                {hasChildAlbums ? `All albums in ${folderLabel(current)}` : folderLabel(current)}
               </strong>
               <span className="hint">
-                {(listing?.entries || []).length === 0
+                {hasChildAlbums
                   ? currentSel.state === "all"
+                    ? "Selected. Untick an album below to skip it."
+                    : currentSel.state === "partial"
+                      ? `${currentSel.inside === 1 ? "1 album" : `${currentSel.inside} albums`} skipped. Untick more below, or tick this to include all.`
+                      : "Tick to include this folder and every album inside it."
+                  : currentSel.state === "all"
                     ? "This album is selected"
-                    : "Add this album to the list"
-                  : "This open folder, not only the albums inside it"}
+                    : "Add this album to the list"}
               </span>
             </div>
           </div>
@@ -401,16 +431,18 @@ export default function FolderPicker({ onSelect, onClose, selected = [], startPa
 
         <div className="folder-list" ref={listRef} role="listbox" aria-label="Folders" tabIndex={0} onKeyDown={onListKey}>
           {entries.map((entry, index) => {
-            const { state, inside } = folderSelectionState(entry.path, picked);
+            const { state, inside } = folderSelectionState(entry.path, picked, excluded);
             const checked = state === "all";
             const partial = state === "partial";
+            const skipped = isSkipped(entry.path, excluded);
             const catalog = Boolean(entry.from_catalog || listing?.from_catalog);
             const unmounted = entry.mounted === false && !catalog;
             const disabled = unmounted && !isAlbumPath(entry.path);
             const hintBits = [entry.hint || "Folder"];
             if (catalog) hintBits[0] = "In catalog";
             if (unmounted) hintBits.push("Not mounted");
-            if (inside) hintBits.push(inside === 1 ? "1 album selected inside" : `${inside} albums selected inside`);
+            if (skipped) hintBits.push("Skipped");
+            else if (partial) hintBits.push(inside === 1 ? "1 album skipped" : `${inside} albums skipped`);
             if (entry.error && !catalog && !hintBits.some((bit) => entry.error.startsWith(bit))) hintBits.push(entry.error);
             return (
               <div
@@ -427,15 +459,14 @@ export default function FolderPicker({ onSelect, onClose, selected = [], startPa
                   name={entry.name}
                   tipProps={tip(
                     partial
-                      ? `${entry.name} has ${inside === 1 ? "an album" : `${inside} albums`} selected inside. Tick it too if you want this whole folder, or open it to pick more albums.`
+                      ? `${entry.name} has ${inside === 1 ? "an album" : `${inside} albums`} skipped. Tick it to include every album inside, or open it to skip more.`
                       : checked
-                        ? `Remove ${entry.name} from the list. Other ticked albums stay.`
-                        : `Add ${entry.name} to the list. Other ticked albums stay.`,
+                        ? `Skip ${entry.name}. Other albums stay included.`
+                        : `Include ${entry.name}${skipped ? " again" : ""}.`,
                   )}
                   onChange={() => {
                     if (disabled) return;
-                    const next = toggleAlbumPath(entry.path, picked);
-                    commit(next, { scan: false });
+                    tickPath(entry.path);
                   }}
                 />
                 <button
@@ -466,12 +497,14 @@ export default function FolderPicker({ onSelect, onClose, selected = [], startPa
             {current
               ? `${listing?.image_count ?? 0} ${listing?.image_count === 1 ? "photo" : "photos"} here (not counting subfolders)${
                   currentSel.state === "all"
-                    ? " · this album is selected"
-                    : currentSel.inside
-                      ? ` · ${currentSel.inside === 1 ? "1 album" : `${currentSel.inside} albums`} ticked inside`
+                    ? hasChildAlbums
+                      ? " · all albums included"
+                      : " · this album is selected"
+                    : currentSel.state === "partial"
+                      ? ` · ${currentSel.inside === 1 ? "1 album" : `${currentSel.inside} albums`} skipped`
                       : ""
                 }`
-              : "Open a NAS volume, then open or tick the albums you want."}
+              : "Open a NAS volume, then tick a folder to include every album inside it."}
           </span>
           <button
             type="button"

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   folderBreadcrumb,
   folderDisplayName,
+  folderSelectionState,
   FOLDER_TITLES_KEY,
   isFolderStarred,
   photoAlbumName,
@@ -10,6 +11,7 @@ import {
   readStarredFolders,
   setFolderTitle,
   STARRED_FOLDERS_KEY,
+  toggleFolderTick,
   toggleStarredFolder,
   writeFolderTitles,
   writeStarredFolders,
@@ -85,4 +87,45 @@ test("folder titles are stored by path and do not rename the disk folder", () =>
   titles = setFolderTitle("/a/2026 - Dubai", "", readFolderTitles());
   writeFolderTitles(titles);
   assert.equal(folderDisplayName("/a/2026 - Dubai", "2026 - Dubai", readFolderTitles()), "2026 - Dubai");
+});
+
+const ROOT = "/Volumes/photos/Photo_Collection_Darren_Evans";
+const ALBUM_A = `${ROOT}/2001 - Vodka`;
+const ALBUM_B = `${ROOT}/Old Documents`;
+
+test("a selected parent includes every album inside it", () => {
+  assert.equal(folderSelectionState(ROOT, [ROOT]).state, "all");
+  assert.equal(folderSelectionState(ALBUM_A, [ROOT]).state, "all");
+  assert.equal(folderSelectionState(ALBUM_B, [ROOT]).state, "all");
+});
+
+test("untick an album under a selected parent to skip only that album", () => {
+  const skipped = toggleFolderTick(ALBUM_B, [ROOT], []);
+  assert.deepEqual(skipped.picked, [ROOT]);
+  assert.deepEqual(skipped.excluded, [ALBUM_B]);
+  assert.equal(folderSelectionState(ROOT, skipped.picked, skipped.excluded).state, "partial");
+  assert.equal(folderSelectionState(ALBUM_A, skipped.picked, skipped.excluded).state, "all");
+  assert.equal(folderSelectionState(ALBUM_B, skipped.picked, skipped.excluded).state, "none");
+});
+
+test("tick a skipped album to include it again", () => {
+  const skipped = toggleFolderTick(ALBUM_B, [ROOT], []);
+  const back = toggleFolderTick(ALBUM_B, skipped.picked, skipped.excluded);
+  assert.deepEqual(back.picked, [ROOT]);
+  assert.deepEqual(back.excluded, []);
+  assert.equal(folderSelectionState(ROOT, back.picked, back.excluded).state, "all");
+  assert.equal(folderSelectionState(ALBUM_B, back.picked, back.excluded).state, "all");
+});
+
+test("untick a fully selected parent drops the whole collection", () => {
+  const next = toggleFolderTick(ROOT, [ROOT], []);
+  assert.deepEqual(next.picked, []);
+  assert.deepEqual(next.excluded, []);
+});
+
+test("tick a parent with skipped albums includes every album again", () => {
+  assert.equal(folderSelectionState(ROOT, [ROOT], [ALBUM_B]).state, "partial");
+  const included = toggleFolderTick(ROOT, [ROOT], [ALBUM_B]);
+  assert.deepEqual(included.picked, [ROOT]);
+  assert.deepEqual(included.excluded, []);
 });

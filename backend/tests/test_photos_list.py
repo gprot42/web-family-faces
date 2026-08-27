@@ -631,6 +631,23 @@ def test_unavailable_folders_message_uses_plural():
     assert "Mum59" in msg
     assert "Vienna" in msg
     assert "Writing" in msg
+    assert "Resume" in msg
+    named = pipeline_mod.unavailable_folders_message(
+        [Path("/Volumes/share/Old")], action="Find Known Faces"
+    )
+    assert "Old isn't available" in named
+    assert "Find Known Faces" in named
+
+
+def test_pipeline_missing_folder_explains_unmounted_drive(tmp_path, monkeypatch):
+    _db(tmp_path, monkeypatch)
+    client = TestClient(app)
+    missing = tmp_path / "Lulu Singing - 1st June 2016" / "Old"
+    res = client.post("/api/pipeline", json={"folder": str(missing)})
+    assert res.status_code == 409
+    assert "isn't available" in res.json()["detail"]
+    assert "Find Known Faces" in res.json()["detail"]
+    assert str(missing) not in res.json()["detail"]
 
 
 def test_scan_photo_leaves_offline_original_unscanned(tmp_path, monkeypatch):

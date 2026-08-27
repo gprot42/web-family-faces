@@ -38,7 +38,7 @@ from .config import CLUSTER_PREVIEW_LIMIT, CROP_DIR, ROOT, THUMB_DIR, VIEW_DIR, 
 from .originals import drop_preview_rows, is_preview_path, preview_path_sql
 from .db import connect, init_db
 from .jobs import active_job, latest_jobs, request_pause, start_job
-from .serialize import FACE_SELECT, face_public, person_public, photo_public
+from .serialize import FACE_SELECT, face_crop_url, face_public, person_public, photo_public
 
 
 @asynccontextmanager
@@ -90,6 +90,7 @@ async def _log_http(request: Request, call_next):
 class ImportBody(BaseModel):
     folder: str | None = None
     folders: list[str] | None = None
+    exclude_folders: list[str] | None = None
     decade_override: int | None = None
 
 
@@ -438,7 +439,7 @@ async def catalog_folders(under: list[str] = Query(default=[]), disk: bool = Fal
     return {"items": await asyncio.to_thread(load)}
 
 
-def _import_folders(body: ImportBody) -> list[Path]:
+def _requested_folders(body: ImportBody) -> list[Path]:
     raw: list[str] = []
     if body.folders:
         raw.extend(item for item in body.folders if str(item).strip())
@@ -452,11 +453,17 @@ def _import_folders(body: ImportBody) -> list[Path]:
         if key in seen:
             continue
         seen.add(key)
-        if not folder.is_dir():
-            raise HTTPException(400, f"Folder not found: {folder}")
         folders.append(folder)
+    return folders
+
+
+def _import_folders(body: ImportBody) -> list[Path]:
+    folders = _requested_folders(body)
     if not folders:
         raise HTTPException(400, "Choose at least one folder")
+    missing = next((folder for folder in folders if not folder.is_dir()), None)
+    if missing is not None:
+        raise HTTPException(400, f"Folder not found: {missing}")
     return folders
 
 
@@ -515,10 +522,29 @@ def identify_faces() -> dict[str, Any]:
 
 @app.post("/api/pipeline")
 def pipeline(body: ImportBody) -> dict[str, Any]:
-    folders = _import_folders(body)
+    folders = _requested_folders(body)
+    if not folders:
+        raise HTTPException(400, "Choose at least one folder")
+    pipeline_mod.remember_folders(folders)
+    if body.exclude_folders is not None:
+        excluded = [Path(item).expanduser() for item in body.exclude_folders if str(item).strip()]
+        pipeline_mod.remember_exclusions(excluded)
+    else:
+        excluded = pipeline_mod.remembered_exclusions()
+    if not any(folder.is_dir() for folder in folders):
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            nas_mod.mount_for_paths(folders)
+        if not any(folder.is_dir() for folder in folders):
+            raise HTTPException(
+                409,
+                pipeline_mod.unavailable_folders_message(folders, action="Find Known Faces"),
+            )
     captured = list(folders)
-    pipeline_mod.remember_folders(captured)
-    return start_job("pipeline", lambda job_id: pipeline_mod.run_pipeline(job_id, captured))
+    skipped = list(excluded)
+    return start_job(
+        "pipeline",
+        lambda job_id: pipeline_mod.run_pipeline(job_id, captured, exclude_folders=skipped),
+    )
 
 
 def _folder_prefixes(folders: list[str] | None) -> list[str]:
@@ -1461,7 +1487,7 @@ def list_clusters() -> dict[str, Any]:
         face_rows = conn.execute(
             f"""
             SELECT * FROM (
-              SELECT {FACE_SELECT}, ph.path, ph.taken_at, ph.sha256,
+              SELECT {FACE_SELECT}, ph.path, ph.taken_at, ph.sha256, ph.rotation,
                      ROW_NUMBER() OVER (
                        PARTITION BY f.cluster_id ORDER BY f.det_score DESC
                      ) AS rn
@@ -1504,7 +1530,7 @@ def get_cluster(cluster_id: int) -> dict[str, Any]:
             raise HTTPException(404, "Cluster not found")
         faces = conn.execute(
             f"""
-            SELECT {FACE_SELECT}, ph.path, ph.taken_at, ph.width, ph.height
+            SELECT {FACE_SELECT}, ph.path, ph.taken_at, ph.width, ph.height, ph.rotation
             FROM faces f JOIN photos ph ON ph.id = f.photo_id
             WHERE f.cluster_id = ?
             ORDER BY ph.taken_at IS NULL, ph.taken_at
@@ -1829,7 +1855,7 @@ def list_auto_review(
                         "id": f["id"],
                         "photo_id": f["photo_id"],
                         "face_ids": f.get("face_ids") or [f["id"]],
-                        "crop_url": f"/api/faces/{f['id']}/crop?v=384",
+                        "crop_url": face_crop_url(f["id"], int(f.get("rotation") or 0)),
                         "filename": Path(f["path"]).name if f.get("path") else "",
                         "taken_at": f.get("taken_at"),
                     }

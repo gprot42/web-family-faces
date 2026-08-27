@@ -16,6 +16,7 @@ from .jobs import active_job, latest_jobs, start_job, update_job
 from .util import now_iso
 
 FOLDERS_KEY = "pipeline_folders"
+EXCLUDE_KEY = "pipeline_exclude_folders"
 AUTO_UPDATE_EVERY_SECONDS = 300
 AUTO_UPDATE_START_DELAY = 20
 _auto_loop_started = False
@@ -24,6 +25,27 @@ _auto_loop_started = False
 def remember_folders(folders: list[Path | str]) -> None:
     paths = [str(Path(item).expanduser()) for item in folders if str(item).strip()]
     state_mod.set_state(FOLDERS_KEY, json.dumps(paths) if paths else None)
+
+
+def remember_exclusions(folders: list[Path | str] | None) -> None:
+    paths = [str(Path(item).expanduser()) for item in (folders or []) if str(item).strip()]
+    state_mod.set_state(EXCLUDE_KEY, json.dumps(paths) if paths else None)
+
+
+def remembered_exclusions() -> list[Path]:
+    raw = state_mod.get_state(EXCLUDE_KEY)
+    if not raw:
+        return []
+    try:
+        items = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    out: list[Path] = []
+    for item in items if isinstance(items, list) else []:
+        text = str(item).strip()
+        if text:
+            out.append(Path(text).expanduser())
+    return out
 
 
 def _library_folder() -> Path | None:
@@ -66,12 +88,13 @@ def remembered_folders() -> list[Path]:
     return [library] if library else []
 
 
-def unavailable_folders_message(paths: list[Path] | None = None) -> str:
-    """Copy when Resume cannot see stored albums (drive unmounted)."""
+def unavailable_folders_message(paths: list[Path] | None = None, *, action: str = "Resume") -> str:
+    """Copy when stored albums are not on this Mac (drive unmounted)."""
     names = [path.name or str(path) for path in (paths or []) if path.name or str(path)]
     names = names[:3]
+    next_step = action or "Resume"
     if not names:
-        return "The album folder isn't available. Mount the drive, then Resume."
+        return f"The album folder isn't available. Mount the drive, then {next_step}."
     if len(names) == 1:
         listed = names[0]
         verb = "isn't"
@@ -81,7 +104,7 @@ def unavailable_folders_message(paths: list[Path] | None = None) -> str:
     else:
         listed = f"{names[0]}, {names[1]}, and {names[2]}"
         verb = "aren't"
-    return f"{listed} {verb} available. Mount the drive, then Resume."
+    return f"{listed} {verb} available. Mount the drive, then {next_step}."
 
 
 def pending_scan_count() -> int:
@@ -104,12 +127,15 @@ def run_pipeline(
     scan: bool = True,
     faces_if_new_only: bool = False,
     remember: bool = True,
+    exclude_folders: list[Path] | None = None,
 ) -> None:
     requested = [Path(folder).expanduser() for folder in folders]
     present = [folder for folder in requested if folder.is_dir()]
     missing = [folder for folder in requested if not folder.is_dir()]
+    skipped = list(exclude_folders) if exclude_folders is not None else remembered_exclusions()
     if remember and requested:
         remember_folders(requested)
+        remember_exclusions(skipped)
     started = now_iso()
     added = 0
     for folder in present:
@@ -119,6 +145,7 @@ def run_pipeline(
                 folder,
                 verify_existing=False,
                 skip_if_complete=not reindex,
+                exclude_folders=skipped,
             ) or {}
         except FileNotFoundError:
             missing.append(folder)

@@ -13,11 +13,52 @@ import { PhotoTagRow } from "./PhotoTags.jsx";
 
 const FACE_TONES = ["#c45a32", "#1f8a7a", "#d4a017", "#3d7ec9", "#c44d7a", "#4a8f3a", "#7b5ea7", "#e07a2f"];
 
+function clampPct(value) {
+  return Math.min(99, Math.max(1, value));
+}
+
+/** Map a viewport point onto left/top % of the host's untransformed box (handles 90° photo rotate). */
+export function pointToHostPct(host, clientX, clientY) {
+  const box = host?.getBoundingClientRect?.();
+  if (!box?.width || !box?.height) return { left: 50, top: 50 };
+  const w = host.offsetWidth || box.width;
+  const h = host.offsetHeight || box.height;
+  const transform = host.ownerDocument?.defaultView?.getComputedStyle?.(host)?.transform;
+  if (!transform || transform === "none") {
+    return {
+      left: clampPct((100 * (clientX - box.left)) / box.width),
+      top: clampPct((100 * (clientY - box.top)) / box.height),
+    };
+  }
+  const cx = box.left + box.width / 2;
+  const cy = box.top + box.height / 2;
+  const matrix = new DOMMatrix(transform);
+  const local = new DOMMatrix([matrix.a, matrix.b, matrix.c, matrix.d, 0, 0]).inverse().transformPoint(
+    new DOMPoint(clientX - cx, clientY - cy),
+  );
+  const scale = Math.hypot(box.width, box.height) / Math.hypot(w, h) || 1;
+  return {
+    left: clampPct(50 + (100 * local.x) / (w * scale)),
+    top: clampPct(50 + (100 * local.y) / (h * scale)),
+  };
+}
+
 export function faceTone(face, faces) {
   const mark = faces ? faceMark(face, faces) : null;
   if (mark) return FACE_TONES[(mark - 1) % FACE_TONES.length];
   const n = Math.abs(Math.trunc(Number(face?.id || 0))) || 0;
   return FACE_TONES[n % FACE_TONES.length];
+}
+
+export function boxesSameFace(a, b) {
+  if (boxIou(a, b) >= 0.45) return true;
+  const acx = ((Number(a?.x1) || 0) + (Number(a?.x2) || 0)) / 2;
+  const acy = ((Number(a?.y1) || 0) + (Number(a?.y2) || 0)) / 2;
+  const bcx = ((Number(b?.x1) || 0) + (Number(b?.x2) || 0)) / 2;
+  const bcy = ((Number(b?.y1) || 0) + (Number(b?.y2) || 0)) / 2;
+  const inA = acx >= (Number(b?.x1) || 0) && acx <= (Number(b?.x2) || 0) && acy >= (Number(b?.y1) || 0) && acy <= (Number(b?.y2) || 0);
+  const inB = bcx >= (Number(a?.x1) || 0) && bcx <= (Number(a?.x2) || 0) && bcy >= (Number(a?.y1) || 0) && bcy <= (Number(a?.y2) || 0);
+  return inA || inB;
 }
 
 export function boxIou(a, b) {
@@ -61,7 +102,7 @@ export function displayFaces(faces) {
       if (seed.photo_id != null && other.photo_id != null && String(seed.photo_id) !== String(other.photo_id)) {
         continue;
       }
-      if (boxIou(seed, other) >= 0.72) group.push(other);
+      if (boxesSameFace(seed, other)) group.push(other);
     }
     let best = group[0];
     for (const face of group) {
@@ -992,6 +1033,7 @@ export default function LabeledPhoto({
     "--dw": dw,
     "--dh": dh,
     "--rot": `${rot}deg`,
+    "--unrot": `${-rot}deg`,
   };
   const allFaces = useMemo(() => displayFaces(photo.faces || []), [photo.faces]);
   const faces = useMemo(
@@ -1052,12 +1094,7 @@ export default function LabeledPhoto({
   }
 
   function clientToPct(host, clientX, clientY) {
-    const box = host?.getBoundingClientRect?.();
-    if (!box?.width || !box?.height) return { left: 50, top: 50 };
-    return {
-      left: Math.min(99, Math.max(1, (100 * (clientX - box.left)) / box.width)),
-      top: Math.min(99, Math.max(1, (100 * (clientY - box.top)) / box.height)),
-    };
+    return pointToHostPct(host, clientX, clientY);
   }
 
   function endTagWindowDrag() {
@@ -1130,7 +1167,11 @@ export default function LabeledPhoto({
       move,
       up,
     };
-    event.currentTarget.setPointerCapture?.(event.pointerId);
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      /* synthetic pointer or already released */
+    }
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", up);
@@ -1243,6 +1284,8 @@ export default function LabeledPhoto({
       <img
         src={src}
         alt={photo.filename || ""}
+        draggable={false}
+        onDragStart={(e) => e.preventDefault()}
         fetchPriority={priority ? "high" : undefined}
         decoding="async"
         style={maxHeight && !fit ? { maxHeight } : undefined}

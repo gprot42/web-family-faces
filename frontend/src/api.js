@@ -57,9 +57,12 @@ export const api = {
         photo_id: extra.photo_id || extra.photoId || null,
       }),
     }).catch(() => ({ ok: false })),
-  pipeline: (folder) => {
+  pipeline: (folder, extra = {}) => {
     const folders = Array.isArray(folder) ? folder.filter(Boolean) : [folder].filter(Boolean);
     const body = folders.length > 1 ? { folders } : { folder: folders[0] };
+    if (Array.isArray(extra.exclude) || Array.isArray(extra.exclude_folders)) {
+      body.exclude_folders = (extra.exclude || extra.exclude_folders || []).filter(Boolean);
+    }
     return request("/api/pipeline", { method: "POST", body: JSON.stringify(body) });
   },
   importFolder: (folder) => {

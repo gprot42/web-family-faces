@@ -1927,7 +1927,7 @@ def match_photo(photo_id: int, *, detect: bool = True) -> dict:
     finally:
         conn.close()
     need_detect = bool(detect) and (int(unnamed) > 0 or int(have_faces) == 0)
-    if need_detect and photo and faces_mod.analyzer_status().get("ready"):
+    if need_detect and photo:
         conn = connect()
         init_db(conn)
         try:
@@ -1940,6 +1940,7 @@ def match_photo(photo_id: int, *, detect: bool = True) -> dict:
     conn = connect()
     init_db(conn)
     try:
+        faces_mod.merge_overlapping_faces(conn, int(photo_id))
         detected = int(
             conn.execute(
                 "SELECT COUNT(*) AS n FROM faces WHERE photo_id = ?",

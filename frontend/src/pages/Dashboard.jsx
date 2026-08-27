@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import ConfirmAsk from "../components/ConfirmAsk.jsx";
 import FolderPicker from "../components/FolderPicker.jsx";
-import { addedFolderPaths, folderLabel, importFoldersStored, isAlbumPath, normalizeFolderPath, readImportFolders, writeImportFolders } from "../folders.js";
+import { addedFolderPaths, folderLabel, importFoldersStored, isAlbumPath, normalizeFolderPath, pruneUnder, readExcludedFolders, readImportFolders, writeExcludedFolders, writeImportFolders } from "../folders.js";
 import { tip } from "../tip.js";
 import JobGauge from "../components/JobGauge.jsx";
 
@@ -24,6 +24,7 @@ function fmtBytes(n) {
 export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
   const nav = useNavigate();
   const [folders, setFolders] = useState(() => readImportFolders(stats?.folder || ""));
+  const [excluded, setExcluded] = useState(() => readExcludedFolders());
   const [typed, setTyped] = useState("");
   const [jobsLocal, setJobsLocal] = useState(null);
   const jobs = jobsProp || jobsLocal;
@@ -97,6 +98,11 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
       writeImportFolders(next);
       return next;
     });
+    setExcluded((cur) => {
+      const next = pruneUnder(cur, path);
+      writeExcludedFolders(next);
+      return next;
+    });
   }
 
   function addTypedPath() {
@@ -138,18 +144,23 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
     }
     setErr("");
     try {
-      await api.pipeline(list);
+      await api.pipeline(list, { exclude: excluded });
       onChange?.();
     } catch (ex) {
       setErr(ex.message);
     }
   }
 
-  function applyFolders(next, { scanNew = false } = {}) {
+  function applyFolders(next, { scanNew = false, excluded: nextExcluded } = {}) {
     const clean = [...new Set((next || []).filter(isAlbumPath))];
     const added = addedFolderPaths(clean, foldersAtPickerOpen.current);
     setFolders(clean);
     writeImportFolders(clean);
+    if (nextExcluded) {
+      const skip = [...new Set(nextExcluded.filter(isAlbumPath))];
+      setExcluded(skip);
+      writeExcludedFolders(skip);
+    }
     if (scanNew && added.length && !active) setAsk({ kind: "scan", paths: added });
   }
 
@@ -281,6 +292,7 @@ export default function Dashboard({ stats, jobs: jobsProp, onJobs, onChange }) {
       {picker ? (
         <FolderPicker
           selected={folders}
+          excluded={excluded}
           startPath={stats?.folder || ""}
           onClose={() => setPicker(false)}
           onSelect={(paths, opts = {}) => {

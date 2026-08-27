@@ -30,6 +30,7 @@ export default function Settings() {
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [purgeAsk, setPurgeAsk] = useState(null);
+  const [matchAsk, setMatchAsk] = useState(null);
   const [oauthBusy, setOauthBusy] = useState(false);
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
@@ -197,6 +198,35 @@ export default function Settings() {
     await startOauth();
   }
 
+  async function resetMatching(folder) {
+    const picked = Array.isArray(folder) ? folder.filter(Boolean) : folder ? [folder] : [];
+    const all = !picked.length;
+    const label = picked.join(", ");
+    setMatchAsk(null);
+    setErr("");
+    setOk("");
+    setBusy(true);
+    try {
+      const result = await api.resetMatching(all ? undefined : picked);
+      const n = result.faces_cleared || 0;
+      const listed = await api.nameFolders(readImportFolders()).catch(() => ({ items: [] }));
+      setFolders(listed.items || []);
+      if (all) {
+        setOk(
+          `Reset matching in every folder. Cleared ${n} auto-matched face${n === 1 ? "" : "s"}. Names you typed stay.`,
+        );
+      } else {
+        setOk(
+          `Reset matching in ${picked.length === 1 ? `“${label}”` : `${picked.length} folders`}. Cleared ${n} auto-matched face${n === 1 ? "" : "s"}. Names you typed stay.`,
+        );
+      }
+    } catch (ex) {
+      setErr(ex.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function resetNames(folder) {
     const picked = Array.isArray(folder) ? folder.filter(Boolean) : folder ? [folder] : [];
     const all = !picked.length;
@@ -245,6 +275,21 @@ export default function Settings() {
 
   return (
     <div>
+      {matchAsk ? (
+        <ConfirmAsk
+          danger
+          title={
+            !matchAsk.length
+              ? "Reset matching in every folder?"
+              : matchAsk.length === 1
+                ? `Reset matching in “${matchAsk[0]}”?`
+                : `Reset matching in ${matchAsk.length} folders?`
+          }
+          body="Clear auto-matched names. Names you typed stay. Photo files are not changed. Faces go back to unnamed so they can be matched again."
+          onCancel={() => setMatchAsk(null)}
+          onConfirm={() => resetMatching(matchAsk)}
+        />
+      ) : null}
       {purgeAsk ? (
         <ConfirmAsk
           danger
@@ -270,8 +315,9 @@ export default function Settings() {
           <h1>Keys and lookup</h1>
           <p className="lede">
             Pick a theme and where names sit on a photo, choose whether listed albums update on
-            their own, then add SuperGrok or an xAI key for famous-face lookup. Keys stay on this
-            Mac, not in the photo catalog backup, and never go into the album.
+            their own, then add SuperGrok or an xAI key for famous-face lookup. Reset matching and
+            purge live at the bottom. Keys stay on this Mac, not in the photo catalog backup, and
+            never go into the album.
           </p>
         </div>
       </div>
@@ -588,6 +634,32 @@ export default function Settings() {
       </section>
 
       <section className="card help-block settings-card">
+        <h2>Reset matching</h2>
+        <p>
+          Undo names the matcher applied on its own. Names you typed stay. Photo files are not
+          changed. Faces go back to unnamed so they can be matched again. This is milder than{" "}
+          <strong>Purge faces from database</strong> below, which clears every name.
+        </p>
+        <h3 className="cluster-label">All folders</h3>
+        <p className="hint">Clears auto-matched names in every album. Names you typed stay.</p>
+        <button
+          type="button"
+          className="secondary"
+          disabled={busy}
+          onClick={() => setMatchAsk([])}
+          {...tip("Undo auto-matched names in every folder. Names you typed stay. Photos are not changed.")}
+        >
+          {busy ? "Working…" : "Reset matching in every folder"}
+        </button>
+        <p className="hint" style={{ marginTop: 12 }}>
+          To limit this to some albums, tick them under Chosen folders below, then Reset matching
+          in these folders.
+        </p>
+        {ok ? <p className="hint" style={{ marginTop: 8 }}>{ok}</p> : null}
+        {err ? <p className="error" style={{ marginTop: 8 }}>{err}</p> : null}
+      </section>
+
+      <section className="card help-block settings-card">
         <h2>Purge faces from database</h2>
         <p>
           This clears names from the app database only. Photo files stay where they are. Face
@@ -622,9 +694,9 @@ export default function Settings() {
           ) : null}
         </h3>
         <p className="hint">
-          Every album under the folders you selected. Purge names from the database only in the
-          albums you tick. People who also appear in other folders keep their name there. JSON files
-          stay.
+          Every album under the folders you selected. Tick albums, then Reset matching (auto-names
+          only) or Purge (every name in those albums). People who also appear in other folders keep
+          their name there. JSON files stay.
         </p>
         <div className="reset-folders" role="group" aria-label="Folders to reset">
           {folders.map((f) => {
@@ -660,6 +732,17 @@ export default function Settings() {
             type="button"
             className="secondary"
             disabled={busy || !resetFolders.length}
+            onClick={() => setMatchAsk(resetFolders)}
+            {...tip("Undo auto-matched names only in the ticked folders. Names you typed stay.")}
+          >
+            {resetFolders.length > 1
+              ? `Reset matching in ${resetFolders.length} folders`
+              : "Reset matching in these folders"}
+          </button>
+          <button
+            type="button"
+            className="danger"
+            disabled={busy || !resetFolders.length}
             onClick={() => setPurgeAsk(resetFolders)}
             {...tip("Purge names from the database only in the ticked folders. .photosort.json stays.")}
           >
@@ -668,6 +751,8 @@ export default function Settings() {
               : "Purge these folders from database"}
           </button>
         </div>
+        {ok ? <p className="hint" style={{ marginTop: 8 }}>{ok}</p> : null}
+        {err ? <p className="error" style={{ marginTop: 8 }}>{err}</p> : null}
       </section>
     </div>
   );

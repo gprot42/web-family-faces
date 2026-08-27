@@ -141,6 +141,9 @@ def rotate_photo(photo_id: int, direction: str) -> dict[str, Any]:
         nxt = (photo_rotation(row) + step) % 360
         conn.execute("UPDATE photos SET rotation = ? WHERE id = ?", (nxt, photo_id))
         conn.commit()
+        from .faces import refresh_photo_crops
+
+        refresh_photo_crops(photo_id, conn)
         updated = conn.execute("SELECT * FROM photos WHERE id = ?", (photo_id,)).fetchone()
         return _photo_out(conn, updated, check_file=False)
     finally:

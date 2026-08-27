@@ -24,13 +24,36 @@ from .originals import (
 )
 from .util import now_iso
 
-def _walk_images(folder: Path):
+def _norm_folder(path: Path | str) -> str:
+    text = str(Path(path).expanduser()).rstrip("/")
+    return text or "/"
+
+
+def _is_excluded(current: Path, excluded: list[Path] | None) -> bool:
+    if not excluded:
+        return False
+    key = _norm_folder(current)
+    for item in excluded:
+        parent = _norm_folder(item)
+        if key == parent or key.startswith(f"{parent}/"):
+            return True
+    return False
+
+
+def _walk_images(folder: Path, exclude_folders: list[Path] | None = None):
     for dirpath, dirnames, filenames in os.walk(folder):
         current = Path(dirpath)
+        if current != folder and _is_excluded(current, exclude_folders):
+            dirnames[:] = []
+            continue
         if skip_dir(current) and current != folder:
             dirnames[:] = []
             continue
-        dirnames[:] = [name for name in dirnames if not skip_dir(current / name)]
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if not skip_dir(current / name) and not _is_excluded(current / name, exclude_folders)
+        ]
         dirnames.sort()
         for name in sorted(filenames):
             if name.startswith(".") or name.startswith("._") or name == ".photosort.json":
@@ -42,8 +65,8 @@ def _walk_images(folder: Path):
                 yield path
 
 
-def _iter_images(folder: Path) -> list[Path]:
-    return list(_walk_images(folder))
+def _iter_images(folder: Path, exclude_folders: list[Path] | None = None) -> list[Path]:
+    return list(_walk_images(folder, exclude_folders))
 
 
 def _exif_taken_at(img: Image.Image) -> str | None:
@@ -239,6 +262,7 @@ def import_folder(
     *,
     verify_existing: bool = False,
     skip_if_complete: bool = False,
+    exclude_folders: list[Path] | None = None,
 ) -> dict:
     folder = folder.expanduser().resolve()
     if not folder.is_dir():
@@ -280,7 +304,7 @@ def import_folder(
             already,
             f"{already} already in the catalog" if already else "looking for photos",
         )
-        for path in _walk_images(folder):
+        for path in _walk_images(folder, exclude_folders):
             if pause_requested():
                 raise JobPaused()
             seen += 1

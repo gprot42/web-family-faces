@@ -19,10 +19,11 @@ export default function Help() {
           <h2>1. Choose folders, then Find Known Faces</h2>
           <p>
             On the home page click <strong>Choose folders</strong>. The app connects the Synology
-            NAS (Finder may ask for the login once). Open or tick the albums you want.{" "}
-            <strong>Find Known Faces</strong> starts on its own for each new album. On Folder View,{" "}
-            <strong>Find Known Faces in new folders</strong> lists those albums first so you can
-            confirm.
+            NAS (Finder may ask for the login once). Tick a folder to include every album inside
+            it. Untick an album to skip it.{" "}
+            <strong>Find Known Faces</strong> starts on its own for each new album. On Folder View,
+            albums not in the catalog yet are listed first. Click <strong>Find Known Faces</strong>{" "}
+            on an album to read its photos.
           </p>
           <p>
             The app reads photos, finds known faces, and groups people who look the same. If the
@@ -202,7 +203,7 @@ export default function Help() {
             in DB View are about the person. All of them stay in the catalog, never on the original
             file.
           </div>
-          <div>Click the photo or <strong>Fullscreen</strong> after naming · drag the dotted handle on the options bar to move it · Hide labels / Show labels on the picture (<kbd>l</kbd>) · ← → other photos · zoom controls sit on the right of the picture · <kbd>+</kbd> / <kbd>−</kbd> or pinch to zoom · <kbd>0</kbd> or click to fit · any other key or click to exit</div>
+          <div>Click the photo or <strong>Fullscreen</strong> after naming · drag the dotted handle on the options bar to move it · Hide labels / Show labels on the picture (<kbd>l</kbd>) · ← → other photos · zoom controls sit on the right of the picture · <kbd>+</kbd> / <kbd>−</kbd> or pinch to zoom · when zoomed in, drag the picture to pan · <kbd>0</kbd> or click (without dragging) to fit · any other key or click to exit</div>
           <div>
             <strong>Play album</strong> or <strong>Play person</strong> walks the pictures in date
             order, 2.5 seconds each (change this in Settings). <kbd>space</kbd> pause · <kbd>esc</kbd> exit.
@@ -226,6 +227,11 @@ export default function Help() {
             Names live in the local catalog (<code>data/photosort.db</code>). Each album folder
             also gets a portable <code>.photosort.json</code> so a copied folder keeps its names.
             Originals and EXIF are never written.
+          </li>
+          <li>
+            <strong>Reset matching</strong> on Settings undoes names the matcher applied on its
+            own. Names you typed stay. Photo files are not changed. Faces go back to unnamed so
+            they can be matched again.
           </li>
           <li>
             <strong>Purge faces from database</strong> on Settings clears names from the app

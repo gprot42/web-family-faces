@@ -311,6 +311,7 @@ export default function PhotoDetail() {
 
   function goBack(e) {
     e?.preventDefault();
+    e?.stopPropagation();
     if (fullNow.current) {
       stopPlay();
       setPlay(null);
@@ -322,7 +323,11 @@ export default function PhotoDetail() {
       nav(from, { replace: true });
       return;
     }
-    nav(backTo());
+    if (from) {
+      nav(-1);
+      return;
+    }
+    nav(backTo(), { replace: true });
   }
 
   async function load() {
@@ -417,6 +422,8 @@ export default function PhotoDetail() {
       setFull(false);
       exitBrowserFullscreen();
     });
+    zoomNow.current = ZOOM_FIT;
+    panNow.current = { x: 0, y: 0 };
     setZoom(ZOOM_FIT);
     setPan({ x: 0, y: 0 });
     setUndoRematch(readRematchUndo(id));
@@ -592,9 +599,11 @@ export default function PhotoDetail() {
       const box = el.getBoundingClientRect();
       const w = Number(photo?.width) || 1;
       const h = Number(photo?.height) || 1;
+      const rot = (((Number(photo?.rotation) || 0) % 360) + 360) % 360;
+      const swapped = rot === 90 || rot === 270;
       el.style.setProperty("--stage-w", `${Math.max(0, Math.floor(box.width))}px`);
       el.style.setProperty("--stage-h", `${Math.max(0, Math.floor(box.height))}px`);
-      el.style.setProperty("--photo-ar", String(w / h));
+      el.style.setProperty("--photo-ar", String(swapped ? h / w : w / h));
     }
     applySize();
     const ro = new ResizeObserver(applySize);
@@ -673,16 +682,23 @@ export default function PhotoDetail() {
   function onPanStart(e) {
     if (pickingNow.current) return;
     if (e.button != null && e.button !== 0) return;
-    if (e.target.closest?.(".nametag, .photo-full-tools, .photo-full-nav, .photo-full-east, .photo-full-zoombar, .photo-full-dock, .back-btn, .app-brand, .photo-imagine-pop, .photo-sharpen-badge, .photo-tag-row, .photo-full-tags")) {
+    if (e.target.closest?.(".nametag, .photo-full-tools, .photo-full-nav, .photo-full-east, .photo-full-zoombar, .photo-stage-zoombar, .photo-full-dock, .back-btn, .app-brand, .photo-imagine-pop, .photo-sharpen-badge, .photo-tag-row, .photo-full-tags, .zoom-tools, .nav")) {
       return;
     }
     if (zoomNow.current <= ZOOM_FIT) return;
-    if (!fullNow.current) return;
-    e.preventDefault();
     const p = panNow.current;
     didDrag.current = false;
     drag.current = { x: e.clientX, y: e.clientY, px: p.x, py: p.y, moved: false };
-    e.currentTarget.setPointerCapture?.(e.pointerId);
+    try {
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+    } catch {
+      /* pointer already released */
+    }
+    e.stopPropagation();
+  }
+
+  function onPhotoDragStart(e) {
+    e.preventDefault();
   }
 
   function onPanMove(e) {
@@ -693,18 +709,27 @@ export default function PhotoDetail() {
     if (Math.hypot(dx, dy) > 4) {
       d.moved = true;
       didDrag.current = true;
+      e.preventDefault();
     }
-    setPan({ x: d.px + dx, y: d.py + dy });
+    if (!d.moved) return;
+    const next = { x: d.px + dx, y: d.py + dy };
+    panNow.current = next;
+    setPan(next);
   }
 
   function onPanEnd(e) {
     drag.current = null;
-    if (e?.currentTarget && e.pointerId != null) {
+    if (e?.type !== "lostpointercapture" && e?.currentTarget && e.pointerId != null) {
       try {
         e.currentTarget.releasePointerCapture?.(e.pointerId);
       } catch {
         /* already released */
       }
+    }
+    if (didDrag.current) {
+      window.setTimeout(() => {
+        didDrag.current = false;
+      }, 0);
     }
   }
 
@@ -2257,11 +2282,13 @@ export default function PhotoDetail() {
           <div
             className={`stage ${zoomClass}`}
             ref={stageRef}
-            onPointerDown={onPanStart}
+            onPointerDownCapture={onPanStart}
             onPointerMove={onPanMove}
             onPointerUp={onPanEnd}
             onPointerCancel={onPanEnd}
-            {...tip("Click the photo for fullscreen. Scroll, pinch, or + / − to zoom.")}
+            onLostPointerCapture={onPanEnd}
+            onDragStart={onPhotoDragStart}
+            {...tip("Click the photo for fullscreen. Scroll, pinch, or + / − to zoom. When zoomed in, drag to move the picture.")}
           >
             <div
               className="stage-zoom"
@@ -2767,8 +2794,9 @@ export default function PhotoDetail() {
           className={`photo-full ${zoomClass}${pickingFace ? " selecting" : ""}`}
           ref={fullRef}
           onContextMenu={(e) => showPhotoMenu(e, photo)}
-          onPointerDownCapture={() => {
+          onPointerDownCapture={(e) => {
             if (pickingNow.current) skipFullClick.current = true;
+            onPanStart(e);
           }}
           onClick={(e) => {
             if (skipFullClick.current || Date.now() - openedFullAt.current < 400) {
@@ -2786,13 +2814,11 @@ export default function PhotoDetail() {
             }
             endPlay();
           }}
-          onPointerDown={(e) => {
-            if (pickingNow.current) skipFullClick.current = true;
-            onPanStart(e);
-          }}
           onPointerMove={onPanMove}
           onPointerUp={onPanEnd}
           onPointerCancel={onPanEnd}
+          onLostPointerCapture={onPanEnd}
+          onDragStart={onPhotoDragStart}
           tabIndex={-1}
           role="dialog"
           aria-modal="true"
@@ -2826,6 +2852,8 @@ export default function PhotoDetail() {
               <img
                 src={liveSrc}
                 alt={photo.filename}
+                draggable={false}
+                onDragStart={(e) => e.preventDefault()}
                 fetchPriority="high"
                 decoding="async"
                 onError={(e) => {

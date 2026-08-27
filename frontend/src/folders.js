@@ -1,4 +1,5 @@
 export const FOLDERS_KEY = "photosort-import-folders";
+export const EXCLUDED_FOLDERS_KEY = "photosort-excluded-folders";
 export const STARRED_FOLDERS_KEY = "photosort-starred-folders";
 export const FOLDER_TITLES_KEY = "photosort-folder-titles";
 export const FOLDER_TITLE_MAX = 80;
@@ -55,19 +56,71 @@ export function isInside(child, parent) {
   return a.startsWith(`${b}/`);
 }
 
+export function pruneUnder(items, path) {
+  return (items || []).filter((item) => !isSameOrInside(item, path));
+}
+
+/** True when `path` sits in a selected folder (or is that folder). */
+export function isCoveredBy(path, picked) {
+  return (picked || []).some((item) => isSameOrInside(path, item));
+}
+
+/** True when `path` is skipped, or sits inside a skipped folder. */
+export function isSkipped(path, excluded) {
+  return (excluded || []).some((item) => isSameOrInside(path, item));
+}
+
 /**
  * How a folder relates to the current selection.
- * - all: this exact folder is ticked
- * - partial: only albums inside it are ticked
- * - none: nothing under it is selected
+ * A selected parent includes every album inside it. Untick an album to skip it.
+ * - all: this folder is included (itself or via a parent)
+ * - partial: included, but some albums inside it are skipped
+ * - none: not included
  */
-export function folderSelectionState(path, picked) {
-  const items = (picked || []).filter(Boolean);
-  const exact = items.some((item) => normalizeFolderPath(item) === normalizeFolderPath(path));
-  const inside = items.filter((item) => isInside(item, path)).length;
-  if (exact) return { state: "all", inside };
-  if (inside) return { state: "partial", inside };
+export function folderSelectionState(path, picked, excluded = []) {
+  if (!path) return { state: "none", inside: 0 };
+  const skippedKids = (excluded || []).filter((item) => isInside(item, path)).length;
+  const pickedKids = (picked || []).filter((item) => isInside(item, path)).length;
+  const skipped = isSkipped(path, excluded);
+  const covered = isCoveredBy(path, picked) && !skipped;
+  if (covered && skippedKids) return { state: "partial", inside: skippedKids };
+  if (covered) return { state: "all", inside: pickedKids };
+  if (pickedKids) return { state: "partial", inside: pickedKids };
   return { state: "none", inside: 0 };
+}
+
+/** Include this folder and every album inside it. Clears skips underneath. */
+export function includeFolder(path, picked, excluded = []) {
+  if (!isAlbumPath(path)) return { picked: picked || [], excluded: excluded || [] };
+  const n = normalizeFolderPath(path);
+  let nextPicked = pruneUnder(picked, n);
+  const hasAncestor = nextPicked.some((item) => isInside(n, item));
+  if (!hasAncestor) nextPicked = [...nextPicked, n];
+  return { picked: nextPicked, excluded: pruneUnder(excluded, n) };
+}
+
+/** Skip this folder. A selected parent stays; only this album (and those inside it) drop out. */
+export function excludeFolder(path, picked, excluded = []) {
+  if (!isAlbumPath(path)) return { picked: picked || [], excluded: excluded || [] };
+  const n = normalizeFolderPath(path);
+  const exact = (picked || []).some((item) => normalizeFolderPath(item) === n);
+  if (exact) {
+    return {
+      picked: (picked || []).filter((item) => normalizeFolderPath(item) !== n),
+      excluded: pruneUnder(excluded, n),
+    };
+  }
+  return {
+    picked: pruneUnder(picked, n),
+    excluded: [...pruneUnder(excluded, n), n],
+  };
+}
+
+/** Tick includes the whole folder; untick skips it (or drops it if it was selected on its own). */
+export function toggleFolderTick(path, picked, excluded = []) {
+  const state = folderSelectionState(path, picked, excluded).state;
+  if (state === "all") return excludeFolder(path, picked, excluded);
+  return includeFolder(path, picked, excluded);
 }
 
 /** Add or remove one folder. Never drops other selected albums. */
@@ -78,6 +131,40 @@ export function toggleAlbumPath(path, picked) {
   const has = items.some((item) => normalizeFolderPath(item) === n);
   if (has) return items.filter((item) => normalizeFolderPath(item) !== n);
   return [...items, path];
+}
+
+export function readExcludedFolders() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(EXCLUDED_FOLDERS_KEY) || "[]");
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set();
+    const out = [];
+    for (const item of parsed) {
+      const path = normalizeFolderPath(item);
+      if (!path || path === "/" || seen.has(path) || !isAlbumPath(path)) continue;
+      seen.add(path);
+      out.push(path);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+export function writeExcludedFolders(folders) {
+  try {
+    const seen = new Set();
+    const out = [];
+    for (const item of folders || []) {
+      const path = normalizeFolderPath(item);
+      if (!path || path === "/" || seen.has(path) || !isAlbumPath(path)) continue;
+      seen.add(path);
+      out.push(path);
+    }
+    localStorage.setItem(EXCLUDED_FOLDERS_KEY, JSON.stringify(out));
+  } catch {
+    /* ignore */
+  }
 }
 
 export function importFoldersStored() {
@@ -108,9 +195,10 @@ export function readImportFolders(fallback) {
 }
 
 /** True when this photo file sits in one of the selected albums. */
-export function photoInFolders(photoPath, folders) {
+export function photoInFolders(photoPath, folders, excluded) {
   const items = (folders || []).filter(Boolean);
   if (!items.length) return false;
+  if (excluded?.length && isSkipped(photoPath, excluded)) return false;
   return items.some((folder) => isSameOrInside(photoPath, folder));
 }
 

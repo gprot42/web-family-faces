@@ -3,7 +3,26 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .config import CROP_DIR
 from .people import is_unknown_name
+
+
+def face_crop_url(face_id: Any, rotation: int = 0, size: int = 384) -> str:
+    """Cache-bust when the crop file is rewritten after a photo rotate."""
+    try:
+        fid = int(face_id)
+    except (TypeError, ValueError):
+        return ""
+    stamp = int(size)
+    try:
+        stamp = int((CROP_DIR / f"{fid}.jpg").stat().st_mtime)
+    except OSError:
+        pass
+    rot = int(rotation or 0) % 360
+    q = f"v={stamp}"
+    if rot:
+        q += f"&r={rot}"
+    return f"/api/faces/{fid}/crop?{q}"
 
 # Never SELECT f.* for lists — embedding blobs stall the single API worker.
 FACE_SELECT = """
@@ -64,8 +83,9 @@ def face_public(row: dict[str, Any]) -> dict[str, Any]:
         "tag_y": _row_opt_float(row, "tag_y"),
         "comment": _row_text(row, "comment"),
         "tags": list(row.get("tags") or []),
-        "crop_url": f"/api/faces/{row['id']}/crop?v=384",
+        "crop_url": face_crop_url(row["id"], _row_int(row, "rotation", 0)),
         "thumb_url": f"/api/photos/{row['photo_id']}/thumb",
+        "rotation": _row_int(row, "rotation", 0),
     }
     if row.get("taken_at") is not None:
         out["taken_at"] = row["taken_at"]
@@ -105,7 +125,12 @@ def photo_public(
         "view_url": f"/api/photos/{row['id']}/view",
         "file_url": f"/api/photos/{row['id']}/file",
         "file_available": path.exists() if check_file else None,
-        "faces": [face_public(f) for f in faces] if faces is not None else None,
+        "faces": [
+            face_public({**f, "rotation": f.get("rotation", _row_int(row, "rotation"))})
+            for f in faces
+        ]
+        if faces is not None
+        else None,
     }
 
 
@@ -125,7 +150,11 @@ def person_public(row: dict[str, Any], *, cover_size: int = 384) -> dict[str, An
         "created_at": row.get("created_at"),
         "unknown_name": is_unknown_name(row.get("name")),
         "cover_face_id": row.get("cover_face_id"),
-        "cover_url": f"/api/faces/{row['cover_face_id']}/crop?v={cover_size}" if row.get("cover_face_id") else None,
+        "cover_url": (
+            face_crop_url(row["cover_face_id"], _row_int(row, "rotation", 0), cover_size)
+            if row.get("cover_face_id")
+            else None
+        ),
     }
     if "faces" in row and row["faces"] is not None:
         out["faces"] = [face_public(f) for f in row["faces"]]

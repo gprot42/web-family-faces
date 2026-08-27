@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import { ALL_FOLDERS_EVENT, addedFolderPaths, folderBreadcrumb, folderDisplayName, folderIsIndexed, folderLabel, FOLDER_TITLE_MAX, isFolderStarred, normalizeFolderPath, photoAlbumName, photoInFolders, readFolderTitles, readImportFolders, readStarredFolders, setFolderTitle, toggleStarredFolder, writeFolderTitles, writeImportFolders, writeStarredFolders } from "../folders.js";
+import { ALL_FOLDERS_EVENT, addedFolderPaths, folderBreadcrumb, folderDisplayName, folderIsIndexed, folderLabel, FOLDER_TITLE_MAX, isFolderStarred, normalizeFolderPath, photoAlbumName, photoInFolders, readExcludedFolders, readFolderTitles, readImportFolders, readStarredFolders, setFolderTitle, toggleStarredFolder, writeExcludedFolders, writeFolderTitles, writeImportFolders, writeStarredFolders } from "../folders.js";
 import { PHOTO_CHANGE_EVENT } from "../photoMenu.js";
 import JobGauge from "../components/JobGauge.jsx";
 import { beginPlay } from "../play.js";
@@ -72,10 +72,9 @@ function writeFolderSel(sel) {
   }
 }
 
-function writeFolderHash(hash) {
-  const next = `${window.location.pathname}${window.location.search}${hash || ""}`;
-  const cur = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-  if (cur !== next) window.history.replaceState(null, "", next);
+function isScrollHash(hash) {
+  const wanted = String(hash || "").replace(/^#/, "");
+  return wanted === "starred-folders" || wanted.startsWith("year-");
 }
 
 function mergeFolderCatalog(base, extra) {
@@ -325,12 +324,10 @@ function FolderPhotos() {
   const [unidentified, setUnidentified] = useState(false);
   const [importing, setImporting] = useState(false);
   const [job, setJob] = useState(null);
-  const [resetting, setResetting] = useState(false);
-  const [resetNote, setResetNote] = useState("");
   const [saved, setSaved] = useState(() => readImportFolders());
+  const [excluded, setExcluded] = useState(() => readExcludedFolders());
   const [picker, setPicker] = useState(false);
   const [scanConfirm, setScanConfirm] = useState(null);
-  const [resetAsk, setResetAsk] = useState(null);
   const [scanErr, setScanErr] = useState("");
   const [catalog, setCatalog] = useState(() => {
     const cached = loadCachedCatalog();
@@ -524,11 +521,13 @@ function FolderPhotos() {
 
   const appliedSel = useRef("");
 
-  function rememberSel(sel) {
+  function rememberSel(sel, { replace = false } = {}) {
     if (!sel?.hash) return;
     appliedSel.current = sel.hash;
     writeFolderSel(sel);
-    writeFolderHash(`#${sel.hash}`);
+    const hash = `#${sel.hash}`;
+    if (window.location.pathname === "/photos" && window.location.hash === hash) return;
+    nav(`/photos${hash}`, { replace });
   }
 
   useEffect(() => {
@@ -654,19 +653,20 @@ function FolderPhotos() {
     setOpenPaths([]);
     setFolderQuery("");
     writeFolderSel(null);
-    writeFolderHash("");
-    const path = window.location.pathname;
-    const search = window.location.search;
     const hash = window.location.hash;
-    if (path !== "/photos" || search || hash) nav("/photos", { replace: true });
+    if (window.location.pathname === "/photos" && !window.location.search && hash) {
+      nav("/photos", { replace: true });
+      return;
+    }
+    if (window.location.pathname !== "/photos" || window.location.search) nav("/photos", { replace: true });
   }
 
   function selectFromLocation(treeNow) {
     if (q || unidentified) return;
     if (!treeNow.groups.length && !treeNow.ungrouped.length) return;
-    const wanted = (loc.hash || window.location.hash).replace(/^#/, "");
+    const wanted = String(window.location.hash || "").replace(/^#/, "");
     const albums = [...treeNow.ungrouped, ...treeNow.groups.flatMap((item) => item.albums)];
-    if (!wanted) {
+    if (!wanted || isScrollHash(wanted)) {
       if (appliedSel.current || activeFolder || activePath || openPaths.length) {
         appliedSel.current = "";
         setActiveFolder("");
@@ -796,9 +796,14 @@ function FolderPhotos() {
     }
     setScanErr("");
     try {
-      await api.pipeline(list);
+      await api.pipeline(list, { exclude: excluded });
     } catch (ex) {
-      setScanErr(ex.message);
+      const raw = ex.message || "";
+      setScanErr(
+        /Folder not found|isn't available|aren't available|not mounted/i.test(raw)
+          ? "That album isn't on this Mac right now. Mount the NAS in Finder, then Find Known Faces. Files stay where they are."
+          : raw,
+      );
     }
   }
 
@@ -809,35 +814,6 @@ function FolderPhotos() {
       return;
     }
     setScanConfirm(list);
-  }
-
-  function askResetMatching(folder) {
-    setResetAsk(folder || true);
-  }
-
-  async function resetMatching(folder) {
-    const all = !folder;
-    setResetAsk(null);
-    setResetting(true);
-    setResetNote("");
-    try {
-      const result = await api.resetMatching(folder || undefined);
-      const albums = (catalog || []).filter((album) => album.path && album.photos > 0);
-      const wanted = folder
-        ? albums.filter((album) => album.folder === folder)
-        : albums;
-      await Promise.all(wanted.map((album) => fetchAlbum(album.path)));
-      const n = result.faces_cleared || 0;
-      setResetNote(
-        all
-          ? `Cleared ${n} auto-matched face${n === 1 ? "" : "s"}.`
-          : `Cleared ${n} auto-matched face${n === 1 ? "" : "s"} in ${folder}.`,
-      );
-    } catch (ex) {
-      setResetNote(ex.message || "Could not reset matching.");
-    } finally {
-      setResetting(false);
-    }
   }
 
   const index = useMemo(
@@ -920,9 +896,11 @@ function FolderPhotos() {
             Full photos, grouped by the folder they live in.{" "}
             {loading && !(catalog || []).length
               ? "Loading folders…"
-              : activeFolder
+              : shown
                 ? `${shown} photo${shown === 1 ? "" : "s"} in ${groups.length} folder${groups.length === 1 ? "" : "s"}${libName ? ` from ${libName}` : ""}.`
-                : `Choose a folder to see photos.${libName ? ` ${libName}.` : ""}`}
+                : pendingScan.length
+                  ? "Selected albums appear here after Find Known Faces. Files stay where they are."
+                  : "Choose a folder to see photos."}
             {shown !== data.total && !loading && (q || unidentified)
               ? ` ${data.total} match this filter.`
               : ""}{" "}
@@ -982,21 +960,6 @@ function FolderPhotos() {
         >
           Add folders
         </button>
-        {importing || pendingScan.length ? (
-          <button
-            type="button"
-            className="secondary"
-            disabled={importing || !pendingScan.length}
-            onClick={() => requestScan(pendingScan)}
-            {...tip("Show the albums that are not in the catalog yet, then confirm. Already scanned albums stay as they are. Files are not moved.")}
-          >
-            {importing
-              ? "Finding known faces…"
-              : pendingScan.length === 1
-                ? `Find Known Faces in ${folderBreadcrumb(pendingScan[0])}`
-                : "Find Known Faces in selected albums"}
-          </button>
-        ) : null}
         <button
           type="button"
           className="secondary"
@@ -1012,18 +975,8 @@ function FolderPhotos() {
         >
           Play albums
         </button>
-        <button
-          type="button"
-          className="secondary"
-          disabled={resetting || loading || !groups.length}
-          onClick={() => askResetMatching()}
-          {...tip("Undo auto-matched names in every folder. Names you typed stay. Photos are not changed.")}
-        >
-          {resetting ? "Resetting…" : "Reset matching"}
-        </button>
       </div>
       {scanErr ? <p className="error">{scanErr}</p> : null}
-      {resetNote ? <p className="hint" style={{ marginTop: -8, marginBottom: 16 }}>{resetNote}</p> : null}
       {scanConfirm ? (
         <ScanConfirm
           paths={scanConfirm}
@@ -1036,23 +989,20 @@ function FolderPhotos() {
           }}
         />
       ) : null}
-      {resetAsk ? (
-        <ConfirmAsk
-          title={resetAsk === true ? "Reset matching in every folder?" : `Reset matching in “${resetAsk}”?`}
-          body="Clear auto-matched names. Names you typed stay. Photo files are not changed."
-          onCancel={() => setResetAsk(null)}
-          onConfirm={() => resetMatching(resetAsk === true ? undefined : resetAsk)}
-        />
-      ) : null}
       {picker ? (
         <FolderPicker
           selected={saved}
+          excluded={excluded}
           startPath={saved[0] || ""}
           onClose={() => setPicker(false)}
           onSelect={(paths, opts = {}) => {
             const next = Array.isArray(paths) ? paths.filter(Boolean) : [paths].filter(Boolean);
             writeImportFolders(next);
             setSaved(next);
+            if (opts.excluded) {
+              writeExcludedFolders(opts.excluded);
+              setExcluded(opts.excluded);
+            }
             if (opts.scan) {
               const added = addedFolderPaths(next, savedAtPickerOpen.current);
               if (added.length && !importing) requestScan(added);
@@ -1159,7 +1109,6 @@ function FolderPhotos() {
                 meta={meta}
                 current={activeFolder === folder}
                 onSelect={() => setActiveFolder(folder)}
-                resetting={resetting}
                 onPlay={async () => {
                   const path = meta?.path;
                   const all = path
@@ -1167,7 +1116,6 @@ function FolderPhotos() {
                     : photos;
                   beginPlay(nav, all, { kind: "album", title: folder, from: "/photos" });
                 }}
-                onReset={() => askResetMatching(folder)}
                 onRename={
                   meta?.path
                     ? (event) => openFolderMenu(event, meta.path, folder)
@@ -1222,8 +1170,17 @@ function FolderPhotos() {
                     />
                     {index.starred.length || index.decades.length > 1 ? (
                       <nav className="folder-decade-nav" aria-label="Jump to starred albums or a decade">
+                        <span className="folder-decade-label" aria-hidden="true">
+                          Jump to
+                        </span>
                         {index.starred.length ? (
                           <a className="starred-jump" href="#starred-folders">
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                              <path
+                                d="M12 3.1 14.7 9h6.6l-5.3 4 2 6.6L12 16.2 5.9 19.6l2-6.6-5.3-4h6.6L12 3.1z"
+                                fill="currentColor"
+                              />
+                            </svg>
                             Starred
                           </a>
                         ) : null}
@@ -1351,12 +1308,10 @@ function FolderPhotos() {
                     current
                     anchor={false}
                     onSelect={() => setActiveFolder(group.name)}
-                    resetting={resetting}
                     onPlay={async () => {
                       const all = preferLargerCopy((await loadAllPhotos({ folder: [group.path] })).items || []);
                       beginPlay(nav, all, { kind: "album", title: albumLabel(group.path, group.name), from: "/photos" });
                     }}
-                    onReset={() => askResetMatching(group.name)}
                     onRename={(event) => openFolderMenu(event, group.path, group.name)}
                     onNeed={() => {
                       if (!(loadedGroup.items || []).length) fetchAlbum(group.path);
@@ -1377,7 +1332,6 @@ function FolderPhotos() {
                     }}
                     current={activeFolder === group.name}
                     onSelect={() => setActiveFolder(group.name)}
-                    resetting={resetting}
                     onPlay={async () => {
                       const all = photosInExactFolder(
                         group.path,
@@ -1385,7 +1339,6 @@ function FolderPhotos() {
                       );
                       beginPlay(nav, all, { kind: "album", title: albumLabel(group.path, group.name), from: "/photos" });
                     }}
-                    onReset={() => askResetMatching(group.name)}
                     onRename={(event) => openFolderMenu(event, group.path, group.name)}
                     onNeed={() => {
                       if (!(loadedGroup.items || []).length) fetchAlbum(group.path);
@@ -1409,12 +1362,10 @@ function FolderPhotos() {
                       }}
                       current={activeFolder === album.folder}
                       onSelect={() => setActiveFolder(album.folder)}
-                      resetting={resetting}
                       onPlay={async () => {
                         const all = preferLargerCopy((await loadAllPhotos({ folder: [album.path] })).items || []);
                         beginPlay(nav, all, { kind: "album", title: albumLabel(album.path, album.folder), from: "/photos" });
                       }}
-                      onReset={() => askResetMatching(album.folder)}
                       onRename={(event) => openFolderMenu(event, album.path, album.folder)}
                       onNeed={() => {
                         if (!(loaded.items || []).length) fetchAlbum(album.path);
@@ -1447,12 +1398,10 @@ function FolderPhotos() {
                     setActiveFolder(album.folder);
                     setActivePath(album.path);
                   }}
-                  resetting={resetting}
                   onPlay={async () => {
                     const all = preferLargerCopy((await loadAllPhotos({ folder: [album.path] })).items || []);
                     beginPlay(nav, all, { kind: "album", title: albumLabel(album.path, album.folder), from: "/photos" });
                   }}
-                  onReset={() => askResetMatching(album.folder)}
                   onRename={(event) => openFolderMenu(event, album.path, album.folder)}
                   onNeed={() => {
                     if (!(loaded.items || []).length) fetchAlbum(album.path);
@@ -1479,7 +1428,7 @@ function FolderPhotos() {
   );
 }
 
-function AlbumBlock({ folder, label, photos, meta, current, onSelect, resetting, onPlay, onReset, onNeed, onMore, onRename, anchor = true }) {
+function AlbumBlock({ folder, label, photos, meta, current, onSelect, onPlay, onNeed, onMore, onRename, anchor = true }) {
   const [labelsOn] = usePhotoLabels();
   const ref = useRef(null);
   useEffect(() => {
@@ -1527,15 +1476,6 @@ function AlbumBlock({ folder, label, photos, meta, current, onSelect, resetting,
             {...tip(`Play ${shown} in date order. Fullscreen.`)}
           >
             Play
-          </button>
-          <button
-            type="button"
-            className="ghost"
-            disabled={resetting}
-            onClick={onReset}
-            {...tip(`Undo auto-matched names in ${shown}. Names you typed stay.`)}
-          >
-            Reset matching
           </button>
         </div>
       </header>
