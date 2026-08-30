@@ -9,6 +9,8 @@ import LabeledPhoto, { displayFaces, faceMark, faceTone, overlayFaces, unnamedNa
 import { applyFullscreenLabels, FULLSCREEN_LABELS_EVENT, readFullscreenLabels } from "../nametag.js";
 import NamesToggle from "../components/NamesToggle.jsx";
 import LabelLayoutToggle from "../components/LabelLayoutToggle.jsx";
+import LabelSizeToggle from "../components/LabelSizeToggle.jsx";
+import LabelStyleToggle from "../components/LabelStyleToggle.jsx";
 import { PLAY_EVENT, enterBrowserFullscreen, exitBrowserFullscreen, playHref, playIndexOf, prefetchPlay, readPlay, readPlayIntervalMs, stopPlay, updatePlay } from "../play.js";
 import PersonPicker from "../components/PersonPicker.jsx";
 import FamousLookup from "../components/FamousLookup.jsx";
@@ -16,7 +18,7 @@ import ImaginePrompt from "../components/ImaginePrompt.jsx";
 import NameSuggest from "../components/NameSuggest.jsx";
 import { completeUniqueFirstName, matchPeople, selectCompletedSuffix, uniqueCatalogPerson } from "../nameSuggest.js";
 import { loadCachedPeople, saveCachedPeople } from "../peopleCache.js";
-import { emitCatalogChange, emitPhotoChange, PHOTO_CHANGE_EVENT, showPhotoMenu } from "../photoMenu.js";
+import { emitCatalogChange, emitPhotoChange, PHOTO_CHANGE_EVENT, readPhotoRotation, rememberPhotoRotation, showPhotoMenu } from "../photoMenu.js";
 import { clearRematchUndo, readRematchUndo, writeRematchUndo } from "../rematchUndo.js";
 import { peekUndo, popUndo, pushFaceUndo, pushUndo, undoCount } from "../editUndo.js";
 import { folderHashFrom, personIdFrom, personShotHash, readAlbumPos, writeAlbumPos, writePersonPos } from "../albumPos.js";
@@ -123,11 +125,21 @@ function photoImgUrl(photoId, kind) {
   return photoId ? `/api/photos/${photoId}/${kind}` : "";
 }
 
+function seedPhotoRotation(photoId, loc) {
+  const cached = readPhotoRotation(photoId);
+  if (cached != null) return cached;
+  if (Number(loc?.state?.photoId) === Number(photoId) && loc.state?.rotation != null) {
+    return (((Number(loc.state.rotation) || 0) % 360) + 360) % 360;
+  }
+  return null;
+}
+
 export default function PhotoDetail() {
   const { id } = useParams();
   const [params] = useSearchParams();
   const personId = params.get("person") || "";
   const tagFilter = (params.get("tag") || "").trim();
+  const laterReview = params.get("later") === "1";
   const loc = useLocation();
   const nav = useNavigate();
   const [photo, setPhoto] = useState(null);
@@ -219,6 +231,7 @@ export default function PhotoDetail() {
     if (session) return playHref(photoId, session);
     if (personId) return `/photos/${photoId}?person=${personId}`;
     if (tagFilter) return `/photos/${photoId}?tag=${encodeURIComponent(tagFilter)}`;
+    if (laterReview) return `/photos/${photoId}?later=1`;
     return `/photos/${photoId}`;
   }
 
@@ -238,6 +251,8 @@ export default function PhotoDetail() {
   function backTo() {
     const from = personReturnTo() || safeFrom(loc.state?.from);
     if (from) return from;
+    const pos = readAlbumPos();
+    if (pos?.hash) return `/photos#${pos.hash}`;
     if (personId) return `/photos?by=person&person=${personId}`;
     if (tagFilter) return `/photos?by=tag&tag=${encodeURIComponent(tagFilter)}`;
     return "/photos";
@@ -305,10 +320,6 @@ export default function PhotoDetail() {
     setPlay(updatePlay({ playing: !session.playing }));
   }
 
-  function inboxFrom(from) {
-    return from === "/to-name" || from.startsWith("/to-name#") || from === "/review" || from.startsWith("/review#");
-  }
-
   function goBack(e) {
     e?.preventDefault();
     e?.stopPropagation();
@@ -318,16 +329,7 @@ export default function PhotoDetail() {
       setFull(false);
       exitBrowserFullscreen();
     }
-    const from = safeFrom(loc.state?.from);
-    if (inboxFrom(from)) {
-      nav(from, { replace: true });
-      return;
-    }
-    if (from) {
-      nav(-1);
-      return;
-    }
-    nav(backTo(), { replace: true });
+    nav(backTo());
   }
 
   async function load() {
@@ -339,6 +341,7 @@ export default function PhotoDetail() {
       lite: 1,
     });
     photoNow.current = data;
+    rememberPhotoRotation(data.id, data.rotation);
     setPhoto(data);
     setCommentDraft(data.comment || "");
     setCommentSaved(false);
@@ -382,7 +385,7 @@ export default function PhotoDetail() {
 
   function revealFaceCard(faceId) {
     const card = document.getElementById(`face-card-${faceId}`);
-    card?.scrollIntoView({ block: "nearest" });
+    card?.scrollIntoView({ block: "center", inline: "nearest" });
   }
 
   function selectFace(faceId) {
@@ -589,7 +592,7 @@ export default function PhotoDetail() {
 
   useEffect(() => {
     if (!active) return;
-    document.getElementById(`face-card-${active}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    document.getElementById(`face-card-${active}`)?.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
   }, [active]);
 
   useEffect(() => {
@@ -682,7 +685,7 @@ export default function PhotoDetail() {
   function onPanStart(e) {
     if (pickingNow.current) return;
     if (e.button != null && e.button !== 0) return;
-    if (e.target.closest?.(".nametag, .photo-full-tools, .photo-full-nav, .photo-full-east, .photo-full-zoombar, .photo-stage-zoombar, .photo-full-dock, .back-btn, .app-brand, .photo-imagine-pop, .photo-sharpen-badge, .photo-tag-row, .photo-full-tags, .zoom-tools, .nav")) {
+    if (e.target.closest?.(".nametag, .face-box, .photo-full-tools, .photo-full-nav, .photo-full-east, .photo-full-zoombar, .photo-stage-zoombar, .photo-full-dock, .back-btn, .app-brand, .photo-imagine-pop, .photo-sharpen-badge, .photo-tag-row, .photo-full-tags, .zoom-tools, .nav")) {
       return;
     }
     if (zoomNow.current <= ZOOM_FIT) return;
@@ -1978,12 +1981,21 @@ export default function PhotoDetail() {
         </div>
       );
     }
+    const eagerRot = seedPhotoRotation(id, loc);
     const eager = photoSrc || photoImgUrl(id, "thumb");
-    const eagerImg = eager ? (
-      <img src={eager} alt="" fetchPriority="high" decoding="async" />
-    ) : (
-      <p className="photo-full-hint">Loading…</p>
-    );
+    const eagerImg =
+      eager && eagerRot != null ? (
+        <img
+          src={eager}
+          alt=""
+          className={eagerRot ? `photo-eager-rot rot-${eagerRot}` : undefined}
+          style={eagerRot ? { "--rot": `${eagerRot}deg` } : undefined}
+          fetchPriority="high"
+          decoding="async"
+        />
+      ) : (
+        <p className="photo-full-hint">Loading…</p>
+      );
     if (full || readPlay()) {
       return (
         <div className="photo-full" role="dialog" aria-label="Loading photo">
@@ -2003,6 +2015,7 @@ export default function PhotoDetail() {
     }),
   };
   const playSrc = photoSrc || photo.thumb_url || photo.view_url || photo.file_url;
+  const photoRot = (((Number(photo.rotation) || 0) % 360) + 360) % 360;
   const liveSrc =
     showImagined && imaginedUrl
       ? imaginedUrl
@@ -2164,6 +2177,8 @@ export default function PhotoDetail() {
             </button>
             <NamesToggle />
             <LabelLayoutToggle />
+            <LabelSizeToggle />
+            <LabelStyleToggle />
             {(photo.faces || []).some((f) => f.person_id && f.assigned_how !== "junk") ? (
               <button
                 type="button"
@@ -2302,8 +2317,7 @@ export default function PhotoDetail() {
                 activeId={active}
                 onFaceClick={(f) => {
                   if (didDrag.current) return;
-                  selectFace(f.id);
-                  showFullscreen();
+                  openFace(f);
                 }}
                 onPhotoClick={() => {
                   if (didDrag.current) return;
@@ -2852,6 +2866,8 @@ export default function PhotoDetail() {
               <img
                 src={liveSrc}
                 alt={photo.filename}
+                className={photoRot ? `photo-eager-rot rot-${photoRot}` : undefined}
+                style={photoRot ? { "--rot": `${photoRot}deg` } : undefined}
                 draggable={false}
                 onDragStart={(e) => e.preventDefault()}
                 fetchPriority="high"
@@ -2866,6 +2882,7 @@ export default function PhotoDetail() {
           </div>
           <BackButton
             overlay
+            to={backTo()}
             onClick={goBack}
             {...tip("Leave this photo and go back.")}
           />
@@ -2944,6 +2961,8 @@ export default function PhotoDetail() {
             </button>
             <NamesToggle className="" />
             <LabelLayoutToggle className="" />
+            <LabelSizeToggle className="" />
+            <LabelStyleToggle className="" />
             <button
               type="button"
               aria-pressed={pickingFace}

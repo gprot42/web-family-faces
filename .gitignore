@@ -41,4 +41,5 @@ xai.oauth.pending.json
 *.avif
 !frontend/public/family-faces-logo.jpg
 !fixtures/sample-album/*.jpg
+!docs/example-labeled-photos.jpg
 

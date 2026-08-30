@@ -7,7 +7,7 @@ import { emitCatalogChange, emitPhotoChange, subscribePhotoMenu } from "../photo
 import { clearRematchUndo, readRematchUndo, writeRematchUndo } from "../rematchUndo.js";
 import { pushFaceUndo, pushUndo } from "../editUndo.js";
 import { boxIou, displayFaces, overlayFaces, unnamedName } from "./LabeledPhoto.jsx";
-import { normalizeTag, TAGS_MAX, tagHref } from "./PhotoTags.jsx";
+import { hasLaterReviewTag, normalizeTag, otherTags, TAGS_MAX, tagHref, withLaterReviewTag } from "../photoTags.js";
 
 const PAD = 8;
 
@@ -163,6 +163,8 @@ export default function PhotoMenu() {
   const people = namedPeople(menu.photo, menu.faceId);
   const unnamed = unnamedFaces(menu.photo, menu.faceId);
   const tags = (menu.photo.tags || []).filter(Boolean);
+  const reviewOn = hasLaterReviewTag(tags);
+  const customTags = otherTags(tags);
 
   async function saveTags(next) {
     const prev = menu.photo;
@@ -191,6 +193,10 @@ export default function PhotoMenu() {
     if (tags.length >= TAGS_MAX) return;
     setTagDraft("");
     saveTags([...tags, next]);
+  }
+
+  function toggleLaterReview() {
+    saveTags(withLaterReviewTag(tags, !reviewOn));
   }
 
   async function removePeople(faceIds) {
@@ -331,8 +337,11 @@ export default function PhotoMenu() {
       >
         {menu.photo.comment ? "Edit comment" : "Add comment"}
       </button>
+      <button type="button" role="menuitem" disabled={!!busy} onClick={toggleLaterReview}>
+        {reviewOn ? "Remove later review tag" : "Tag image for later review"}
+      </button>
       <div className="photo-menu-sep" role="separator" />
-      {tags.map((tag) => (
+      {customTags.map((tag) => (
         <div key={tag} className="photo-menu-tag">
           <button
             type="button"

@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import { ALL_FOLDERS_EVENT, addedFolderPaths, folderBreadcrumb, folderDisplayName, folderIsIndexed, folderLabel, FOLDER_TITLE_MAX, isFolderStarred, normalizeFolderPath, photoAlbumName, photoInFolders, readExcludedFolders, readFolderTitles, readImportFolders, readStarredFolders, setFolderTitle, toggleStarredFolder, writeExcludedFolders, writeFolderTitles, writeImportFolders, writeStarredFolders } from "../folders.js";
-import { PHOTO_CHANGE_EVENT } from "../photoMenu.js";
+import { ALL_FOLDERS_EVENT, addedFolderPaths, folderAnchor, folderBreadcrumb, folderDisplayName, folderIsIndexed, folderLabel, folderMatchesQuery, folderShortName, folderYear, FOLDER_TITLE_MAX, isFolderStarred, normalizeFolderPath, photoAlbumName, photoInFolders, readExcludedFolders, readFolderTitles, readImportFolders, readStarredFolders, setFolderTitle, toggleStarredFolder, writeExcludedFolders, writeFolderTitles, writeImportFolders, writeStarredFolders } from "../folders.js";
+import { emitPhotoChange, PHOTO_CHANGE_EVENT } from "../photoMenu.js";
 import JobGauge from "../components/JobGauge.jsx";
 import { beginPlay } from "../play.js";
 import { tip } from "../tip.js";
@@ -11,9 +11,18 @@ import LabeledPhoto from "../components/LabeledPhoto.jsx";
 import NamesToggle, { usePhotoLabels } from "../components/NamesToggle.jsx";
 import FolderPicker from "../components/FolderPicker.jsx";
 import ConfirmAsk from "../components/ConfirmAsk.jsx";
-import { photoTagHref, tagHref } from "../components/PhotoTags.jsx";
+import {
+  hasLaterReviewTag,
+  isLaterReviewTag,
+  LATER_REVIEW_TAG,
+  laterReviewHref,
+  photoLaterHref,
+  photoTagHref,
+  tagHref,
+  withLaterReviewTag,
+} from "../components/PhotoTags.jsx";
 import { clearAlbumPos, readAlbumPos, writeAlbumPos } from "../albumPos.js";
-import { ALBUM_PAGE, albumHasMore, nextAlbumOffset } from "../albumPage.js";
+import { ALBUM_PAGE_EVENT, albumHasMore, nextAlbumOffset, readAlbumPage } from "../albumPage.js";
 
 function folderOf(path) {
   const parts = (path || "").split("/").filter(Boolean);
@@ -27,10 +36,6 @@ function photosInExactFolder(folderPath, items) {
     const parent = String(p.path || "").replace(/\/[^/]+$/, "");
     return parent === prefix;
   });
-}
-
-function folderAnchor(name) {
-  return `folder-${encodeURIComponent(name).replace(/%/g, "")}`;
 }
 
 const FOLDER_SEL_KEY = "photosort-folder-sel";
@@ -123,31 +128,9 @@ function catalogTree(catalog) {
   return { ungrouped: leaves, groups };
 }
 
-function folderYear(name) {
-  const s = String(name || "").trim();
-  const head = s.match(/^(19|20)\d{2}(?=\s*[-.–]\s*|\.\s+)/);
-  if (head) return head[0];
-  const tail = s.match(/_(19|20)\d{2}$/);
-  return tail ? tail[0].slice(1) : "";
-}
-
-function folderShortName(name, year) {
-  if (!year) return String(name || "");
-  const stripped = String(name || "")
-    .replace(new RegExp(`^${year}(?:\\s*[-.–]\\s*|\\.\\s+)`), "")
-    .replace(new RegExp(`_${year}$`), "")
-    .trim();
-  return stripped || String(name || "");
-}
-
 function folderIndex(tree, needle, starredPaths, titles) {
-  const q = String(needle || "").trim().toLowerCase();
   const shown = (path, fallback) => folderDisplayName(path, fallback, titles);
-  const match = (name, path) => {
-    if (!q) return true;
-    const hay = `${name || ""} ${shown(path, name)}`.toLowerCase();
-    return hay.includes(q);
-  };
+  const match = (name, path) => folderMatchesQuery(needle, name, path, titles);
   const starredList = (starredPaths || []).map(normalizeFolderPath).filter((path) => path && path !== "/");
   const starredSet = new Set(starredList);
   const order = new Map(starredList.map((path, i) => [path, i]));
@@ -308,10 +291,12 @@ export default function Photos() {
   const [params] = useSearchParams();
   const byPerson = params.get("by") === "person";
   const byTag = params.get("by") === "tag";
+  const byLater = params.get("by") === "later";
   const personFilter = params.get("person") || "";
   const tagFilter = params.get("tag") || "";
   if (byPerson) return <PhotoByPerson personFilter={personFilter} />;
   if (byTag) return <PhotoByTag tagFilter={tagFilter} />;
+  if (byLater) return <LaterReviewPhotos />;
   return <FolderPhotos />;
 }
 
@@ -320,6 +305,7 @@ function FolderPhotos() {
   const loc = useLocation();
   const [data, setData] = useState({ items: [], total: 0 });
   const [albumPhotos, setAlbumPhotos] = useState({});
+  const [albumPage, setAlbumPage] = useState(() => readAlbumPage());
   const [q, setQ] = useState("");
   const [unidentified, setUnidentified] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -346,6 +332,7 @@ function FolderPhotos() {
   const [starredFolders, setStarredFolders] = useState(readStarredFolders);
   const [folderTitles, setFolderTitles] = useState(readFolderTitles);
   const [folderMenu, setFolderMenu] = useState(null);
+  const [folderRename, setFolderRename] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -376,6 +363,25 @@ function FolderPhotos() {
     };
   }, []);
 
+  useEffect(() => {
+    function sync() {
+      setAlbumPage(readAlbumPage());
+    }
+    window.addEventListener(ALBUM_PAGE_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(ALBUM_PAGE_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+
+  useEffect(() => {
+    for (const path of openPathsRef.current) {
+      const have = albumPhotosRef.current[path]?.items?.length || 0;
+      if (path && have < albumPage) fetchAlbum(path, albumPage);
+    }
+  }, [albumPage]);
+
   function writeAlbum(path, next) {
     setAlbumPhotos((cur) => {
       const merged = { ...cur, [path]: next };
@@ -385,7 +391,7 @@ function FolderPhotos() {
     return next;
   }
 
-  async function fetchAlbum(path, limit = ALBUM_PAGE) {
+  async function fetchAlbum(path, limit = albumPage) {
     const batch = await api.photos({ q, unidentified, folder: [path], offset: 0, limit });
     const incoming = batch.items || [];
     const next = {
@@ -413,7 +419,7 @@ function FolderPhotos() {
         unidentified,
         folder: [path],
         offset,
-        limit: ALBUM_PAGE,
+        limit: albumPage,
       });
       const incoming = batch.items || [];
       const fetched = offset + incoming.length;
@@ -689,7 +695,6 @@ function FolderPhotos() {
       openAlbum(album);
       return;
     }
-    showAllFolders();
   }
 
   useEffect(() => {
@@ -720,48 +725,76 @@ function FolderPhotos() {
   const restoredFor = useRef("");
 
   useEffect(() => {
+    const prev = window.history.scrollRestoration;
+    try {
+      window.history.scrollRestoration = "manual";
+    } catch {
+      /* ignore */
+    }
+    return () => {
+      try {
+        window.history.scrollRestoration = prev || "auto";
+      } catch {
+        /* ignore */
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!activeFolder) {
       restoredFor.current = "";
       return undefined;
     }
     const hash = folderAnchor(activeFolder);
+    const wanted = String(loc.hash || window.location.hash || "").replace(/^#/, "");
     const pos = readAlbumPos();
-    const restore = pos?.hash === hash ? pos : null;
+    const restore = pos && (pos.hash === hash || pos.hash === wanted) ? pos : null;
     const restoreId = restore?.photoId ? Number(restore.photoId) : 0;
 
-    if (restore?.path && restoreId) {
+    if (restore?.path) {
+      if (!openPathsRef.current.includes(restore.path)) {
+        setOpenPaths((cur) => (cur.includes(restore.path) ? cur : [...cur, restore.path]));
+      }
       const have = albumPhotosRef.current[restore.path]?.items || [];
       const found = have.some((p) => Number(p.id) === restoreId);
-      const want = Math.min(500, Math.max(ALBUM_PAGE, Number(restore.count) || 0));
-      if (!found && want > have.length) fetchAlbum(restore.path, want);
+      const want = Math.min(500, Math.max(albumPage, Number(restore.count) || 0));
+      if (restoreId && !found && want > have.length) fetchAlbum(restore.path, want);
     }
 
-    if (restoreId) {
+    if (!restoreId) {
+      if (restoredFor.current === hash) return undefined;
+      restoredFor.current = hash;
+      const run = () => document.getElementById(hash)?.scrollIntoView({ block: "start" });
+      run();
+      const t = window.setTimeout(run, 80);
+      const t2 = window.setTimeout(run, 400);
+      return () => {
+        window.clearTimeout(t);
+        window.clearTimeout(t2);
+      };
+    }
+
+    const key = `${hash}:${restoreId}`;
+    if (restoredFor.current === key) return undefined;
+
+    const apply = () => {
       const tile = document.getElementById(`photo-tile-${restoreId}`);
-      if (tile) {
+      if (!tile) return false;
+      const y = Number(restore.scrollY);
+      if (Number.isFinite(y) && y >= 0) {
+        window.scrollTo(0, y);
+      } else {
         tile.scrollIntoView({ block: "center", inline: "nearest" });
-        restoredFor.current = hash;
-        clearAlbumPos();
-        return undefined;
       }
-      if (restoredFor.current !== hash) {
-        document.getElementById(hash)?.scrollIntoView({ block: "start" });
-        restoredFor.current = hash;
-      }
-      return undefined;
-    }
-
-    if (restoredFor.current === hash) return undefined;
-    restoredFor.current = hash;
-    const run = () => document.getElementById(hash)?.scrollIntoView({ block: "start" });
-    run();
-    const t = window.setTimeout(run, 80);
-    const t2 = window.setTimeout(run, 400);
-    return () => {
-      window.clearTimeout(t);
-      window.clearTimeout(t2);
+      restoredFor.current = key;
+      clearAlbumPos();
+      return true;
     };
-  }, [activeFolder, openPaths, albumPhotos]);
+
+    if (apply()) return undefined;
+    const timers = [80, 200, 500, 1000, 2000, 4000].map((ms) => window.setTimeout(apply, ms));
+    return () => timers.forEach((t) => window.clearTimeout(t));
+  }, [activeFolder, openPaths, albumPhotos, loc.hash, albumPage]);
 
   const shown = (catalog || []).reduce((n, album) => n + (album.photos || 0), 0) || groups.reduce((n, [, photos]) => n + photos.length, 0);
   const libName = saved.length
@@ -1229,40 +1262,6 @@ function FolderPhotos() {
                   ) : null}
                 </div>
               )}
-              {tree.groups
-                .filter((group) => activePath === group.path)
-                .map((group) => (
-                  <div
-                    key={`${group.path}-nested`}
-                    className="person-chips nested-albums"
-                    role="navigation"
-                    aria-label={`Albums in ${group.name}`}
-                  >
-                    {group.albums.map((album) => (
-                      <a
-                        key={album.path}
-                        className={`person-chip${activeFolder === album.folder ? " active" : ""}${
-                          isFolderStarred(album.path, starredFolders) ? " starred" : ""
-                        }`}
-                        href={`#${folderAnchor(album.folder)}`}
-                        onContextMenu={(event) => openFolderMenu(event, album.path, album.folder)}
-                        onClick={(event) => {
-                          event.preventDefault();
-                          openAlbum(album, group);
-                        }}
-                        {...tip(`Show photos in ${albumLabel(album.path, album.folder)}.`)}
-                      >
-                        <FolderStarButton
-                          name={albumLabel(album.path, album.folder)}
-                          starred={isFolderStarred(album.path, starredFolders)}
-                          onToggle={() => toggleStar(album.path)}
-                        />
-                        {albumLabel(album.path, album.folder)}
-                        <span className="hint"> · {album.photos}</span>
-                      </a>
-                    ))}
-                  </div>
-                ))}
             </>
           ) : null}
           {tree.groups.map((group) => {
@@ -1294,6 +1293,37 @@ function FolderPhotos() {
                     </span>
                   </span>
                 </h2>
+                {viewingGroup && group.albums.length ? (
+                  <div
+                    className="person-chips nested-albums"
+                    role="navigation"
+                    aria-label={`Albums in ${group.name}`}
+                  >
+                    {group.albums.map((album) => (
+                      <a
+                        key={album.path}
+                        className={`person-chip${activeFolder === album.folder ? " active" : ""}${
+                          isFolderStarred(album.path, starredFolders) ? " starred" : ""
+                        }`}
+                        href={`#${folderAnchor(album.folder)}`}
+                        onContextMenu={(event) => openFolderMenu(event, album.path, album.folder)}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          openAlbum(album, group);
+                        }}
+                        {...tip(`Show photos in ${albumLabel(album.path, album.folder)}.`)}
+                      >
+                        <FolderStarButton
+                          name={albumLabel(album.path, album.folder)}
+                          starred={isFolderStarred(album.path, starredFolders)}
+                          onToggle={() => toggleStar(album.path)}
+                        />
+                        {albumLabel(album.path, album.folder)}
+                        <span className="hint"> · {album.photos}</span>
+                      </a>
+                    ))}
+                  </div>
+                ) : null}
                 {showMixed ? (
                   <AlbumBlock
                     folder={group.name}
@@ -1352,6 +1382,7 @@ function FolderPhotos() {
                     <AlbumBlock
                       key={album.path}
                       folder={album.folder}
+                      fromHash={viewingWhole ? folderAnchor(group.name) : folderAnchor(album.folder)}
                       label={albumLabel(album.path, album.folder)}
                       photos={loaded.items || []}
                       meta={{
@@ -1413,14 +1444,30 @@ function FolderPhotos() {
         </>
       )}
       {folderMenu ? (
-        <FolderRenameMenu
+        <FolderMenu
           menu={folderMenu}
-          current={albumLabel(folderMenu.path, folderMenu.name)}
-          original={folderMenu.name}
+          scanning={importing}
           onClose={() => setFolderMenu(null)}
-          onSave={(draft) => {
-            saveFolderName(folderMenu.path, folderMenu.name, draft);
+          onScan={() => {
+            const path = folderMenu.path;
             setFolderMenu(null);
+            requestScan([path]);
+          }}
+          onRename={() => {
+            setFolderRename({ path: folderMenu.path, name: folderMenu.name });
+            setFolderMenu(null);
+          }}
+        />
+      ) : null}
+      {folderRename ? (
+        <FolderRenameAsk
+          path={folderRename.path}
+          current={albumLabel(folderRename.path, folderRename.name)}
+          original={folderRename.name}
+          onCancel={() => setFolderRename(null)}
+          onSave={(draft) => {
+            saveFolderName(folderRename.path, folderRename.name, draft);
+            setFolderRename(null);
           }}
         />
       ) : null}
@@ -1428,7 +1475,7 @@ function FolderPhotos() {
   );
 }
 
-function AlbumBlock({ folder, label, photos, meta, current, onSelect, onPlay, onNeed, onMore, onRename, anchor = true }) {
+function AlbumBlock({ folder, label, photos, meta, current, onSelect, onPlay, onNeed, onMore, onRename, anchor = true, fromHash }) {
   const [labelsOn] = usePhotoLabels();
   const ref = useRef(null);
   useEffect(() => {
@@ -1452,6 +1499,8 @@ function AlbumBlock({ folder, label, photos, meta, current, onSelect, onPlay, on
   }, [meta?.path, photos.length]);
   const total = meta?.total || photos.length;
   const shown = label || folder;
+  const backHash = fromHash || folderAnchor(folder);
+  const backTo = backHash && backHash !== "folder-" ? `/photos#${backHash}` : "/photos";
   return (
     <section
       ref={ref}
@@ -1496,12 +1545,22 @@ function AlbumBlock({ folder, label, photos, meta, current, onSelect, onPlay, on
               key={p.id}
               id={`photo-tile-${p.id}`}
               style={{ "--tile-ar": tileAr }}
-              onClick={() =>
+              onPointerDown={() =>
                 writeAlbumPos({
-                  hash: folderAnchor(folder),
+                  hash: backHash,
                   photoId: Number(p.id),
                   path: meta?.path || "",
                   count: photos.length,
+                  scrollY: window.scrollY || document.documentElement.scrollTop || 0,
+                })
+              }
+              onClick={() =>
+                writeAlbumPos({
+                  hash: backHash,
+                  photoId: Number(p.id),
+                  path: meta?.path || "",
+                  count: photos.length,
+                  scrollY: window.scrollY || document.documentElement.scrollTop || 0,
                 })
               }
             >
@@ -1509,7 +1568,7 @@ function AlbumBlock({ folder, label, photos, meta, current, onSelect, onPlay, on
                 photo={p}
                 src={p.thumb_url}
                 to={photoLink(p.id)}
-                toState={{ fullscreen: true, from: `/photos#${folderAnchor(folder)}` }}
+                toState={{ fullscreen: true, from: backTo }}
                 overlayTags={labelsOn}
               />
               <div className="photo-caption">
@@ -1798,7 +1857,7 @@ function PhotoByTag({ tagFilter }) {
       </div>
       {tags.length ? (
         <div className="person-chips" role="tablist" aria-label="Custom tags">
-          {tags.map((item) => (
+          {tags.filter((item) => !isLaterReviewTag(item.tag)).map((item) => (
             <Link
               key={item.tag}
               className={`person-chip ${tagFilter === item.tag ? "active" : ""}`}
@@ -1869,6 +1928,141 @@ function PhotoByTag({ tagFilter }) {
   );
 }
 
+function LaterReviewPhotos() {
+  const nav = useNavigate();
+  const [photos, setPhotos] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    function onChange(event) {
+      const next = event.detail;
+      if (!next?.id) return;
+      setPhotos((cur) => {
+        const existing = cur.find((p) => p.id === next.id);
+        if (next.hidden) return cur.filter((p) => p.id !== next.id);
+        const tags = next.tags !== undefined ? next.tags : existing?.tags;
+        if (tags === undefined && !existing) return cur;
+        const tagged = hasLaterReviewTag(tags);
+        const rest = cur.filter((p) => p.id !== next.id);
+        if (!tagged) return rest;
+        const merged = { ...(existing || {}), ...next, tags: tags || [] };
+        return preferLargerCopy([merged, ...rest]);
+      });
+    }
+    window.addEventListener(PHOTO_CHANGE_EVENT, onChange);
+    return () => window.removeEventListener(PHOTO_CHANGE_EVENT, onChange);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      try {
+        const batch = await loadAllPhotos({ tag: LATER_REVIEW_TAG });
+        if (cancelled) return;
+        setPhotos(preferLargerCopy(batch.items || []));
+      } catch {
+        if (!cancelled) setPhotos([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function untag(photo) {
+    const prev = photo;
+    const tagsNext = withLaterReviewTag(photo.tags, false);
+    emitPhotoChange({ ...photo, tags: tagsNext });
+    try {
+      const result = await api.patchPhoto(photo.id, { tags: tagsNext });
+      emitPhotoChange({ ...photo, tags: result.tags || [] });
+    } catch (ex) {
+      emitPhotoChange(prev);
+      window.alert(ex.message || "Could not remove the later review tag.");
+    }
+  }
+
+  return (
+    <div>
+      <div className="page-head">
+        <div>
+          <p className="eyebrow">Photos</p>
+          <h1>Later review</h1>
+          <p className="lede">
+            Pictures you tagged from the right-click menu. Open one, or remove the tag. Originals are
+            not changed.
+          </p>
+        </div>
+        <div className="row">
+          <NamesToggle />
+          <ViewSwitch />
+        </div>
+      </div>
+      {loading ? <p className="hint">Loading photos…</p> : null}
+      {!loading && !photos.length ? (
+        <p className="hint">Right-click a photo and choose Tag image for later review.</p>
+      ) : null}
+      {!loading && photos.length ? (
+        <section className="folder-block">
+          <h2 className="folder-head">
+            <span>
+              <span className="group-kind">Later review</span>
+              {photos.length} photo{photos.length === 1 ? "" : "s"}
+            </span>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() =>
+                beginPlay(nav, photos, {
+                  kind: "later",
+                  title: "Later review",
+                  from: laterReviewHref(),
+                })
+              }
+              {...tip("Play tagged photos in date order, names on. Fullscreen.")}
+            >
+              Play
+            </button>
+          </h2>
+          <div className="label-grid">
+            {photos.map((p) => (
+              <div className="label-card later-review-card" key={p.id}>
+                <LabeledPhoto
+                  photo={p}
+                  src={p.thumb_url}
+                  to={photoLaterHref(p.id)}
+                  toState={{ fullscreen: true, from: laterReviewHref() }}
+                />
+                <button
+                  type="button"
+                  className="later-review-x"
+                  aria-label="Remove later review tag"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    untag(p);
+                  }}
+                  {...tip("Take this photo off Later review. The file is not changed.")}
+                >
+                  ×
+                </button>
+                <div className="meta">
+                  {[p.filename, photoAlbumName(p.path)].filter(Boolean).join(" · ")}
+                  {p.comment ? <div className="photo-comment-snip">{p.comment}</div> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
 const MENU_PAD = 8;
 
 function ScanConfirm({ paths, titles, onCancel, onConfirm }) {
@@ -1901,11 +2095,9 @@ function ScanConfirm({ paths, titles, onCancel, onConfirm }) {
   );
 }
 
-function FolderRenameMenu({ menu, current, original, onClose, onSave }) {
+function FolderMenu({ menu, scanning, onClose, onScan, onRename }) {
   const box = useRef(null);
-  const input = useRef(null);
-  const [draft, setDraft] = useState(current || original || "");
-  const custom = Boolean(String(current || "").trim() && String(current).trim() !== String(original || "").trim());
+  const scanBtn = useRef(null);
 
   useEffect(() => {
     function insideMenu(event) {
@@ -1943,49 +2135,116 @@ function FolderRenameMenu({ menu, current, original, onClose, onSave }) {
     if (top < MENU_PAD) top = MENU_PAD;
     box.current.style.left = `${left}px`;
     box.current.style.top = `${top}px`;
-    input.current?.focus();
-    input.current?.select();
+    scanBtn.current?.focus();
   }, [menu]);
-
-  function submit() {
-    onSave(draft);
-  }
 
   return (
     <div
       ref={box}
       className="photo-menu"
       role="menu"
-      aria-label="Rename album"
+      aria-label="Folder actions"
       onPointerDown={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div className="photo-menu-note">Rename in Folder View. The folder on disk is not renamed.</div>
-      <input
-        ref={input}
-        className="photo-menu-input"
-        type="text"
-        maxLength={FOLDER_TITLE_MAX}
-        value={draft}
-        placeholder={original || "Album name"}
-        aria-label="Album name"
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            e.stopPropagation();
-            submit();
-          }
-        }}
-      />
-      <button type="button" role="menuitem" onClick={submit}>
-        Save name
+      <button
+        ref={scanBtn}
+        type="button"
+        role="menuitem"
+        className="photo-menu-primary"
+        onClick={onScan}
+        {...tip(
+          scanning
+            ? "A scan is already running. You can still queue this folder: it looks for photos that are not in the catalog yet. Files stay where they are."
+            : "Look in this folder for photos that are not in the catalog yet, then find known faces. Files stay where they are.",
+        )}
+      >
+        Scan folder for new photos
       </button>
-      {custom ? (
-        <button type="button" role="menuitem" onClick={() => onSave("")}>
-          Use folder name
-        </button>
-      ) : null}
+      <button
+        type="button"
+        role="menuitem"
+        onClick={onRename}
+        {...tip("Change the name in Folder View. The folder on disk is not renamed.")}
+      >
+        Rename
+      </button>
+    </div>
+  );
+}
+
+function FolderRenameAsk({ path, current, original, onCancel, onSave }) {
+  const input = useRef(null);
+  const [draft, setDraft] = useState(current || original || "");
+  const custom = Boolean(
+    String(current || "").trim() && String(current).trim() !== String(original || "").trim(),
+  );
+  const disk = folderBreadcrumb(path);
+
+  useEffect(() => {
+    input.current?.focus();
+    input.current?.select();
+    function onKey(event) {
+      if (event.key === "Escape") onCancel();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  function submit() {
+    onSave(draft);
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel} role="presentation">
+      <div
+        className="modal scan-confirm"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="folder-rename-title"
+      >
+        <div className="page-head">
+          <div>
+            <h2 id="folder-rename-title">Rename</h2>
+            <p className="hint">Shown in Folder View. The folder on disk is not renamed.</p>
+          </div>
+        </div>
+        {disk && disk !== (current || original) ? (
+          <p className="hint" title={path}>
+            Folder on disk: {disk}
+          </p>
+        ) : null}
+        <input
+          ref={input}
+          className="folder-rename-input"
+          type="text"
+          maxLength={FOLDER_TITLE_MAX}
+          value={draft}
+          placeholder={original || "Album name"}
+          aria-label="New folder name"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              submit();
+            }
+          }}
+        />
+        <div className="row scan-confirm-actions">
+          <button type="button" className="ghost" onClick={onCancel}>
+            Cancel
+          </button>
+          {custom ? (
+            <button type="button" className="ghost" onClick={() => onSave("")}>
+              Use folder name
+            </button>
+          ) : null}
+          <button type="button" onClick={submit}>
+            Save name
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

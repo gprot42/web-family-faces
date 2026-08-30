@@ -3,13 +3,17 @@ import { Link } from "react-router-dom";
 import {
   FULLSCREEN_LABELS_EVENT,
   LABEL_LAYOUT_EVENT,
+  LABEL_SIZE_EVENT,
   NAMETAG_EVENT,
+  labelSizeInfo,
   readFullscreenLabels,
   readLabelLayout,
+  readLabelSize,
   readNametag,
 } from "../nametag.js";
-import { PHOTO_CHANGE_EVENT, showPhotoMenu } from "../photoMenu.js";
+import { PHOTO_CHANGE_EVENT, rememberPhotoRotation, showPhotoMenu } from "../photoMenu.js";
 import { PhotoTagRow } from "./PhotoTags.jsx";
+import { otherTags } from "../photoTags.js";
 
 const FACE_TONES = ["#c45a32", "#1f8a7a", "#d4a017", "#3d7ec9", "#c44d7a", "#4a8f3a", "#7b5ea7", "#e07a2f"];
 
@@ -196,6 +200,20 @@ function useLabelLayout() {
     };
   }, []);
   return layout;
+}
+
+function useLabelSize() {
+  const [size, setSize] = useState(() => readLabelSize());
+  useEffect(() => {
+    const sync = () => setSize(readLabelSize());
+    window.addEventListener(LABEL_SIZE_EVENT, sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener(LABEL_SIZE_EVENT, sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+  return size;
 }
 
 function faceBoxStyle(face, w, h) {
@@ -530,8 +548,9 @@ function pinOf(face, pins) {
   return { left, top };
 }
 
-export function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = null, layoutId = "smart") {
+export function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pins = null, layoutId = "smart", sizeId = "small") {
   const mode = ["smart", "rows", "halo", "numbers"].includes(layoutId) ? layoutId : "smart";
+  const scale = labelSizeInfo(sizeId).scale;
   const crowd = faces.length >= 6 || mode === "halo" || mode === "rows";
   const compactUnnamed = faces.length >= 5;
   const numbers = mode === "numbers";
@@ -548,10 +567,11 @@ export function layoutTags(faces, w, h, preferredPlace, keepUnnamed = false, pin
       const full = named ? faceLabel(face, true) : unnamedName(face, faces);
       const label = compact ? String(n || "") : named && crowd ? shortName(full, namedLabels) : full;
       const chars = String(label || "").length;
-      const tw = compact
-        ? 3.8
-        : Math.min(crowd ? 20 : 32, Math.max(6.2, chars * (crowd ? 0.72 : 0.78) + (crowd ? 7.2 : 6.2)));
-      const th = compact ? 3.4 : crowd ? 4.0 : 4.4;
+      const tw =
+        (compact
+          ? 3.8
+          : Math.min(crowd ? 20 : 32, Math.max(6.2, chars * (crowd ? 0.72 : 0.78) + (crowd ? 7.2 : 6.2)))) * scale;
+      const th = (compact ? 3.4 : crowd ? 4.0 : 4.4) * scale;
       return { face, index, named, label, tw, th, compact, faceRect: faceRects[index] };
     })
     .filter((job) => job.named || keepUnnamed || !job.compact);
@@ -998,6 +1018,7 @@ export default function LabeledPhoto({
 }) {
   const place = useNametagPlacement();
   const labelLayout = useLabelLayout();
+  const labelSize = useLabelSize();
   const [labelsOn, setLabelsOn] = useState(() => readFullscreenLabels());
   const [rotation, setRotation] = useState(() => Number(photo.rotation) || 0);
   useEffect(() => {
@@ -1021,6 +1042,9 @@ export default function LabeledPhoto({
     return () => window.removeEventListener(PHOTO_CHANGE_EVENT, onChange);
   }, [photo.id]);
   const rot = ((rotation % 360) + 360) % 360;
+  useEffect(() => {
+    if (photo?.id) rememberPhotoRotation(photo.id, rot);
+  }, [photo?.id, rot]);
   const w = photo.width || 1;
   const h = photo.height || 1;
   const swapped = rot === 90 || rot === 270;
@@ -1078,8 +1102,8 @@ export default function LabeledPhoto({
     return out;
   }, [faces, localPins, dragPin, honorSavedPins]);
   const tagGroups = useMemo(
-    () => (overlay ? layoutTags(faces, w, h, place, Boolean(showUnnamed || showHidden), pins, labelLayout) : []),
-    [overlay, faces, w, h, place, showUnnamed, showHidden, pins, labelLayout],
+    () => (overlay ? layoutTags(faces, w, h, place, Boolean(showUnnamed || showHidden), pins, labelLayout, labelSize) : []),
+    [overlay, faces, w, h, place, showUnnamed, showHidden, pins, labelLayout, labelSize],
   );
   const taggedIds = useMemo(() => {
     const ids = new Set();
@@ -1189,7 +1213,8 @@ export default function LabeledPhoto({
   }
 
   function pickHost(node) {
-    return node?.closest(".labeled-rot, .labeled-inner") || node;
+    const inner = node?.closest?.(".labeled-inner") || node;
+    return inner?.querySelector?.(":scope > .labeled-rot") || inner;
   }
 
   function releasePickCapture(event) {
@@ -1414,7 +1439,7 @@ export default function LabeledPhoto({
     showPhotoMenu(event, { ...photo, rotation: rot });
   }
 
-  const customTags = (photo.tags || []).filter(Boolean);
+  const customTags = otherTags(photo.tags);
   const tagOverlay = customTags.length ? <PhotoTagRow tags={customTags} link={!to} /> : null;
 
   const body = (

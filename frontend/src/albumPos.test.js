@@ -1,9 +1,37 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { clusterHash, clusterIdFrom, folderHashFrom, personIdFrom, personShotHash } from "./albumPos.js";
+import {
+  clusterHash,
+  clusterIdFrom,
+  folderHashFrom,
+  personIdFrom,
+  personShotHash,
+  readAlbumPos,
+  writeAlbumPos,
+} from "./albumPos.js";
+
+test("writeAlbumPos keeps scrollY when later updates omit it", () => {
+  const store = new Map();
+  globalThis.sessionStorage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => {
+      store.set(key, String(value));
+    },
+    removeItem: (key) => {
+      store.delete(key);
+    },
+  };
+  writeAlbumPos({ hash: "folder-Mums20iCloud20Photos", photoId: 26785, scrollY: 2400 });
+  writeAlbumPos({ hash: "folder-Mums20iCloud20Photos", photoId: 26785, count: 455 });
+  const pos = readAlbumPos();
+  assert.equal(pos.scrollY, 2400);
+  assert.equal(pos.photoId, 26785);
+  assert.equal(pos.count, 455);
+});
 
 test("folderHashFrom reads the album hash from a photos back link", () => {
   assert.equal(folderHashFrom("/photos#folder-202520-20Mexico"), "folder-202520-20Mexico");
+  assert.equal(folderHashFrom("/photos#folder-Mums20iCloud20Photos"), "folder-Mums20iCloud20Photos");
 });
 
 test("folderHashFrom ignores missing hashes", () => {

@@ -37,6 +37,15 @@ def folder_stats() -> dict[str, Any]:
             "SELECT COUNT(*) AS n FROM people WHERE name = ? OR name LIKE ?",
             (UNKNOWN_NAME, UNKNOWN_NAME + " %"),
         ).fetchone()["n"]
+        later_review = conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM photo_tags t
+            JOIN photos p ON p.id = t.photo_id
+            WHERE t.tag = 'later review' COLLATE NOCASE
+              AND IFNULL(p.hidden, 0) = 0
+            """
+        ).fetchone()["n"]
         library = conn.execute("SELECT * FROM library WHERE id = 1").fetchone()
     finally:
         conn.close()
@@ -59,6 +68,7 @@ def folder_stats() -> dict[str, Any]:
         "people_named": people_named,
         "people_unknown": people_unknown,
         "faces_auto": faces_auto,
+        "later_review": later_review,
         "unknown_clusters": unnamed["clusters"],
         "identification_rate": rate,
         "writes_originals": False,

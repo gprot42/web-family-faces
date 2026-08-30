@@ -10,11 +10,15 @@ function splitMessage(message) {
   return { main: text.slice(0, sep), extra: text.slice(sep + 3) };
 }
 
+const DONE_HIDE_MS = 30000;
+
 function JobGaugeInner({ job, title, resumeable = true, compact = false, onResumed }) {
   const progress = Math.max(0, Number(job.progress) || 0);
   const total = Math.max(0, Number(job.total) || 0);
   const pct = total ? Math.min(100, Math.round((100 * progress) / total)) : 0;
   const paused = job.status === "paused";
+  const done = !paused && total > 0 && progress >= total;
+  const [expired, setExpired] = useState(false);
   const canResume =
     resumeable && (job.type === "pipeline" || job.type === "scan");
   const { main, extra } = splitMessage(job.message);
@@ -22,7 +26,8 @@ function JobGaugeInner({ job, title, resumeable = true, compact = false, onResum
   const checking = /checking /i.test(main);
   const scanning = /scanning /i.test(main);
   const heading =
-    (checking ? "Looking for new photos" : title || "Finding known faces") + (paused ? " — paused" : "");
+    (checking ? "Looking for new photos" : title || "Finding known faces") +
+    (paused ? " — paused" : done ? " — done" : "");
   const label = counting
     ? main || "Counting photos…"
     : checking && total
@@ -59,6 +64,15 @@ function JobGaugeInner({ job, title, resumeable = true, compact = false, onResum
     return () => clearInterval(id);
   }, [job, progress]);
 
+  useEffect(() => {
+    setExpired(false);
+    if (!done) return undefined;
+    const id = setTimeout(() => setExpired(true), DONE_HIDE_MS);
+    return () => clearTimeout(id);
+  }, [job.id, done]);
+
+  if (expired) return null;
+
   return (
     <div className={`job-gauge${compact ? " compact" : ""}`} role="status" aria-live="polite">
       <svg className="job-gauge-dial" viewBox="0 0 120 120" aria-hidden="true">
@@ -82,12 +96,12 @@ function JobGaugeInner({ job, title, resumeable = true, compact = false, onResum
         <p className="job-gauge-label">
           {label}
           {detail ? <span className="hint"> · {detail}</span> : null}
-          {eta && !paused ? <span className="job-gauge-eta"> · {eta}</span> : null}
+          {eta && !paused && !done ? <span className="job-gauge-eta"> · {eta}</span> : null}
         </p>
         {!compact && detail ? <p className="hint">{detail}</p> : null}
-        {!compact && eta && !paused ? <p className="job-gauge-eta">{eta}</p> : null}
+        {!compact && eta && !paused && !done ? <p className="job-gauge-eta">{eta}</p> : null}
         <div className="job-gauge-actions">
-          {paused ? (
+          {done ? null : paused ? (
             canResume || job.type === "identify" || job.type === "match" || job.type === "cluster" ? (
               <button
                 type="button"

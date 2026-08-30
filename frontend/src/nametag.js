@@ -98,6 +98,115 @@ export function labelLayoutInfo(id = readLabelLayout()) {
   return LABEL_LAYOUTS.find((item) => item.id === id) || LABEL_LAYOUTS[0];
 }
 
+export const LABEL_SIZE_KEY = "photosort-label-size";
+export const LABEL_SIZE_EVENT = "photosort-label-size";
+
+export const LABEL_SIZES = [
+  {
+    id: "small",
+    label: "Small",
+    hint: "Compact chips. Best on crowded group photos.",
+    scale: 0.72,
+  },
+  {
+    id: "medium",
+    label: "Medium",
+    hint: "A bit smaller than the old labels. Easy to read, less of the faces.",
+    scale: 0.86,
+  },
+  {
+    id: "large",
+    label: "Large",
+    hint: "Bigger name chips. Use when a photo has only a few people.",
+    scale: 1,
+  },
+];
+
+export function readLabelSize() {
+  try {
+    const value = localStorage.getItem(LABEL_SIZE_KEY);
+    if (LABEL_SIZES.some((item) => item.id === value)) return value;
+  } catch {
+    /* private mode */
+  }
+  return "small";
+}
+
+export function applyLabelSize(id) {
+  const size = LABEL_SIZES.some((item) => item.id === id) ? id : "small";
+  document.documentElement.setAttribute("data-label-size", size);
+  try {
+    localStorage.setItem(LABEL_SIZE_KEY, size);
+  } catch {
+    /* private mode */
+  }
+  window.dispatchEvent(new Event(LABEL_SIZE_EVENT));
+  return size;
+}
+
+export function cycleLabelSize() {
+  const cur = readLabelSize();
+  const i = Math.max(0, LABEL_SIZES.findIndex((item) => item.id === cur));
+  return applyLabelSize(LABEL_SIZES[(i + 1) % LABEL_SIZES.length].id);
+}
+
+export function labelSizeInfo(id = readLabelSize()) {
+  return LABEL_SIZES.find((item) => item.id === id) || LABEL_SIZES[0];
+}
+
+export const LABEL_STYLE_KEY = "photosort-label-style";
+export const LABEL_STYLE_EVENT = "photosort-label-style";
+
+export const LABEL_STYLES = [
+  {
+    id: "pill",
+    label: "Pill",
+    hint: "Filled capsule with a number and name.",
+  },
+  {
+    id: "outline",
+    label: "Outline",
+    hint: "Thin bordered chip. More of the photo shows through.",
+  },
+  {
+    id: "shadow",
+    label: "Shadow",
+    hint: "Name only, with a dark outline. No chip.",
+  },
+];
+
+export function readLabelStyle() {
+  try {
+    const value = localStorage.getItem(LABEL_STYLE_KEY);
+    if (LABEL_STYLES.some((item) => item.id === value)) return value;
+  } catch {
+    /* private mode */
+  }
+  return "pill";
+}
+
+export function applyLabelStyle(id) {
+  const style = LABEL_STYLES.some((item) => item.id === id) ? id : "pill";
+  document.documentElement.setAttribute("data-label-style", style);
+  try {
+    localStorage.setItem(LABEL_STYLE_KEY, style);
+  } catch {
+    /* private mode */
+  }
+  window.dispatchEvent(new Event(LABEL_STYLE_EVENT));
+  return style;
+}
+
+export function cycleLabelStyle() {
+  const cur = readLabelStyle();
+  const i = Math.max(0, LABEL_STYLES.findIndex((item) => item.id === cur));
+  return applyLabelStyle(LABEL_STYLES[(i + 1) % LABEL_STYLES.length].id);
+}
+
+export function labelStyleInfo(id = readLabelStyle()) {
+  return LABEL_STYLES.find((item) => item.id === id) || LABEL_STYLES[0];
+}
+
 export const FULLSCREEN_LABELS_KEY = "photosort-show-names";
 export const FULLSCREEN_LABELS_SESSION_KEY = "photosort-show-names-session";
 export const FULLSCREEN_LABELS_EVENT = "photosort-fullscreen-labels";

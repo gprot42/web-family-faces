@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  folderAnchor,
   folderBreadcrumb,
   folderDisplayName,
+  folderMatchesQuery,
+  folderShortName,
+  folderYear,
   folderSelectionState,
   FOLDER_TITLES_KEY,
   isFolderStarred,
   photoAlbumName,
+  photosFolderHref,
   readFolderTitles,
   readStarredFolders,
   setFolderTitle,
@@ -30,6 +35,27 @@ function mockStorage() {
   };
   return store;
 }
+
+test("folderYear is the taken year in a leading date, not a scan-batch suffix", () => {
+  assert.equal(folderYear("2016 - Bali"), "2016");
+  assert.equal(folderYear("Evans_Scanned_Photos_2016"), "");
+  assert.equal(folderYear("Evans_Scanned_Photos_2022_Apr"), "");
+  assert.equal(folderShortName("2016 - Bali", "2016"), "Bali");
+  assert.equal(folderShortName("Evans_Scanned_Photos_2016", ""), "Evans_Scanned_Photos_2016");
+});
+
+test("folderMatchesQuery finds a folder by path or name", () => {
+  const path = "/Volumes/media_shared_photos/Photo_Collection_Darren_Evans/Evans_Scanned_Photos_2016";
+  assert.equal(folderMatchesQuery("Evans_Scanned_Photos_2016", "Evans_Scanned_Photos_2016", path), true);
+  assert.equal(folderMatchesQuery(path, "Evans_Scanned_Photos_2016", path), true);
+  assert.equal(folderMatchesQuery("not-this-album", "Evans_Scanned_Photos_2016", path), false);
+});
+
+test("folderAnchor matches Folder View hashes for names with spaces", () => {
+  assert.equal(folderAnchor("Mums iCloud Photos"), "folder-Mums20iCloud20Photos");
+  assert.equal(photosFolderHref("Mums iCloud Photos"), "/photos#folder-Mums20iCloud20Photos");
+  assert.equal(photosFolderHref(""), "/photos");
+});
 
 test("toggleStarredFolder adds, then removes, a folder path", () => {
   const once = toggleStarredFolder("/Volumes/photos/2018 - Kyoto", []);

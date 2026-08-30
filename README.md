@@ -1,23 +1,46 @@
 # Family Faces
 
-Local-first app for a family photo library: detect every face, cluster similar faces, **name a person once**, then match the rest. Built for albums that span a century — the same person at 3 and 75 will usually be two clusters; you merge them.
+A local app for a family photo library. It finds faces, groups people
+who look the same, and lets you **name someone once** — then matches
+the rest. Original photos are never moved or rewritten so this can work
+with .jpg, .gif, .heic, .raw or any filetype as the metadata describes
+the people tagged in each folder.
 
-Grok / SuperGrok Heavy is not the identity engine. Face matching uses InsightFace `buffalo_l` (ArcFace) on your machine. If that match is unsure, AdaFace retries the same crop locally. Originals are never moved.
+The same person at 3 and 75 will usually be two groups. Merge them when
+you know they are the same person.
 
-Optional: open **Settings** and paste an xAI key, then click **Look up famous face** on a group or person. That sends only a face crop to Grok (with web search) in case the face is public — it never auto-names, and it never uploads originals. On a photo, **Sharpen** asks Grok Imagine for a temporary crisper preview, and **Change with Grok** applies a prompt (restore colour, black and white, repair scratches) to a temporary preview. The original file is never overwritten. The key is stored in the Family Faces data folder (`data/xai.api_key`) and copied to `~/.config/xai/api_key` (same name as `XAI_API_KEY`), not in the name catalog backup.
+![Labeled photos in Later review](docs/example-labeled-photos.jpg)
 
-## What you get
+## Features
 
-- Folder import (incremental by path)
-- Multi-face detection per photo
-- Unknown-cluster inbox (name 80 faces in one action)
-- Photo review with keyboard shortcuts
-- People timeline + merge for age-split identities
-- Dashboard: people named, faces recognised, faces not named, unknown clusters
+**Name faces**
+- Import folders from this Mac or a NAS; later runs only look at new
+  photos
+- Find every face in a photo, including group shots
+- Name a whole group of lookalikes in one go
+- Match remaining faces to people you have already named
+- Review names the app applied on its own
+
+**Browse the library**
+- Albums, or view by person or by tag
+- Search by name, nickname, or a snapshot
+- Keyboard shortcuts for reviewing photos
+- Slideshow, name labels on the picture, download with or without labels
+
+**People and family**
+- People catalog — merge childhood and later-life photos, add
+  nicknames
+- Family tree from a GEDCOM file
+- Dashboard of people named, faces recognised, and groups still to name
+
+**Originals stay put**
+- Photos are never moved, renamed, or rewritten
+- Names live in the app; a copied folder keeps its labels
+- Close any time and continue tagging later
 
 ## Run
 
-Needs Python 3.12 (InsightFace) and Node 20+.
+Needs Python 3.12 and Node 20+.
 
 ```bash
 python3.12 -m venv .venv
@@ -32,31 +55,42 @@ Open http://127.0.0.1:5174
 ```bash
 ./scripts/app.sh stop
 ./scripts/app.sh status
-./scripts/app.sh debug                      # foreground, API reload, debug logs
-./scripts/app.sh start --port 8750 --ui-port 5180
-./scripts/app.sh logs --follow              # api.log, ui.log, and save errors in app.log
-./scripts/app.sh logs app                   # data/logs/app.log (name/save failures)
+./scripts/app.sh logs --follow
 ```
 
-`./scripts/dev.sh` is a foreground alias for `./scripts/app.sh start --foreground`.
+Click **Choose folders**, pick a folder or a NAS share (mount it in
+Finder first), then **Find Known Faces**. The first scan downloads the
+face models (~300MB).
 
-Click **Choose folders** and open a NAS share (mount it in Finder first), or paste a folder path. Then **Find Known Faces**. The first scan downloads `buffalo_l` (~300MB) into `data/models`.
+## Using it
 
-Originals are never moved, renamed, copied, or rewritten (including EXIF). Names live in `data/photosort.db`, and each album folder also gets a portable `.photosort.json` so a copied folder keeps its labels. Close the app any time; **Continue tagging** resumes the next unnamed group.
+1. Index a folder.
+2. Open **Clusters to name**, largest first, and type a name.
+3. On **People**, merge childhood / adult / elder cards when they are
+   the same person.
+4. Sweep leftovers in **Photos** (filter “unnamed”). Keys: `1–5`
+   assign a suggestion, `n` new person, `u` unassign, `j`/`k` next
+   face, arrows next photo.
 
-## How to work a 6,000-photo library
+Child and adult photos of the same person are not matched automatically.
+That is a model limit, not a missing feature.
 
-1. Index the folder (import → detect → cluster → match).
-2. Open **Unknown clusters**, largest first, and type a name.
-3. On **People**, merge childhood / adult / elder identities when you know they are the same person.
-4. Sweep leftover faces in **Photos** (filter “unnamed”). Keys: `1–5` assign suggestion, `n` new person, `u` unassign, `j/k` next face, arrows next photo.
+## Stack
 
-Child↔adult matching is not automatic. That is a model limit, not a missing feature.
+**UI.** React, React Router, and Vite.
 
-## Data
+**API.** FastAPI, uvicorn, and python-multipart.
 
-App state lives in `data/` (SQLite, thumbnails, face crops, ONNX models). Originals stay read-only. Each album folder may contain `.photosort.json` (names only) so copies stay labelled.
+**Faces.** InsightFace (`buffalo_l` / ArcFace) and ONNX Runtime run on
+this Mac. AdaFace retries a crop when that match is unsure.
+
+**Photos.** Pillow, pillow-heif, rawpy, OpenCV, and NumPy. Originals
+photos are never rewritten.
+
+**Tests.** pytest and httpx.
 
 ## Privacy
 
-Keep personal names, photo paths, GEDCOM trees, API keys, and face crops out of git. They belong in `data/` (ignored) or in the album folders on disk. Tests and UI copy use fictional names only. The sample tree in `fixtures/sample-family.ged` is made-up (Smith / Doe), not a real family.
+Keep personal names, photo paths, family trees, and face crops out of
+git. They belong in `data/` (ignored) or in the album folders on disk.
+Tests and UI copy use fictional names only.

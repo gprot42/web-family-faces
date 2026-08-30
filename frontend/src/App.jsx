@@ -20,6 +20,7 @@ import PeopleSearch from "./components/PeopleSearch.jsx";
 import { tip } from "./tip.js";
 import { FolderViewLink } from "./components/ViewSwitch.jsx";
 import { CATALOG_CHANGE_EVENT, PHOTO_CHANGE_EVENT } from "./photoMenu.js";
+import { hasLaterReviewTag } from "./photoTags.js";
 
 function navActive(on) {
   return on ? "active" : undefined;
@@ -30,13 +31,18 @@ export default function App() {
   const search = new URLSearchParams(loc.search);
   const byPerson = search.get("by") === "person";
   const byTag = search.get("by") === "tag";
+  const byLater = search.get("by") === "later";
   const personQ = Boolean(search.get("person"));
   const tagQ = Boolean(search.get("tag"));
+  const laterQ = Boolean(search.get("later"));
   const onPhotoList = loc.pathname === "/photos";
   const onPhotoDetail = loc.pathname.startsWith("/photos/");
-  const folderNav = (onPhotoList && !byPerson && !byTag) || (onPhotoDetail && !personQ && !tagQ);
+  const laterNav = (onPhotoList && byLater) || (onPhotoDetail && laterQ);
+  const folderNav =
+    (onPhotoList && !byPerson && !byTag && !byLater) || (onPhotoDetail && !personQ && !tagQ && !laterQ);
   const peopleNav = loc.pathname.startsWith("/people") || (onPhotoDetail && personQ);
   const [stats, setStats] = useState(null);
+  const [laterReviewCount, setLaterReviewCount] = useState(0);
   const [jobs, setJobs] = useState(null);
 
   const statsPending = useRef(false);
@@ -55,6 +61,16 @@ export default function App() {
     });
   }
 
+  async function refreshLater() {
+    try {
+      const listed = await api.photoTags();
+      const hit = (listed.items || []).find((item) => hasLaterReviewTag([item.tag]));
+      setLaterReviewCount(Number(hit?.photos) || 0);
+    } catch {
+      /* keep the last count */
+    }
+  }
+
   async function refresh() {
     if (statsPending.current) {
       statsAgain.current = true;
@@ -65,12 +81,12 @@ export default function App() {
       setStats(await api.stats());
     } catch {
       /* keep the last good counts — a failed poll used to wipe the badges */
-    } finally {
-      statsPending.current = false;
-      if (statsAgain.current) {
-        statsAgain.current = false;
-        refresh();
-      }
+    }
+    await refreshLater();
+    statsPending.current = false;
+    if (statsAgain.current) {
+      statsAgain.current = false;
+      refresh();
     }
   }
 
@@ -181,6 +197,17 @@ export default function App() {
           >
             Folder View
           </FolderViewLink>
+          <NavLink
+            to="/photos?by=later"
+            className={() => navActive(laterNav)}
+            aria-current={laterNav ? "page" : undefined}
+            {...tip("Photos you tagged for later review. Right-click a picture to add one.")}
+          >
+            Later review
+            {(stats?.later_review ?? laterReviewCount) ? (
+              <span className="nav-count">{stats?.later_review ?? laterReviewCount}</span>
+            ) : null}
+          </NavLink>
           <NavLink
             to="/to-name"
             {...tip("Clusters of unnamed faces that look like one person. Name a cluster once instead of photo by photo.")}

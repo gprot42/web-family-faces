@@ -9,7 +9,7 @@ import PersonPicker from "../components/PersonPicker.jsx";
 import FamousLookup from "../components/FamousLookup.jsx";
 import NameSuggest from "../components/NameSuggest.jsx";
 import { PhotoTagRow } from "../components/PhotoTags.jsx";
-import { emitCatalogChange, PHOTO_CHANGE_EVENT, showPhotoMenu } from "../photoMenu.js";
+import { emitCatalogChange, PHOTO_CHANGE_EVENT, rememberPhotoRotation, showPhotoMenu } from "../photoMenu.js";
 import { patchCachedPerson } from "../peopleCache.js";
 import { clearPersonPos, personShotHash, readPersonPos, writePersonPos } from "../albumPos.js";
 import { completeUniqueFirstName, matchPeople, selectCompletedSuffix, uniqueCatalogPerson } from "../nameSuggest.js";
@@ -221,11 +221,24 @@ export default function PersonDetail() {
           const faces = (cur.faces || []).filter((face) => Number(face.photo_id) !== Number(next.id));
           return { ...cur, shots, faces, face_count: shots.length };
         }
-        if (next.tags === undefined) return cur;
-        const shots = (cur.shots || []).map((shot) =>
-          Number(shot.photo_id) === Number(next.id) ? { ...shot, tags: next.tags || [] } : shot,
-        );
-        return { ...cur, shots };
+        const patchShot = (shot) => {
+          if (Number(shot.photo_id) !== Number(next.id)) return shot;
+          const rot = next.rotation != null ? Number(next.rotation) || 0 : shot.rotation;
+          return {
+            ...shot,
+            rotation: rot,
+            tags: next.tags !== undefined ? next.tags || [] : shot.tags,
+            comment: next.comment !== undefined ? next.comment : shot.comment,
+            crop_url: shot.crop_url
+              ? String(shot.crop_url).replace(/([?&])r=\d+/, `$1r=${rot}`).replace(/([?&])v=\d+/, `$1v=${Date.now()}`)
+              : shot.crop_url,
+          };
+        };
+        return {
+          ...cur,
+          shots: (cur.shots || []).map(patchShot),
+          faces: (cur.faces || []).map(patchShot),
+        };
       });
     }
     window.addEventListener(PHOTO_CHANGE_EVENT, onChange);
@@ -524,10 +537,21 @@ export default function PersonDetail() {
         this person.
       </p>
       <div className="timeline">
-        {shots.map((f) => (
+        {shots.map((f) => {
+          const rot = (((Number(f.rotation) || 0) % 360) + 360) % 360;
+          const w = Number(f.photo_width) || 0;
+          const h = Number(f.photo_height) || 0;
+          const picStyle = rot
+            ? {
+                "--rot": `${rot}deg`,
+                ...(w && h ? { "--ow": w, "--oh": h } : {}),
+              }
+            : undefined;
+          return (
           <div key={f.id} className="timeline-shot" id={personShotHash(f.photo_id)}>
             <div
-              className="timeline-shot-pic"
+              className={`timeline-shot-pic${rot ? ` rot-${rot}` : ""}`}
+              style={picStyle}
               onContextMenu={(event) =>
                 showPhotoMenu(event, {
                   id: f.photo_id,
@@ -538,13 +562,21 @@ export default function PersonDetail() {
                   thumb_url: f.thumb_url,
                   width: f.photo_width,
                   height: f.photo_height,
+                  rotation: rot,
                 })
               }
             >
             <Link
               to={`/photos/${f.photo_id}?person=${person.id}`}
-              state={{ from: `/people/${person.id}#${personShotHash(f.photo_id)}` }}
-              onClick={() => writePersonPos({ personId: person.id, photoId: Number(f.photo_id) })}
+              state={{
+                from: `/people/${person.id}#${personShotHash(f.photo_id)}`,
+                rotation: rot,
+                photoId: Number(f.photo_id),
+              }}
+              onClick={() => {
+                rememberPhotoRotation(f.photo_id, rot);
+                writePersonPos({ personId: person.id, photoId: Number(f.photo_id) });
+              }}
             >
               <img
                 src={f.thumb_url || `/api/photos/${f.photo_id}/thumb`}
@@ -555,8 +587,8 @@ export default function PersonDetail() {
                 width={f.photo_width || undefined}
                 height={f.photo_height || undefined}
                 style={
-                  f.photo_width && f.photo_height
-                    ? { aspectRatio: `${f.photo_width} / ${f.photo_height}` }
+                  !rot && w && h
+                    ? { aspectRatio: `${w} / ${h}` }
                     : undefined
                 }
                 onError={(e) => {
@@ -578,7 +610,8 @@ export default function PersonDetail() {
               Remove
             </button>
           </div>
-        ))}
+          );
+        })}
       </div>
       {people.length ? (
         <details className="merge-fold" style={{ marginTop: 28 }}>

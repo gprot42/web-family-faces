@@ -1,6 +1,49 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { albumHasMore, nextAlbumOffset } from "./albumPage.js";
+import {
+  ALBUM_PAGE,
+  ALBUM_PAGE_KEY,
+  applyAlbumPage,
+  albumHasMore,
+  clampAlbumPage,
+  nextAlbumOffset,
+  readAlbumPage,
+} from "./albumPage.js";
+
+function mockStorage() {
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => {
+      store.set(key, String(value));
+    },
+    removeItem: (key) => {
+      store.delete(key);
+    },
+  };
+  return store;
+}
+
+test("default album page is 500", () => {
+  assert.equal(ALBUM_PAGE, 500);
+  mockStorage();
+  assert.equal(readAlbumPage(), 500);
+});
+
+test("clampAlbumPage stays between 50 and 500", () => {
+  assert.equal(clampAlbumPage(10), 50);
+  assert.equal(clampAlbumPage(500), 500);
+  assert.equal(clampAlbumPage(900), 500);
+  assert.equal(clampAlbumPage(120), 120);
+});
+
+test("applyAlbumPage stores the page size", () => {
+  mockStorage();
+  assert.equal(applyAlbumPage(200), 200);
+  assert.equal(localStorage.getItem(ALBUM_PAGE_KEY), "200");
+  assert.equal(readAlbumPage(), 200);
+});
+
 
 test("albumHasMore hides the button after every API row is fetched", () => {
   assert.equal(albumHasMore({ path: "/a", fetched: 28, apiTotal: 28, total: 28 }, [{ id: 1 }]), false);

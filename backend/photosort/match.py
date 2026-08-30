@@ -1895,6 +1895,50 @@ def rescue_hidden_named_faces(
             conn.close()
 
 
+def _restore_junk_people_on_photo(conn, photo_id: int, detected: int) -> int:
+    """Un-hide junk faces on a user Re-identify. Originals are not changed."""
+    from .config import CROP_DIR
+    from .faces import looks_like_statue
+
+    rows = conn.execute(
+        """
+        SELECT f.id, ph.path
+        FROM faces f
+        JOIN photos ph ON ph.id = f.photo_id
+        WHERE f.photo_id = ?
+          AND f.assigned_how = 'junk'
+          AND f.person_id IS NULL
+        """,
+        (int(photo_id),),
+    ).fetchall()
+    if not rows:
+        return 0
+    ids: list[int] = []
+    if int(detected) >= 4:
+        ids = [int(row["id"]) for row in rows]
+    else:
+        for row in rows:
+            crop = CROP_DIR / f"{int(row['id'])}.jpg"
+            if crop.exists() and looks_like_statue(crop, row["path"], photo_id=int(photo_id)):
+                continue
+            ids.append(int(row["id"]))
+    if not ids:
+        return 0
+    marks = ",".join("?" * len(ids))
+    conn.execute(
+        f"""
+        UPDATE faces
+        SET quality = 'ok', assigned_how = NULL
+        WHERE id IN ({marks})
+          AND assigned_how = 'junk'
+          AND person_id IS NULL
+        """,
+        ids,
+    )
+    conn.commit()
+    return len(ids)
+
+
 def match_photo(photo_id: int, *, detect: bool = True) -> dict:
     """Match unnamed faces on one photo to the catalog. Rescan only if someone is still unnamed."""
     from . import faces as faces_mod
@@ -1903,13 +1947,12 @@ def match_photo(photo_id: int, *, detect: bool = True) -> dict:
     conn = connect()
     init_db(conn)
     try:
-        rescue_hidden_named_faces(
-            conn,
-            photo_id=int(photo_id),
-            high=MATCH_REMATCH_HIGH,
-            margin=MATCH_REMATCH_MARGIN,
-            aggressive=True,
-        )
+        have_faces = conn.execute(
+            "SELECT COUNT(*) AS n FROM faces WHERE photo_id = ?",
+            (int(photo_id),),
+        ).fetchone()["n"]
+        photo = conn.execute("SELECT * FROM photos WHERE id = ?", (int(photo_id),)).fetchone()
+        _restore_junk_people_on_photo(conn, int(photo_id), int(have_faces or 0))
         unnamed = conn.execute(
             """
             SELECT COUNT(*) AS n FROM faces
@@ -1919,11 +1962,6 @@ def match_photo(photo_id: int, *, detect: bool = True) -> dict:
             """,
             (int(photo_id),),
         ).fetchone()["n"]
-        have_faces = conn.execute(
-            "SELECT COUNT(*) AS n FROM faces WHERE photo_id = ?",
-            (int(photo_id),),
-        ).fetchone()["n"]
-        photo = conn.execute("SELECT * FROM photos WHERE id = ?", (int(photo_id),)).fetchone()
     finally:
         conn.close()
     need_detect = bool(detect) and (int(unnamed) > 0 or int(have_faces) == 0)
@@ -1948,20 +1986,8 @@ def match_photo(photo_id: int, *, detect: bool = True) -> dict:
             ).fetchone()["n"]
             or 0
         )
-        # Vintage group shots: gold/bronze statue rules hide real kids. User
-        # asked to re-identify, so put those faces back in the unnamed pool.
-        if detected >= 4:
-            conn.execute(
-                """
-                UPDATE faces
-                SET quality = 'ok', assigned_how = NULL
-                WHERE photo_id = ?
-                  AND assigned_how = 'junk'
-                  AND person_id IS NULL
-                """,
-                (int(photo_id),),
-            )
-            conn.commit()
+        # Scan can hide real people as statues. Put them back before matching.
+        _restore_junk_people_on_photo(conn, int(photo_id), detected)
     finally:
         conn.close()
     # Re-identify is a user click: use rematch thresholds even on a family group.

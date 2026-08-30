@@ -130,7 +130,9 @@ export default function Help() {
         <section className="card help-block">
           <h2>Leftovers</h2>
           <p>
-            Anything still unnamed can be finished in <Link to="/photos">Folder View</Link>. Open a
+            Anything still unnamed can be finished in <Link to="/photos">Folder View</Link>. Each
+            album loads 500 photos at a time (change that in <Link to="/settings">Settings</Link>)
+            before <strong>Show more photos</strong>. Open a
             picture, click a face, pick a name. Right-click an album to rename it in Folder View;
             the folder on disk is not renamed. In <Link to="/settings">Settings</Link> you can put
             the name on the person, above the head, or below the body.{" "}
@@ -194,7 +196,7 @@ export default function Help() {
             <strong>Remove unnamed</strong> hides every unnamed face on this photo as not a person.
             Named people stay. Undo puts the boxes back. Other photos are not changed.
           </div>
-          <div>Right-click a photo to copy it, rotate it, add a tag, add a face, re-identify unnamed faces, sharpen a temporary Grok preview, change it with a Grok prompt, remove a named person or an unnamed face, remove all unnamed faces, or delete it from the catalog. <strong>Copy photo</strong> includes the name tags when they are shown on the picture. <strong>Download photo</strong> saves the file; <strong>Download with labels</strong> saves a copy with name tags. The original file stays where it is.</div>
+          <div>Right-click a photo to copy it, rotate it, add a tag, add a face, re-identify unnamed faces, sharpen a temporary Grok preview, change it with a Grok prompt, remove a named person or an unnamed face, remove all unnamed faces, or delete it from the catalog. <strong>Tag image for later review</strong> sits under Add comment in that menu. Open <strong>Later review</strong> in the left menu to see every tagged picture. Remove the tag from that page or from the same right-click menu. <strong>Copy photo</strong> includes the name tags when they are shown on the picture. <strong>Download photo</strong> saves the file; <strong>Download with labels</strong> saves a copy with name tags. The original file stays where it is.</div>
           <div>
             <strong>Add a note</strong> on a photo is about the picture. <strong>Add a tag</strong> is
             a short label (Christmas, school, 2018): right-click the photo, type in Add a tag, press
@@ -203,7 +205,7 @@ export default function Help() {
             in DB View are about the person. All of them stay in the catalog, never on the original
             file.
           </div>
-          <div>Click the photo or <strong>Fullscreen</strong> after naming · drag the dotted handle on the options bar to move it · Hide labels / Show labels on the picture (<kbd>l</kbd>) · ← → other photos · zoom controls sit on the right of the picture · <kbd>+</kbd> / <kbd>−</kbd> or pinch to zoom · when zoomed in, drag the picture to pan · <kbd>0</kbd> or click (without dragging) to fit · any other key or click to exit</div>
+          <div>Click the photo or <strong>Fullscreen</strong> after naming · drag the dotted handle on the options bar to move it · Hide labels / Show labels on the picture (<kbd>l</kbd>) · Small / Medium / Large and Pill / Outline / Shadow change how names look · ← → other photos · zoom controls sit on the right of the picture · <kbd>+</kbd> / <kbd>−</kbd> or pinch to zoom · when zoomed in, drag the picture to pan · <kbd>0</kbd> or click (without dragging) to fit · any other key or click to exit</div>
           <div>
             <strong>Play album</strong> or <strong>Play person</strong> walks the pictures in date
             order, 2.5 seconds each (change this in Settings). <kbd>space</kbd> pause · <kbd>esc</kbd> exit.

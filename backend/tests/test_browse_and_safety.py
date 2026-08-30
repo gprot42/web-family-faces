@@ -379,9 +379,12 @@ def test_looks_like_statue_skips_skin_and_gray(tmp_path):
     Image.new("RGB", (160, 120), (40, 140, 50)).save(colour_photo, "JPEG")
     gold = tmp_path / "gold-buddha.jpg"
     Image.new("RGB", (80, 80), (176, 132, 40)).save(gold, "JPEG")
+    pale = tmp_path / "pale-portrait.jpg"
+    Image.new("RGB", (80, 80), (174, 145, 126)).save(pale, "JPEG")
     assert looks_like_statue(bronze) is True
     assert looks_like_statue(gold) is True
     assert looks_like_statue(skin) is False
+    assert looks_like_statue(pale) is False
     assert looks_like_statue(gray) is False
     assert looks_like_statue(gray, colour_photo) is True
 
@@ -573,6 +576,35 @@ def test_looks_like_statue_limestone_stele_in_a_museum(tmp_path):
     assert looks_like_statue(stone) is False
     assert looks_like_statue(stone, bw) is False
     assert looks_like_statue(portrait, museum) is False
+
+
+def test_looks_like_statue_dark_cave_relief_is_not_a_person(tmp_path):
+    """A near-black carved cave face that matches the wall is not a person."""
+    import numpy as np
+
+    rng = np.random.default_rng(4)
+    crop = np.clip(
+        np.array([38, 30, 22], dtype=np.float32) + rng.normal(0, 4, (80, 80, 3)),
+        0,
+        255,
+    ).astype(np.uint8)
+    for y in range(0, 80, 4):
+        crop[y] = (28, 22, 16)
+    relief = tmp_path / "cave-face.png"
+    Image.fromarray(crop).save(relief)
+    scene = np.clip(
+        np.array([40, 32, 23], dtype=np.float32) + rng.normal(0, 4, (120, 200, 3)),
+        0,
+        255,
+    ).astype(np.uint8)
+    scene[104:118, 118:148] = (210, 210, 205)
+    cave = tmp_path / "cave.png"
+    Image.fromarray(scene).save(cave)
+    portrait = tmp_path / "portrait.png"
+    Image.new("RGB", (80, 80), (190, 140, 100)).save(portrait)
+    assert looks_like_statue(relief, cave) is True
+    assert looks_like_statue(relief) is False
+    assert looks_like_statue(portrait, cave) is False
 
 
 def test_looks_like_statue_ochre_temple_wall_is_not_a_face(tmp_path):

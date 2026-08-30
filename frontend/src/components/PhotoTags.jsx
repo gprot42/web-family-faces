@@ -1,24 +1,21 @@
 import { Link } from "react-router-dom";
 import { tip } from "../tip.js";
+import { TAG_MAX, TAGS_MAX, normalizeTag, tagHref } from "../photoTags.js";
 
-export const TAG_MAX = 40;
-export const TAGS_MAX = 12;
-
-export function normalizeTag(value) {
-  return String(value || "")
-    .trim()
-    .replace(/\s+/g, " ")
-    .slice(0, TAG_MAX)
-    .trim();
-}
-
-export function tagHref(tag) {
-  return `/photos?by=tag&tag=${encodeURIComponent(tag)}`;
-}
-
-export function photoTagHref(photoId, tag) {
-  return `/photos/${photoId}?tag=${encodeURIComponent(tag)}`;
-}
+export {
+  TAG_MAX,
+  TAGS_MAX,
+  LATER_REVIEW_TAG,
+  normalizeTag,
+  isLaterReviewTag,
+  hasLaterReviewTag,
+  withLaterReviewTag,
+  otherTags,
+  tagHref,
+  photoTagHref,
+  laterReviewHref,
+  photoLaterHref,
+} from "../photoTags.js";
 
 export function PhotoTagRow({ tags, link, onRemove, children }) {
   const items = (tags || []).filter(Boolean);

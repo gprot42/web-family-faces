@@ -21,6 +21,43 @@ export function folderLabel(path) {
   return parts[parts.length - 1] || path;
 }
 
+/** Year the photos were taken, from a leading “2016 - Bali”. A trailing “_2016” is ignored (scan batch, not taken year). */
+export function folderYear(name) {
+  const s = String(name || "").trim();
+  const head = s.match(/^(19|20)\d{2}(?=\s*[-.–]\s*|\.\s+)/);
+  return head ? head[0] : "";
+}
+
+/**
+ * Drop a leading “2016 - ” so the year heading is not repeated.
+ * Keep a trailing “_2016” — that is the folder’s real name on disk.
+ */
+export function folderShortName(name, year) {
+  if (!year) return String(name || "");
+  const stripped = String(name || "")
+    .replace(new RegExp(`^${year}(?:\\s*[-.–]\\s*|\\.\\s+)`), "")
+    .trim();
+  return stripped || String(name || "");
+}
+
+export function folderMatchesQuery(needle, name, path, titles) {
+  const q = String(needle || "").trim().toLowerCase();
+  if (!q) return true;
+  const shown = folderDisplayName(path, name, titles);
+  const hay = `${name || ""} ${shown} ${path || ""}`.toLowerCase();
+  return hay.includes(q);
+}
+
+/** Hash id for a Folder View section. Spaces become 20, matching encodeURIComponent without %%. */
+export function folderAnchor(name) {
+  return `folder-${encodeURIComponent(String(name || "")).replace(/%/g, "")}`;
+}
+
+export function photosFolderHref(name) {
+  const hash = folderAnchor(name);
+  return hash === "folder-" ? "/photos" : `/photos#${hash}`;
+}
+
 /** Album folder that contains a photo file. */
 export function photoAlbumName(path) {
   const parts = String(path || "").split("/").filter(Boolean);

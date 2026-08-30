@@ -4,9 +4,15 @@ import ConfirmAsk from "../components/ConfirmAsk.jsx";
 import { readImportFolders } from "../folders.js";
 import {
   applyFullscreenLabelsDefault,
+  applyLabelSize,
+  applyLabelStyle,
   applyNametag,
+  LABEL_SIZES,
+  LABEL_STYLES,
   NAMETAG_PLACEMENTS,
   readFullscreenLabels,
+  readLabelSize,
+  readLabelStyle,
   readNametag,
 } from "../nametag.js";
 import { applyTheme, readTheme, THEMES } from "../theme.js";
@@ -16,13 +22,23 @@ import {
   PLAY_INTERVAL_MIN_MS,
   readPlayIntervalMs,
 } from "../play.js";
+import {
+  ALBUM_PAGE,
+  ALBUM_PAGE_MAX,
+  ALBUM_PAGE_MIN,
+  applyAlbumPage,
+  readAlbumPage,
+} from "../albumPage.js";
 import { tip } from "../tip.js";
 
 export default function Settings() {
   const [theme, setTheme] = useState(() => readTheme());
   const [nametag, setNametag] = useState(() => readNametag());
+  const [labelSize, setLabelSize] = useState(() => readLabelSize());
+  const [labelStyle, setLabelStyle] = useState(() => readLabelStyle());
   const [fullscreenLabels, setFullscreenLabels] = useState(() => readFullscreenLabels());
   const [playSeconds, setPlaySeconds] = useState(() => readPlayIntervalMs() / 1000);
+  const [albumPage, setAlbumPage] = useState(() => readAlbumPage());
   const [info, setInfo] = useState(null);
   const [folders, setFolders] = useState([]);
   const [resetFolders, setResetFolders] = useState([]);
@@ -352,7 +368,7 @@ export default function Settings() {
 
       <section className="card help-block settings-card">
         <h2>Name on the photo</h2>
-        <p>Where the name sits relative to each person. Applies on Folder View and when you open a photo.</p>
+        <p>Where the name sits, how large it is, and how it is drawn. Applies on Folder View and when you open a photo.</p>
         <label
           className="settings-check"
           {...tip("Show name labels on each person when you open a photo. Turn off for a clean picture. You can still Hide labels / Show labels on the photo.")}
@@ -378,6 +394,54 @@ export default function Settings() {
                 {...tip(item.hint)}
               >
                 <span className={`nametag-preview place-${item.id}`} aria-hidden="true">
+                  <span className="np-body" />
+                  <span className="np-head" />
+                  <span className="np-tag">Name</span>
+                </span>
+                <strong>{item.label}</strong>
+              </button>
+            );
+          })}
+        </div>
+        <p className="hint" style={{ marginTop: 16 }}>Size of the name chips on the picture.</p>
+        <div className="theme-grid nametag-grid" role="radiogroup" aria-label="Name size">
+          {LABEL_SIZES.map((item) => {
+            const selected = labelSize === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                className={`theme-choice ${selected ? "active" : ""}`}
+                onClick={() => setLabelSize(applyLabelSize(item.id))}
+                {...tip(item.hint)}
+              >
+                <span className={`nametag-preview size-${item.id}`} aria-hidden="true">
+                  <span className="np-body" />
+                  <span className="np-head" />
+                  <span className="np-tag">Name</span>
+                </span>
+                <strong>{item.label}</strong>
+              </button>
+            );
+          })}
+        </div>
+        <p className="hint" style={{ marginTop: 16 }}>How the name is drawn.</p>
+        <div className="theme-grid nametag-grid" role="radiogroup" aria-label="Name style">
+          {LABEL_STYLES.map((item) => {
+            const selected = labelStyle === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                className={`theme-choice ${selected ? "active" : ""}`}
+                onClick={() => setLabelStyle(applyLabelStyle(item.id))}
+                {...tip(item.hint)}
+              >
+                <span className={`nametag-preview style-${item.id}`} aria-hidden="true">
                   <span className="np-body" />
                   <span className="np-head" />
                   <span className="np-tag">Name</span>
@@ -418,6 +482,38 @@ export default function Settings() {
             {...tip("How long each picture stays on screen during Play. Default is 2.5 seconds.")}
           />
           <span className="hint">1–30 seconds · default 2.5</span>
+        </div>
+      </section>
+
+      <section className="card help-block settings-card">
+        <h2>Folder View</h2>
+        <p>
+          How many photos to load in each album before <strong>Show more photos</strong>. A larger
+          number means more scrolling and a slower first load.
+        </p>
+        <label className="settings-field" htmlFor="album-page">
+          Photos per album
+        </label>
+        <div className="settings-number-row">
+          <input
+            id="album-page"
+            type="number"
+            min={ALBUM_PAGE_MIN}
+            max={ALBUM_PAGE_MAX}
+            step="50"
+            value={albumPage}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (!Number.isFinite(n)) return;
+              setAlbumPage(n);
+              if (n >= ALBUM_PAGE_MIN && n <= ALBUM_PAGE_MAX) applyAlbumPage(n);
+            }}
+            onBlur={() => setAlbumPage(applyAlbumPage(albumPage))}
+            {...tip("How many pictures load in an album before Show more. Default is 500.")}
+          />
+          <span className="hint">
+            {ALBUM_PAGE_MIN}–{ALBUM_PAGE_MAX} · default {ALBUM_PAGE}
+          </span>
         </div>
       </section>
 

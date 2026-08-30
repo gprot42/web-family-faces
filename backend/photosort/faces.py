@@ -721,13 +721,14 @@ def looks_like_statue(
     chroma = np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)
     color = chroma >= 12
     warm = (r > g + 6) & (r > b + 8)
-    gold = color & (g > b + 10) & (r > b + 16) & (np.abs(r - g) <= 48)
-    skin = warm & ~gold
-    green = (g > r + 2) & (g >= b - 8) & color
-    gray = chroma < 20
     hsv = np.asarray(Image.fromarray(core.astype(np.uint8)).convert("HSV"), dtype=np.float32)
     hue = hsv[:, :, 0] * (360.0 / 255.0)
     sat = hsv[:, :, 1] / 255.0
+    # Pale skin is warm with modest saturation. Brass/gold leaf is yellower.
+    gold = color & (sat >= 0.38) & (g > b + 10) & (r > b + 16) & (np.abs(r - g) <= 48)
+    skin = warm & ~gold
+    green = (g > r + 2) & (g >= b - 8) & color
+    gray = chroma < 20
     yellow = color & (sat >= 0.32) & (hue >= 36) & (hue <= 80)
     skin_n = float(skin.mean())
     gold_n = float(gold.mean())
@@ -894,6 +895,25 @@ def looks_like_statue(
                 scene_gold, scene_gray = stats[0], stats[1]
                 if 0.10 <= scene_gold <= 0.22 and scene_gray >= 0.40:
                     return True
+    # Dark cave-carved stone (Elephanta-style relief). Warm R>G>B on near-black
+    # brown reads as skin, but a real face is not this dark and does not match
+    # the cave wall. Crop-only stays False. Dim indoor portraits stay named.
+    inner_hsv = np.asarray(Image.fromarray(core.astype(np.uint8)).convert("HSV"), dtype=np.float32)
+    inner_val = float(inner_hsv[:, :, 2].mean() / 255.0)
+    pink_n = float(((r > g + 24) & (r > b + 20)).mean())
+    if inner_val <= 0.22 and gray_n >= 0.62 and pink_n < 0.06 and float(sat.mean()) <= 0.55:
+        stats = _scene_stats(photo_path, photo_id)
+        if stats is not None:
+            _scene_gold, scene_gray, _scene_color, _scene_sand, scene_cool = stats
+            if scene_cool < 0.08 and scene_gray >= 0.45:
+                scene_mean = _scene_mean_rgb(photo_path, photo_id)
+                if scene_mean is not None:
+                    crop_mean = core.reshape(-1, 3).mean(0)
+                    if (
+                        float(np.linalg.norm(crop_mean - scene_mean)) <= 22
+                        and float(crop_mean.mean()) <= 50
+                    ):
+                        return True
     # Sand sculpture / sand art: the crop is grainy beige, not pink skin.
     # Require a mixed-colour scene (sky, plants) so sepia family prints and
     # tungsten portraits stay named. Crop-only calls stay False.
@@ -1015,7 +1035,8 @@ def looks_like_statue(
     # Terracotta / stone bust against a window in a gilt gallery. Smooth carved
     # head, window fill, gold picture-frame. People walking the hall have
     # sharper faces and are not tight-cropped on a window. Crop-only stays False.
-    if _edge_strength(core) <= 2.2 and gold_n >= 0.30 and float(sat.mean()) <= 0.42:
+    clay = color & (sat >= 0.18) & (sat <= 0.42) & (r > g) & (r > b + 8) & (g >= b - 4)
+    if _edge_strength(core) <= 2.2 and (gold_n >= 0.30 or float(clay.mean()) >= 0.30) and float(sat.mean()) <= 0.42:
         ring = np.ones((h, w), dtype=bool)
         ring[
             int(h * 0.28) : max(int(h * 0.72), int(h * 0.28) + 1),

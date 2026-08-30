@@ -1,7 +1,23 @@
 export const PHOTO_CHANGE_EVENT = "photosort-photo-change";
 export const CATALOG_CHANGE_EVENT = "photosort-catalog-change";
 
+const rotationById = new Map();
+
+export function rememberPhotoRotation(id, rotation) {
+  const pid = Number(id);
+  if (!Number.isFinite(pid) || pid <= 0) return;
+  const rot = (((Number(rotation) || 0) % 360) + 360) % 360;
+  rotationById.set(pid, rot);
+}
+
+export function readPhotoRotation(id) {
+  const pid = Number(id);
+  if (!Number.isFinite(pid) || !rotationById.has(pid)) return null;
+  return rotationById.get(pid);
+}
+
 export function emitPhotoChange(photo) {
+  if (photo?.id != null && photo.rotation != null) rememberPhotoRotation(photo.id, photo.rotation);
   window.dispatchEvent(new CustomEvent(PHOTO_CHANGE_EVENT, { detail: photo }));
 }
 

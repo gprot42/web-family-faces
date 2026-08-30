@@ -151,3 +151,4 @@ def test_folder_stats_empty(tmp_path, monkeypatch):
     assert stats["people_named"] == 0
     assert stats["people_unknown"] == 0
     assert stats["identification_rate"] == 0.0
+    assert stats["later_review"] == 0
