@@ -9,8 +9,15 @@ the people tagged in each folder.
 The same person at 3 and 75 will usually be two groups. Merge them when
 you know they are the same person.
 
-This software was written to help me identify who-is-who from a collection of
-30,000 photos and has sped up that process accurately.
+This software was written to help me identify who-is-who from a collection
+of 30,000 photos and has sped up that process.
+
+Face matching uses InsightFace (buffalo_l / ArcFace) on ONNX Runtime,
+with AdaFace as a second pass when a match is unsure.
+
+This has been enhanced by identifying statues and similar objects which are
+kept out of those matches by colour/material checks and ArcFace similarity
+to heads already marked as junk — not by AdaFace.
 
 ![Labeled photos in Later review](docs/example-labeled-photos.jpg)
 
