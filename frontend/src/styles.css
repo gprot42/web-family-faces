@@ -2360,7 +2360,9 @@ button.saved {
   height: min(var(--stage-h, 100%), calc(var(--stage-w, 100%) * var(--dh) / var(--dw)));
 }
 .photo-full .labeled-inner,
-.photo-full .labeled-inner.fit {
+.photo-full .labeled-inner.fit,
+.photo-full .labeled-inner.crowd,
+.photo-full .labeled-inner.fit.crowd {
   padding: 0;
   width: auto;
   height: auto;
