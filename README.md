@@ -9,6 +9,9 @@ the people tagged in each folder.
 The same person at 3 and 75 will usually be two groups. Merge them when
 you know they are the same person.
 
+This software was written to help me identify who-is-who from a collection of
+30,000 photos and has sped up that process accurately.
+
 ![Labeled photos in Later review](docs/example-labeled-photos.jpg)
 
 ## Features
@@ -77,17 +80,14 @@ That is a model limit, not a missing feature.
 
 ## Stack
 
-**UI.** React, React Router, and Vite.
-
-**API.** FastAPI, uvicorn, and python-multipart.
-
-**Faces.** InsightFace (`buffalo_l` / ArcFace) and ONNX Runtime run on
-this Mac. AdaFace retries a crop when that match is unsure.
-
-**Photos.** Pillow, pillow-heif, rawpy, OpenCV, and NumPy. Originals
-photos are never rewritten.
-
-**Tests.** pytest and httpx.
+- **UI** — React, React Router, Vite
+- **API** — FastAPI, uvicorn, python-multipart
+- **Faces** — [InsightFace](https://github.com/deepinsight/insightface)
+  (`buffalo_l` / ArcFace) on ONNX Runtime, with
+  [AdaFace](https://github.com/mk-minchul/AdaFace) as a second pass when
+  a match is unsure
+- **Photos** — Pillow, pillow-heif, rawpy, OpenCV, NumPy
+- **Tests** — pytest, httpx
 
 ## Privacy
 
