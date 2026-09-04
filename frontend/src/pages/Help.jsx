@@ -86,7 +86,8 @@ export default function Help() {
             <li>
               <strong>Search</strong> in the bottom right looks up a person by name, or matches a
               snapshot to a picture already in the catalog, and to named people. On a person page you can add a{" "}
-              <strong>nickname</strong>; search finds them by that as well as the full name.
+              <strong>nickname</strong> and a <strong>birth surname</strong>; search finds them
+              by either as well as the full name.
             </li>
           </ul>
         </section>

@@ -240,12 +240,13 @@ def _person_ref(tree: dict[str, Any], pid: str) -> dict[str, Any] | None:
 
 def _catalog_index() -> dict[str, dict[str, Any]]:
     from .db import connect, init_db
+    from .people import birth_full_name
 
     conn = connect()
     init_db(conn)
     try:
         rows = conn.execute(
-            "SELECT id, name, nickname FROM people WHERE name IS NOT NULL AND name != ''"
+            "SELECT id, name, nickname, birth_surname FROM people WHERE name IS NOT NULL AND name != ''"
         ).fetchall()
     finally:
         conn.close()
@@ -253,6 +254,9 @@ def _catalog_index() -> dict[str, dict[str, Any]]:
     for row in rows:
         hit = {"id": int(row["id"]), "name": row["name"]}
         keys = [str(row["name"] or "").strip().lower()]
+        birth = birth_full_name(row["name"], row["birth_surname"] if "birth_surname" in row.keys() else "")
+        if birth:
+            keys.append(birth.lower())
         nick = str(row["nickname"] if "nickname" in row.keys() else "") or ""
         for part in re.split(r"[,;/]", nick):
             keys.append(part.strip().lower())

@@ -4816,3 +4816,60 @@ def test_client_log_endpoint_writes_app_log(tmp_path, monkeypatch):
     assert "Could not save that name." in log_text
     assert "page=to-name" in log_text
     assert "cluster=42" in log_text
+
+
+def test_birth_surname_helpers():
+    from photosort.people import birth_full_name, nee_surname
+
+    assert nee_surname("Jane Jones", "Smith") == "Smith"
+    assert nee_surname("Jane Smith", "Smith") == ""
+    assert nee_surname("Jane Jones", "") == ""
+    assert birth_full_name("Alan Robinson", "Richardson") == "Alan Richardson"
+    assert birth_full_name("Alan Anthony Robinson", "Richardson") == "Alan Anthony Richardson"
+    assert birth_full_name("Alan", "Richardson") == "Alan Richardson"
+    assert birth_full_name("Alan Robinson", "") == ""
+
+
+def test_person_birth_surname(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from photosort.main import app
+    from photosort.people import find_person_by_name, person_matches_query
+    from photosort.util import now_iso
+
+    _setup(tmp_path, monkeypatch)
+    person = create_person("Alan Robinson")
+    conn = connect()
+    conn.execute(
+        "INSERT INTO photos (path, sha256, width, height, created_at) VALUES (?,?,?,?,?)",
+        ("/album/a.jpg", "a", 10, 10, now_iso()),
+    )
+    conn.execute(
+        """INSERT INTO faces (photo_id, x1, y1, x2, y2, det_score, quality, person_id, assigned_how, created_at)
+           VALUES (1,0,0,10,10,0.9,'ok',?,'manual',?)""",
+        (person["id"], now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    client = TestClient(app)
+    fresh = client.get(f"/api/people/{person['id']}").json()
+    assert fresh["birth_surname"] == ""
+    assert fresh["nee"] == ""
+
+    saved = client.patch(f"/api/people/{person['id']}", json={"birth_surname": " Richardson "}).json()
+    assert saved["birth_surname"] == "Richardson"
+    assert saved["name"] == "Alan Robinson"
+    assert saved["nee"] == "Richardson"
+
+    assert find_person_by_name("alan richardson")["id"] == person["id"]
+    assert person_matches_query(saved, "richardson")
+    found = client.get("/api/search", params={"q": "richardson"}).json()
+    assert "Alan Robinson" in {p["name"] for p in found["people"]}
+
+    assert client.patch(f"/api/people/{person['id']}", json={"birth_surname": "Alan Richardson"}).status_code == 400
+
+    same = client.patch(f"/api/people/{person['id']}", json={"name": "Alan Richardson"}).json()
+    assert same["nee"] == ""
+
+    cleared = client.patch(f"/api/people/{person['id']}", json={"birth_surname": ""}).json()
+    assert cleared["birth_surname"] == ""
+    assert cleared["nee"] == ""

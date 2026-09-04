@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS people (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     nickname TEXT NOT NULL DEFAULT '',
+    birth_surname TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
     birth_year INTEGER,
     cover_face_id INTEGER,
@@ -121,6 +122,7 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_photo_tags_tag ON photo_tags(tag)",
     "CREATE INDEX IF NOT EXISTS idx_photos_path ON photos(path)",
     "ALTER TABLE faces ADD COLUMN embedding_ada BLOB",
+    "ALTER TABLE people ADD COLUMN birth_surname TEXT NOT NULL DEFAULT ''",
 ]
 
 

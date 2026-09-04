@@ -15,9 +15,9 @@ of 30,000 photos and has sped up that process.
 Face matching uses InsightFace (buffalo_l / ArcFace) on ONNX Runtime,
 with AdaFace as a second pass when a match is unsure.
 
-This has been enhanced by identifying statues and similar objects which are
-kept out of those matches by colour/material checks and ArcFace similarity
-to heads already marked as junk — not by AdaFace.
+This has been enhanced by identifying statues with faces and similar
+objects which are kept out of those matches by colour/material checks
+and ArcFace similarity to heads already marked as junk — not by AdaFace.
 
 ![Labeled photos in Later review](docs/example-labeled-photos.jpg)
 
@@ -33,7 +33,8 @@ to heads already marked as junk — not by AdaFace.
 
 **Browse the library**
 - Albums, or view by person or by tag
-- Search by name, nickname, or a snapshot
+- Search by name, nickname, birth surname, or a snapshot
+- Record a birth surname alongside the married full name
 - Keyboard shortcuts for reviewing photos
 - Slideshow, name labels on the picture, download with or without labels
 

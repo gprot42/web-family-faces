@@ -1099,6 +1099,46 @@ def nickname_keys(value: str | None) -> list[str]:
     return [part.casefold() for part in nick.split(", ")]
 
 
+def normalize_name_part(value: str | None) -> str:
+    """One name field: collapsed whitespace, no surrounding commas."""
+    return " ".join(str(value or "").split()).strip(" ,")[:120]
+
+
+def given_names(name: str | None) -> list[str]:
+    """Every word of the displayed name except the surname."""
+    shown = normalize_name_part(name)
+    if not shown or is_unknown_name(shown):
+        return []
+    words = shown.split()
+    return words[:-1] if len(words) > 1 else words
+
+
+def birth_full_name(name: str | None, birth_surname: str | None) -> str:
+    """Given names with the birth surname, for search and tree matching."""
+    birth = normalize_name_part(birth_surname)
+    if not birth:
+        return ""
+    return " ".join([*given_names(name), birth]).strip()
+
+
+def nee_surname(name: str | None, birth_surname: str | None) -> str:
+    """The birth surname to show as "née", or "" when it matches the displayed name."""
+    birth = normalize_name_part(birth_surname)
+    if not birth:
+        return ""
+    shown = normalize_name_part(name).split()
+    if shown and shown[-1].casefold() == birth.casefold():
+        return ""
+    return birth
+
+
+def _one_surname(value: str, label: str) -> str:
+    text = normalize_name_part(value)
+    if " " in text or "," in text:
+        raise ValueError(f"{label} is one surname, without given names")
+    return text
+
+
 def _edit_distance(left: str, right: str) -> int:
     if left == right:
         return 0
@@ -1127,7 +1167,8 @@ def person_matches_query(person: dict[str, Any], query: str) -> bool:
         return False
     name = str(person.get("name") or "").casefold()
     nick = str(person.get("nickname") or "").casefold()
-    hay = f"{name} {nick}".strip()
+    birth = birth_full_name(person.get("name"), person.get("birth_surname")).casefold()
+    hay = f"{name} {nick} {birth}".strip()
     if wanted in hay:
         return True
     words = hay.split() + nickname_keys(nick)
@@ -1156,6 +1197,20 @@ def find_person_by_name(name: str) -> dict[str, Any] | None:
         if row:
             return dict(row)
         needle = name.casefold()
+        born = conn.execute(
+            """
+            SELECT p.*, COUNT(f.id) AS named_faces
+            FROM people p
+            LEFT JOIN faces f ON f.person_id = p.id
+            WHERE IFNULL(p.birth_surname, '') != ''
+            GROUP BY p.id
+            ORDER BY named_faces DESC, p.id
+            """
+        ).fetchall()
+        for item in born:
+            person = dict(item)
+            if birth_full_name(person.get("name"), person.get("birth_surname")).casefold() == needle:
+                return person
         rows = conn.execute(
             """
             SELECT p.*, COUNT(f.id) AS named_faces
@@ -1646,12 +1701,14 @@ def write_person_photo_zip(person_id: int, dest: Path, *, labels: bool = False) 
 
 
 def update_person(person_id: int, *, sync_sidecars: bool = True, **fields: Any) -> dict[str, Any] | None:
-    allowed = {"name", "nickname", "notes", "birth_year", "category"}
+    allowed = {"name", "nickname", "notes", "birth_year", "category", "birth_surname"}
     payload = {k: v for k, v in fields.items() if k in allowed}
     if "name" in payload:
         payload["name"] = str(payload["name"]).strip()
         if not payload["name"]:
             raise ValueError("Name is required")
+    if "birth_surname" in payload:
+        payload["birth_surname"] = _one_surname(payload["birth_surname"], "Birth surname")
     if "nickname" in payload:
         payload["nickname"] = normalize_nickname(payload["nickname"])
     if "notes" in payload:

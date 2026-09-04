@@ -29,9 +29,11 @@ export default function PersonDetail() {
   const [people, setPeople] = useState([]);
   const [name, setName] = useState("");
   const [nickname, setNickname] = useState("");
+  const [birthSurname, setBirthSurname] = useState("");
   const [notes, setNotes] = useState("");
   const [notesState, setNotesState] = useState("idle");
   const [nickState, setNickState] = useState("idle");
+  const [birthState, setBirthState] = useState("idle");
   const [saveState, setSaveState] = useState("idle");
   const [namePick, setNamePick] = useState(-1);
   const [err, setErr] = useState("");
@@ -45,9 +47,11 @@ export default function PersonDetail() {
     setName(p.unknown_name ? "" : p.name);
     setNamePick(-1);
     setNickname(p.nickname || "");
+    setBirthSurname(p.birth_surname || "");
     setNotes(p.notes || "");
     setNotesState("idle");
     setNickState("idle");
+    setBirthState("idle");
     api
       .people(undefined, { lite: 1 })
       .then((all) => {
@@ -65,10 +69,13 @@ export default function PersonDetail() {
       shots: next.shots?.length ? next.shots : cur?.shots || [],
       name: next.name || fallbackName || cur?.name,
       nickname: next.nickname !== undefined ? next.nickname : cur?.nickname,
+      birth_surname: next.birth_surname !== undefined ? next.birth_surname : cur?.birth_surname,
+      nee: next.nee !== undefined ? next.nee : cur?.nee,
       unknown_name: next.unknown_name ?? false,
     }));
     if (next.name || fallbackName) setName(next.name || fallbackName);
     if (next.nickname !== undefined) setNickname(next.nickname || "");
+    if (next.birth_surname !== undefined) setBirthSurname(next.birth_surname || "");
   }
 
   function catalogHits(query = name) {
@@ -146,6 +153,24 @@ export default function PersonDetail() {
     } catch (ex) {
       setNickState("idle");
       setErr(ex.message || "Could not save the nickname.");
+      await load();
+    }
+  }
+
+  async function saveBirthSurname(event) {
+    event?.preventDefault();
+    event?.stopPropagation();
+    const next = birthSurname.trim();
+    if (next === String(person?.birth_surname || "").trim() || birthState === "saving") return;
+    setErr("");
+    setBirthState("saving");
+    try {
+      const updated = await api.patchPerson(id, { birth_surname: next });
+      applyPerson(updated);
+      setBirthState("saved");
+    } catch (ex) {
+      setBirthState("idle");
+      setErr(ex.message || "Could not save the birth surname.");
       await load();
     }
   }
@@ -290,6 +315,7 @@ export default function PersonDetail() {
           <div className="person-sticky-id">
             <h1>{person.name}</h1>
             <p className="lede">
+              {person.nee ? <>née {person.nee} · </> : null}
               {person.nickname ? <>Also {person.nickname} · </> : null}
               {shots.length} photo{shots.length === 1 ? "" : "s"} with this name
             </p>
@@ -345,14 +371,18 @@ export default function PersonDetail() {
         </div>
         <form className="row person-sticky-name" onSubmit={saveName}>
           <div className="person-name-field">
+            <label className="cluster-label person-field-label" htmlFor="person-full-name">
+              Full name (Married)
+            </label>
             <input
+              id="person-full-name"
               className="grow"
               value={name}
               placeholder="Type their name"
               autoComplete="off"
               autoCorrect="off"
               spellCheck={false}
-              aria-label="Person name"
+              aria-label="Full name (Married)"
               aria-autocomplete="list"
               aria-expanded={nameHits.length > 0}
               disabled={saveState === "saving"}
@@ -459,6 +489,44 @@ export default function PersonDetail() {
             {...tip("Save the nickname. Original photos are not changed.")}
           >
             {nickState === "saving" ? "Saving…" : nickState === "saved" ? "Saved" : "Save nickname"}
+          </button>
+        </form>
+        <form className="row person-sticky-name" onSubmit={saveBirthSurname}>
+          <div className="person-name-field">
+            <label className="cluster-label person-field-label" htmlFor="person-birth-surname">
+              Birth surname
+            </label>
+            <input
+              id="person-birth-surname"
+              className="grow"
+              value={birthSurname}
+              aria-label="Birth surname"
+              placeholder="Birth surname (optional)"
+              disabled={birthState === "saving"}
+              onChange={(e) => {
+                setBirthSurname(e.target.value);
+                if (birthState === "saved") setBirthState("idle");
+              }}
+              onBlur={saveBirthSurname}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  saveBirthSurname(e);
+                }
+              }}
+              {...tip(
+                "The surname at birth, for example the maiden name. Shown as née on this page, and search finds the given names with this surname. The displayed name is not changed.",
+              )}
+            />
+          </div>
+          <button
+            type="submit"
+            className={birthState === "saved" ? "saved" : "secondary"}
+            disabled={birthState === "saving" || birthSurname.trim() === String(person.birth_surname || "").trim()}
+            {...tip("Save the birth surname. Original photos are not changed.")}
+          >
+            {birthState === "saving" ? "Saving…" : birthState === "saved" ? "Saved" : "Save birth surname"}
           </button>
         </form>
         <div className="person-chips" role="group" aria-label="Category">

@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import CROP_DIR
-from .people import is_unknown_name
+from .people import is_unknown_name, nee_surname
 
 
 def face_crop_url(face_id: Any, rotation: int = 0, size: int = 384) -> str:
@@ -139,6 +139,8 @@ def person_public(row: dict[str, Any], *, cover_size: int = 384) -> dict[str, An
         "id": row["id"],
         "name": row["name"],
         "nickname": row.get("nickname") or "",
+        "birth_surname": row.get("birth_surname") or "",
+        "nee": nee_surname(row.get("name"), row.get("birth_surname")),
         "notes": row.get("notes") or "",
         "birth_year": row.get("birth_year"),
         "category": row.get("category") or "",

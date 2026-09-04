@@ -170,6 +170,7 @@ class PersonSplitBody(BaseModel):
 class PersonPatch(BaseModel):
     name: str | None = None
     nickname: str | None = None
+    birth_surname: str | None = None
     notes: str | None = None
     birth_year: int | None = None
     category: str | None = None

@@ -28,6 +28,14 @@ function tokenMatches(word, token) {
   return token.length >= 3 && word.length >= 3 && editDistance(token, word) <= 1;
 }
 
+export function birthFullName(name, birthSurname) {
+  const birth = String(birthSurname || "").trim();
+  if (!birth) return "";
+  const words = String(name || "").trim().split(/\s+/).filter(Boolean);
+  const given = words.length > 1 ? words.slice(0, -1) : words;
+  return [...given, birth].join(" ");
+}
+
 export function queryMatchesName(query, name) {
   const q = String(query || "").trim().toLowerCase();
   const n = String(name || "").trim().toLowerCase();
@@ -70,9 +78,11 @@ export function matchPeople(query, people, { excludeId, limit = 6 } = {}) {
     if (excludeId != null && String(person.id) === String(excludeId)) continue;
     const name = String(person.name || "").trim();
     const nick = String(person.nickname || "").trim();
+    const birth = birthFullName(name, person.birth_surname);
     const nameScore = scoreName(q, name);
     const nickScore = nick ? scoreName(q, nick) : 0;
-    const score = Math.max(nameScore, nickScore ? nickScore + 4 : 0);
+    const birthScore = birth && birth.toLowerCase() !== name.toLowerCase() ? scoreName(q, birth) : 0;
+    const score = Math.max(nameScore, nickScore ? nickScore + 4 : 0, birthScore ? birthScore - 2 : 0);
     if (score > 0) scored.push({ person, score });
   }
   scored.sort((a, b) => b.score - a.score || String(a.person.name).localeCompare(String(b.person.name)));

@@ -511,7 +511,11 @@ a.app-brand.active {
   text-align: left;
 }
 .person-sticky-name > button {
-  flex: 0 0 auto;
+  flex: 0 0 13rem;
+  width: 13rem;
+  justify-content: center;
+  text-align: center;
+  align-self: flex-end;
 }
 .person-sticky .person-chips {
   position: relative;
@@ -4958,4 +4962,8 @@ kbd {
   .app:has(.photo-page) .people-search-panel {
     right: 16px;
   }
+}
+
+.person-field-label {
+  margin-bottom: 4px;
 }

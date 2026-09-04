@@ -6,7 +6,13 @@ const people = [
   { id: 1, name: "Lila Cole" },
   { id: 2, name: "Adam Cole" },
   { id: 3, name: "Jordan Cole", nickname: "Jordy" },
+  { id: 4, name: "Mara Cole", birth_surname: "Finch" },
 ];
+
+test("matchPeople finds a person by birth surname", () => {
+  assert.deepEqual(matchPeople("finch", people).map((p) => p.name), ["Mara Cole"]);
+  assert.deepEqual(matchPeople("mara finch", people).map((p) => p.name), ["Mara Cole"]);
+});
 
 test("matchPeople finds a first name prefix", () => {
   const hits = matchPeople("lil", people);
