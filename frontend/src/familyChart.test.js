@@ -230,3 +230,31 @@ test("layoutDoubleAncestorChart fans the father right and the mother left", asyn
   assert.equal(wed?.label, "married 1970", "parents shown as a couple");
   assert.ok(layout.nodes.every((n) => n.x >= 0 && n.y >= 0));
 });
+
+test("layoutFanChart rings ancestors with the father's line on the left", async () => {
+  const { layoutFanChart } = await import("./familyChart.js");
+  const chart = {
+    focus: "me",
+    nodes: [
+      { id: "me", name: "Me", sex: "M" },
+      { id: "dad", name: "Dad", sex: "M" },
+      { id: "mum", name: "Mum", sex: "F" },
+      { id: "gf", name: "Grandad", sex: "M" },
+      { id: "gm", name: "Granny", sex: "F" },
+    ],
+    unions: [
+      { id: "F1", role: "parents", generation: 1, partners: ["dad", "mum"], children: ["me"] },
+      { id: "F2", role: "grandparents", generation: 2, partners: ["gf", "gm"], children: ["dad"] },
+    ],
+  };
+  const layout = layoutFanChart(chart);
+  const byId = Object.fromEntries(layout.nodes.map((n) => [n.id, n]));
+  assert.equal(byId.me.g, 0);
+  assert.ok(byId.me.focus);
+  assert.equal(byId.dad.g, 1);
+  assert.ok(byId.dad.mid > Math.PI / 2 && byId.mum.mid < Math.PI / 2, "father left, mother right");
+  assert.ok(byId.gf.g === 2 && byId.gf.mid > byId.gm.mid, "grandfather further left than grandmother");
+  assert.ok(byId.gf.a0 >= byId.dad.a0 && byId.gf.a1 <= byId.dad.a1, "grandparents inside the father's span");
+  assert.ok(byId.dad.path.startsWith("M") && byId.dad.r1 > byId.dad.r0);
+  assert.ok(layout.width > 0 && layout.height > 0);
+});

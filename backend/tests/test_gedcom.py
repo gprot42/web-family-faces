@@ -372,3 +372,26 @@ def test_catalog_hit_fallbacks():
     }
     links2 = gedcom._catalog_links(tree2, index)
     assert {k: v["id"] for k, v in links2.items()} == {"E1": 279}
+
+
+def test_tree_list_carries_catalog_nicknames(tmp_path, monkeypatch):
+    from photosort import config, db
+    from photosort.db import connect, init_db
+    from photosort.people import create_person
+
+    path = tmp_path / "t.db"
+    monkeypatch.setattr(config, "DB_PATH", path)
+    monkeypatch.setattr(db, "DB_PATH", path)
+    init_db(connect())
+    create_person("Nicholas Evans", nickname="Nick")
+    ged = b"""0 HEAD
+1 SOUR Grok
+0 @I1@ INDI
+1 NAME Nicholas Ronald /Evans/
+1 SEX M
+0 TRLR
+"""
+    tree = gedcom.parse_gedcom(ged.decode())
+    listed = gedcom.tree_public(tree)["people"]
+    assert listed[0]["catalog_id"]
+    assert listed[0]["nickname"] == "Nick"

@@ -391,6 +391,9 @@ def _catalog_index() -> dict[str, dict[str, Any]]:
     everyone: list[dict[str, Any]] = []
     for row in rows:
         hit = {"id": int(row["id"]), "name": row["name"]}
+        catalog_nick = str(row["nickname"] if "nickname" in row.keys() else "") or ""
+        if catalog_nick.strip():
+            hit["nickname"] = catalog_nick.strip()
         face_id = covers.get(int(row["id"]))
         if face_id:
             hit["cover_url"] = face_crop_url(face_id, 0, 192)
@@ -810,6 +813,13 @@ def tree_public(tree: dict[str, Any], *, filename: str = "", loaded_at: str = ""
         hit = links.get(person["id"])
         if hit:
             item["catalog_id"] = hit["id"]
+            # Nicknames recorded in the catalog help find tree people too.
+            if hit.get("nickname"):
+                parts = [x.strip() for x in (item.get("nickname") or "").split(",") if x.strip()]
+                for part in hit["nickname"].split(","):
+                    if part.strip() and part.strip().casefold() not in {x.casefold() for x in parts}:
+                        parts.append(part.strip())
+                item["nickname"] = ", ".join(parts)
         people.append(item)
     people.sort(key=lambda row: ((row.get("surname") or row.get("name") or "").lower(), row.get("name") or ""))
     return {

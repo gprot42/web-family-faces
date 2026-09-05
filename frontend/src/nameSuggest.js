@@ -56,6 +56,37 @@ export function nameVariants(name, birthSurname) {
   return out;
 }
 
+// Common short names, so "nick evans" finds a Nicholas with no recorded nickname.
+const SHORT_NAMES = {
+  nick: ["nicholas"], nicky: ["nicholas", "nicola"], bob: ["robert"], bobby: ["robert"], rob: ["robert"],
+  bill: ["william"], billy: ["william"], will: ["william"], liam: ["william"], dick: ["richard"], rick: ["richard"],
+  jim: ["james"], jimmy: ["james"], jamie: ["james"], jack: ["john"], johnny: ["john"], jon: ["jonathan", "john"],
+  tom: ["thomas"], tommy: ["thomas"], ted: ["edward", "theodore"], ed: ["edward", "edwin"], eddie: ["edward"],
+  ned: ["edward"], harry: ["henry", "harold"], hal: ["henry"], chuck: ["charles"], charlie: ["charles", "charlotte"],
+  dan: ["daniel"], danny: ["daniel"], dave: ["david"], mike: ["michael"], mick: ["michael"], joe: ["joseph"],
+  fred: ["frederick", "alfred"], alf: ["alfred"], bert: ["albert", "herbert", "bertram"], al: ["albert", "alfred", "alan"],
+  sam: ["samuel", "samantha"], ben: ["benjamin"], andy: ["andrew"], tony: ["anthony"], pat: ["patrick", "patricia"],
+  peggy: ["margaret"], maggie: ["margaret"], meg: ["margaret"], betty: ["elizabeth"], beth: ["elizabeth"],
+  liz: ["elizabeth"], bess: ["elizabeth"], lizzie: ["elizabeth"], kate: ["katherine", "catherine"], kathy: ["katherine"],
+  cathy: ["catherine"], sue: ["susan"], susie: ["susan"], jenny: ["jennifer"], jen: ["jennifer"], sally: ["sarah"],
+  nell: ["eleanor", "helen", "helena"], nellie: ["eleanor", "helen"], molly: ["mary"], polly: ["mary"],
+  annie: ["ann", "anne"], nancy: ["ann", "anne"], dolly: ["dorothy"], dot: ["dorothy"], doll: ["doris", "dorothy"],
+  cliff: ["clifford"], ron: ["ronald"], ronnie: ["ronald"], don: ["donald"], greg: ["gregory"], steve: ["stephen", "steven"],
+  chris: ["christopher", "christine"], matt: ["matthew"], phil: ["philip"], ray: ["raymond"], ken: ["kenneth"],
+  len: ["leonard"], lenny: ["leonard"], reg: ["reginald"], stan: ["stanley"], vic: ["victor"], vicky: ["victoria"],
+  lena: ["helena"], tina: ["christina"], trish: ["patricia"], jo: ["joan", "joanne", "josephine"],
+};
+
+/** The query plus versions with a short first name expanded: "nick evans" -> "nicholas evans". */
+export function expandShortNames(query) {
+  const text = String(query || "").trim().toLowerCase();
+  if (!text) return [];
+  const [first, ...rest] = text.split(/\s+/);
+  const out = [text];
+  for (const full of SHORT_NAMES[first] || []) out.push([full, ...rest].join(" "));
+  return out;
+}
+
 export function queryMatchesName(query, name) {
   const q = String(query || "").trim().toLowerCase();
   const n = String(name || "").trim().toLowerCase();
@@ -92,20 +123,26 @@ export function scoreName(query, name) {
 export function matchPeople(query, people, { excludeId, limit = 6 } = {}) {
   const q = String(query || "").trim();
   if (q.length < 2) return [];
+  const queries = expandShortNames(q);
   const scored = [];
   for (const person of people || []) {
     if (person?.unknown_name) continue;
     if (excludeId != null && String(person.id) === String(excludeId)) continue;
     const name = String(person.name || "").trim();
     const nick = String(person.nickname || "").trim();
-    const nameScore = scoreName(q, name);
-    const nickScore = nick ? scoreName(q, nick) : 0;
-    let variantScore = 0;
-    for (const variant of nameVariants(name, person.birth_surname)) {
-      if (variant.toLowerCase() === name.toLowerCase()) continue;
-      variantScore = Math.max(variantScore, scoreName(q, variant));
-    }
-    const score = Math.max(nameScore, nickScore ? nickScore + 4 : 0, variantScore ? variantScore - 2 : 0);
+    let score = 0;
+    queries.forEach((needle, qi) => {
+      const nameScore = scoreName(needle, name);
+      const nickScore = nick ? scoreName(needle, nick) : 0;
+      let variantScore = 0;
+      for (const variant of nameVariants(name, person.birth_surname)) {
+        if (variant.toLowerCase() === name.toLowerCase()) continue;
+        variantScore = Math.max(variantScore, scoreName(needle, variant));
+      }
+      const best = Math.max(nameScore, nickScore ? nickScore + 4 : 0, variantScore ? variantScore - 2 : 0);
+      // An expanded short name counts a little less than what was typed.
+      score = Math.max(score, qi ? best - 3 : best);
+    });
     if (score > 0) scored.push({ person, score });
   }
   scored.sort((a, b) => b.score - a.score || String(a.person.name).localeCompare(String(b.person.name)));

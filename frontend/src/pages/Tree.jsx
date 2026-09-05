@@ -7,11 +7,14 @@ import {
   clampZoom,
   layoutDoubleAncestorChart,
   layoutFamilyTree,
+  layoutFanChart,
+  FAN_DEPTH,
+  FAN_MAX_DEPTH,
   treePersonIdForCatalog,
   viewOnFocus,
   wheelZoomFactor,
 } from "../familyChart.js";
-import { nameVariants, queryMatchesName } from "../nameSuggest.js";
+import { expandShortNames, nameVariants, queryMatchesName } from "../nameSuggest.js";
 import { enterBrowserFullscreen, exitBrowserFullscreen } from "../play.js";
 import { tip } from "../tip.js";
 
@@ -36,6 +39,124 @@ function PersonGlyph() {
   );
 }
 
+function splitLines(text, max) {
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let cur = "";
+  for (const w of words) {
+    if (cur && (cur + " " + w).length > max) {
+      lines.push(cur);
+      cur = w;
+    } else cur = cur ? `${cur} ${w}` : w;
+  }
+  if (cur) lines.push(cur);
+  return lines.slice(0, 3);
+}
+
+function FanSegment({ node, onOpen }) {
+  const deg = (node.mid * 180) / Math.PI;
+  const rMid = (node.r0 + node.r1) / 2;
+  const span = node.a1 - node.a0;
+  const name = cardName(node);
+  const years = node.lifespan || "";
+  const size = node.size;
+  const photo = node.cover_url && node.g <= 3;
+  let textEl;
+  let photoEl = null;
+  if (node.focus) {
+    const px = node.cx;
+    const py = node.cy - 72;
+    photoEl = (
+      <>
+        <clipPath id={`fan-clip-${node.id}`}>
+          <circle cx={px} cy={py} r={26} />
+        </clipPath>
+        {node.cover_url ? (
+          <image href={node.cover_url} x={px - 26} y={py - 26} width={52} height={52} preserveAspectRatio="xMidYMid slice" clipPath={`url(#fan-clip-${node.id})`} />
+        ) : (
+          <circle cx={px} cy={py} r={26} className="ged-fan-glyph" />
+        )}
+      </>
+    );
+    textEl = (
+      <text x={node.cx} y={node.cy - 34} textAnchor="middle" fontSize={size} fontWeight={700}>
+        {splitLines(name, 20).map((line, i) => (
+          <tspan key={i} x={node.cx} dy={i ? size * 1.15 : 0}>{line}</tspan>
+        ))}
+        {years ? <tspan x={node.cx} dy={size * 1.2} fontWeight={500} fontSize={size * 0.85}>{years}</tspan> : null}
+      </text>
+    );
+  } else if (!node.radial) {
+    const tp = { x: node.cx + (rMid + 6) * Math.cos(node.mid - span * 0.08), y: node.cy - (rMid + 6) * Math.sin(node.mid - span * 0.08) };
+    const lines = splitLines(name, node.g === 1 ? 22 : 16);
+    textEl = (
+      <text x={tp.x} y={tp.y - ((lines.length - 1) * size * 1.15) / 2} textAnchor="middle" fontSize={size} fontWeight={700}>
+        {lines.map((line, i) => (
+          <tspan key={i} x={tp.x} dy={i ? size * 1.15 : 0}>{line}</tspan>
+        ))}
+        {years ? <tspan x={tp.x} dy={size * 1.2} fontWeight={500} fontSize={size * 0.82}>{years}</tspan> : null}
+      </text>
+    );
+    if (photo) {
+      const pr = node.g === 1 ? 26 : 18;
+      const pa = node.mid + span * (node.g === 1 ? 0.3 : 0.32);
+      const pp = { x: node.cx + rMid * Math.cos(pa), y: node.cy - rMid * Math.sin(pa) };
+      photoEl = (
+        <>
+          <clipPath id={`fan-clip-${node.id}`}>
+            <circle cx={pp.x} cy={pp.y} r={pr} />
+          </clipPath>
+          <image href={node.cover_url} x={pp.x - pr} y={pp.y - pr} width={pr * 2} height={pr * 2} preserveAspectRatio="xMidYMid slice" clipPath={`url(#fan-clip-${node.id})`} />
+          <circle cx={pp.x} cy={pp.y} r={pr} className="ged-fan-ring" />
+        </>
+      );
+    }
+  } else {
+    // Radial text: reads outward on the right, inward on the left so it is never upside down.
+    const r = node.left ? node.r1 - 8 : node.r0 + 8;
+    const p = { x: node.cx + r * Math.cos(node.mid), y: node.cy - r * Math.sin(node.mid) };
+    const rot = node.left ? 180 - deg : -deg;
+    const lines = [...splitLines(name, 26), ...(years ? [years] : [])].slice(0, 3);
+    const lineH = size * 1.12;
+    textEl = (
+      <text
+        transform={`translate(${p.x.toFixed(1)} ${p.y.toFixed(1)}) rotate(${rot.toFixed(1)})`}
+        textAnchor="start"
+        fontSize={size}
+        fontWeight={700}
+        y={-((lines.length - 1) * lineH) / 2 + size * 0.35}
+      >
+        {lines.map((line, i) => (
+          <tspan key={i} x={0} dy={i ? lineH : 0} fontWeight={i && i === lines.length - 1 && years ? 500 : 700}>
+            {line}
+          </tspan>
+        ))}
+      </text>
+    );
+  }
+  return (
+    <g
+      className={`ged-fan-seg${node.focus ? " focus" : ""}`}
+      data-person={node.id}
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+    >
+      <title>{name}{years ? ` · ${years}` : ""}</title>
+      <path className="seg" d={node.path} style={node.fill ? { fill: node.fill } : undefined} />
+      {node.band ? <path className="band" d={node.band} style={{ stroke: node.color }} /> : null}
+      {photoEl}
+      {textEl}
+    </g>
+  );
+}
+
 function CardFact({ label, event, text }) {
   const date = String(event?.date || "").trim();
   const place = String(event?.place || "").trim();
@@ -50,7 +171,16 @@ function CardFact({ label, event, text }) {
   );
 }
 
-function scorePerson(person, needle) {
+function scorePerson(person, query) {
+  let best = 0;
+  expandShortNames(query).forEach((needle, i) => {
+    const s = scoreOnePerson(person, needle);
+    best = Math.max(best, i ? s - 3 : s);
+  });
+  return best;
+}
+
+function scoreOnePerson(person, needle) {
   const name = String(person?.name || "").toLowerCase();
   const surname = String(person?.surname || "").toLowerCase();
   const married = String(person?.married_surname || "").toLowerCase();
@@ -156,12 +286,29 @@ function NameSearch({
 // whole file is shown centres on them; switching into the view fits everything.
 let lastEntireFocus = null;
 
-function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire, mode = "one", onToggleDouble }) {
+function FamilyChart({
+  chart,
+  onOpen,
+  full,
+  onToggleFull,
+  entire,
+  mode = "one",
+  onSetMode,
+  fanDepth = FAN_DEPTH,
+  onFanDepth,
+}) {
   const double = mode === "double";
+  const fan = mode === "fan";
   const layout = useMemo(
-    () => (double ? layoutDoubleAncestorChart(chart) : layoutFamilyTree(chart)),
-    [chart, double],
+    () =>
+      fan
+        ? layoutFanChart(chart, { depth: fanDepth })
+        : double
+          ? layoutDoubleAncestorChart(chart)
+          : layoutFamilyTree(chart),
+    [chart, double, fan, fanDepth],
   );
+  const fanRings = fan ? layout.nodes.reduce((m, n) => Math.max(m, n.g || 0), 0) : 0;
   const focusName = cardName(layout.nodes.find((n) => n.focus));
   const stageRef = useRef(null);
   const zoomRef = useRef(1);
@@ -172,6 +319,12 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
   const movedRef = useRef(false);
   const openRef = useRef(onOpen);
   openRef.current = onOpen;
+  // A press that turns into a drag must not also count as a click.
+  const tapRef = useRef(null);
+  function openFromClick(id) {
+    if (movedRef.current) return;
+    openRef.current(id);
+  }
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
@@ -220,12 +373,36 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
     });
   }
 
+  // Entire tree: the file is far wider than tall, so a true fit is a thin
+  // line. Fit the height, keep cards legible, and centre on the person.
+  function fitTall() {
+    const el = stageRef.current;
+    if (!el || !layout.width || !layout.height) return;
+    if (el.clientWidth < 80 || el.clientHeight < 80) return;
+    const pad = 36;
+    const sx = (el.clientWidth - pad * 2) / layout.width;
+    const sy = (el.clientHeight - pad * 2) / layout.height;
+    if (sx >= sy) {
+      fit();
+      return;
+    }
+    minZoomRef.current = Math.min(0.12, sx);
+    const z = clampZoom(Math.min(sy, 1.15), minZoomRef.current);
+    const focus = layout.nodes.find((n) => n.focus) || layout.nodes[0];
+    const cx = focus ? focus.x + (focus.w || CARD_W) / 2 : layout.width / 2;
+    applyView({
+      zoom: z,
+      x: el.clientWidth / 2 - cx * z,
+      y: (el.clientHeight - layout.height * z) / 2,
+    });
+  }
+
   useEffect(() => {
     let run = centerOnFocus;
-    if (double) {
+    if (double || fan) {
       run = fit;
     } else if (entire) {
-      run = lastEntireFocus && lastEntireFocus !== layout.focus ? centerOnFocus : fit;
+      run = lastEntireFocus && lastEntireFocus !== layout.focus ? centerOnFocus : fitTall;
       lastEntireFocus = layout.focus;
     } else {
       lastEntireFocus = null;
@@ -240,12 +417,12 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
       window.clearTimeout(t);
       window.clearTimeout(t2);
     };
-  }, [entire, double, full, layout.focus, layout.width, layout.height]);
+  }, [entire, double, fan, full, layout.focus, layout.width, layout.height]);
 
   useEffect(() => {
     const el = stageRef.current;
     if (!el) return undefined;
-    const ro = new ResizeObserver(() => centerOnFocus());
+    const ro = new ResizeObserver(() => (double || fan ? fit() : entire ? fitTall() : centerOnFocus()));
     ro.observe(el);
     function onWheelNative(event) {
       event.preventDefault();
@@ -260,13 +437,14 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
       ro.disconnect();
       el.removeEventListener("wheel", onWheelNative);
     };
-  }, [layout.focus, layout.width, layout.height]);
+  }, [layout.focus, layout.width, layout.height, entire, double, fan]);
 
   function onPointerDown(event) {
     if (event.button != null && event.button !== 0) return;
     if (event.target.closest?.(".ged-zoom, .ged-full-bar")) return;
     event.preventDefault();
     movedRef.current = false;
+    tapRef.current = event.target.closest?.("[data-person]")?.getAttribute("data-person") || null;
     dragRef.current = {
       pointerId: event.pointerId,
       x: event.clientX,
@@ -275,12 +453,22 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
       panY: panRef.current.y,
     };
     setDragging(true);
-    event.currentTarget.setPointerCapture?.(event.pointerId);
+    const finish = (up) => {
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      if (dragRef.current && dragRef.current.pointerId === up.pointerId) onPointerUp(up);
+    };
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
   }
 
   function onPointerMove(event) {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    if (event.buttons != null && event.buttons === 0) {
+      onPointerUp(event);
+      return;
+    }
     const next = {
       x: drag.panX + (event.clientX - drag.x),
       y: drag.panY + (event.clientY - drag.y),
@@ -296,12 +484,47 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
     if (!dragRef.current || dragRef.current.pointerId !== event.pointerId) return;
     dragRef.current = null;
     setDragging(false);
+    tapRef.current = null;
   }
 
-  // 1,300 cards re-rendering on every pointer move made dragging the entire
-  // tree stutter; the cards and lines only change with the layout.
+  // Big charts: only build the cards and lines near the viewport. The window
+  // is quantised so small drags reuse the same set; a margin of one screen
+  // keeps cards from popping in at the edges.
+  const CULL_ABOVE = 200;
+  let rectKey = "";
+  if (layout.nodes.length > CULL_ABOVE) {
+    const el = stageRef.current;
+    const w = el?.clientWidth || 1400;
+    const h = el?.clientHeight || 900;
+    const q = 600;
+    const x0 = Math.floor((-pan.x / zoom - w / zoom) / q) * q;
+    const y0 = Math.floor((-pan.y / zoom - h / zoom) / q) * q;
+    const x1 = Math.ceil((-pan.x / zoom + (2 * w) / zoom) / q) * q;
+    const y1 = Math.ceil((-pan.y / zoom + (2 * h) / zoom) / q) * q;
+    rectKey = `${x0}:${y0}:${x1}:${y1}`;
+  }
+  const visible = useMemo(() => {
+    if (!rectKey) return layout;
+    const [x0, y0, x1, y1] = rectKey.split(":").map(Number);
+    const nodes = layout.nodes.filter(
+      (n) => n.x + (n.w || CARD_W) >= x0 && n.x <= x1 && n.y + (n.h || CARD_H) >= y0 && n.y <= y1,
+    );
+    const edges = layout.edges.filter(
+      (e) => Math.max(e.x1, e.x2) >= x0 && Math.min(e.x1, e.x2) <= x1 && Math.max(e.y1, e.y2) >= y0 && Math.min(e.y1, e.y2) <= y1,
+    );
+    return { ...layout, nodes, edges };
+  }, [layout, rectKey]);
+
+  // Cards and lines only rebuild when the layout or the visible window changes,
+  // not on every pointer move.
   const canvas = useMemo(
-    () => (
+    () => fan ? (
+      <svg className="ged-fan" width={layout.width} height={layout.height}>
+        {layout.nodes.map((node) => (
+          <FanSegment key={node.id} node={node} onOpen={() => openFromClick(node.id)} />
+        ))}
+      </svg>
+    ) : (
       <>
               <svg className="ged-lines" width={layout.width} height={layout.height} aria-hidden="true">
                 <defs>
@@ -317,7 +540,7 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
                     <path d="M 0 0 L 10 0 L 5 10 z" />
                   </marker>
                 </defs>
-                {layout.edges.map((edge, i) =>
+                {visible.edges.map((edge, i) =>
                   edge.type === "marriage" ? (
                     <g key={`m-${i}`}>
                       <line x1={edge.x1} y1={edge.y1} x2={edge.x2} y2={edge.y2} />
@@ -339,7 +562,7 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
                   ),
                 )}
               </svg>
-              {layout.nodes.map((node) => (
+              {visible.nodes.map((node) => (
                 <button
                   key={node.id}
                   type="button"
@@ -347,10 +570,8 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
                     node.compact ? " compact" : ""
                   }${node.branch ? ` branch-${node.branch}` : ""}${String(node.branch || "").startsWith("m") ? " left" : ""}`}
                   style={{ left: node.x, top: node.y, width: node.w || CARD_W, height: node.h || CARD_H }}
-                  onClick={() => {
-                    if (movedRef.current) return;
-                    openRef.current(node.id);
-                  }}
+                  data-person={node.id}
+                  onClick={() => openFromClick(node.id)}
                   title={cardName(node)}
                 >
                   <span className="ged-card-photo">
@@ -369,7 +590,7 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
               ))}
       </>
     ),
-    [layout],
+    [visible, fan, layout],
   );
 
   return (
@@ -381,10 +602,10 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        {...tip("Scroll or pinch to zoom. Drag anywhere to move. Click a person to center the tree on them.")}
+        {...tip("Scroll or pinch to zoom. Drag anywhere to move. Click a person to open their family chart.")}
       >
         <div
-          className="ged-tree"
+          className={`ged-tree${zoom < 0.55 ? " tiny" : ""}`}
           style={{
             width: layout.width,
             height: layout.height,
@@ -396,58 +617,83 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
       </div>
       {focusName ? (
         <div className="ged-chart-title" aria-hidden="true">
-          <span className="ged-chart-kicker">{double ? "Double ancestor chart" : "Family chart"}</span>
+          <span className="ged-chart-kicker">{fan ? "Fan chart" : double ? "Double ancestor chart" : "Family chart"}</span>
           <strong>{focusName}</strong>
         </div>
       ) : null}
-      <div className="ged-zoom zoom-tools">
-        <button type="button" onClick={() => applyZoom(zoomRef.current * 1.2)} {...tip("Zoom in")}>
-          +
-        </button>
-        <button type="button" className="zoom-level" onClick={fit} {...tip("Fit the whole tree in view")}>
-          {Math.round(zoom * 100)}%
-        </button>
-        <button type="button" onClick={() => applyZoom(zoomRef.current / 1.2)} {...tip("Zoom out")}>
-          −
-        </button>
-        <button type="button" onClick={fit} {...tip("Fit the whole tree in view")}>
-          Fit
-        </button>
-        {onToggleEntire ? (
+      <div className="ged-zoom zoom-tools" role="toolbar" aria-label="Chart tools">
+        <div className="ged-panel-group" role="group" aria-label="View">
+          <span className="ged-panel-label">View</span>
+          {[
+            ["one", "Family", "Parents, grandparents, brothers and sisters, spouse, and children."],
+            ["all", "Entire tree", "Every person in this GEDCOM file."],
+            ["double", "Double ancestors", "This person in the middle, the father's line to the right, the mother's to the left."],
+            ["fan", "Fan chart", "Each generation a ring, father's line left and mother's right."],
+          ].map(([id, label, hint]) => (
+            <button
+              key={id}
+              type="button"
+              className={mode === id ? undefined : "secondary"}
+              aria-pressed={mode === id}
+              onClick={() => onSetMode?.(id)}
+              {...tip(hint)}
+            >
+              {label}
+            </button>
+          ))}
+          {fan && onFanDepth ? (
+            <div className="ged-zoom-row" role="group" aria-label="Generations">
+              <button
+                type="button"
+                className="secondary"
+                disabled={fanDepth <= 3}
+                onClick={() => onFanDepth(-1)}
+                {...tip("One generation fewer.")}
+              >
+                −
+              </button>
+              <span className="zoom-level" {...tip(`Rings shown: ${fanDepth}. Rings with people: ${fanRings}.`)}>
+                {fanDepth} rings
+              </span>
+              <button
+                type="button"
+                className="secondary"
+                disabled={fanDepth >= FAN_MAX_DEPTH}
+                onClick={() => onFanDepth(1)}
+                {...tip("One more generation.")}
+              >
+                +
+              </button>
+            </div>
+          ) : null}
+        </div>
+        <div className="ged-panel-group" role="group" aria-label="Zoom">
+          <span className="ged-panel-label">Zoom</span>
+          <div className="ged-zoom-row">
+            <button type="button" className="secondary" onClick={() => applyZoom(zoomRef.current / 1.2)} {...tip("Zoom out")}>
+              −
+            </button>
+            <span className="zoom-level">{Math.round(zoom * 100)}%</span>
+            <button type="button" className="secondary" onClick={() => applyZoom(zoomRef.current * 1.2)} {...tip("Zoom in")}>
+              +
+            </button>
+          </div>
           <button
             type="button"
-            aria-pressed={entire}
-            onClick={onToggleEntire}
-            {...tip(
-              entire
-                ? "Show only this person, their ancestors, spouse, and children."
-                : "Show every person in this GEDCOM file.",
-            )}
+            className="secondary"
+            onClick={entire ? fitTall : fit}
+            {...tip(entire ? "Fit the tree's height and centre on this person. Drag sideways for the rest." : "Fit the whole chart in view.")}
           >
-            Entire tree
+            Fit
           </button>
-        ) : null}
-        {onToggleDouble ? (
-          <button
-            type="button"
-            aria-pressed={double}
-            onClick={onToggleDouble}
-            {...tip(
-              double
-                ? "Back to the family chart with spouse and children."
-                : "Double ancestor chart: this person in the middle, the father's line to the right, the mother's line to the left.",
-            )}
-          >
-            Double ancestors
-          </button>
-        ) : null}
+        </div>
         {onToggleFull ? (
           <button
             type="button"
             onClick={onToggleFull}
-            {...tip(full ? "Leave fullscreen. Esc also works." : "See the tree on the whole screen.")}
+            {...tip(full ? "Leave fullscreen. Esc also works." : "See the chart on the whole screen.")}
           >
-            {full ? "Exit" : "Full screen"}
+            {full ? "Exit full screen" : "Full screen"}
           </button>
         ) : null}
       </div>
@@ -462,6 +708,8 @@ export default function Tree() {
   const view = (params.get("view") || "").trim().toLowerCase();
   const entire = view === "all";
   const double = view === "double";
+  const fanView = view === "fan";
+  const fanDepth = Math.min(FAN_MAX_DEPTH, Math.max(3, Number(params.get("gens")) || FAN_DEPTH));
   const catalogFromUrl = (params.get("person") || "").trim();
   const fileRef = useRef(null);
   const [data, setData] = useState(null);
@@ -483,6 +731,8 @@ export default function Tree() {
     const next = new URLSearchParams(params);
     if (id) next.set("p", id);
     else next.delete("p");
+    // From the whole file, a click means "show me this person's own family".
+    if (entire) next.delete("view");
     setParams(next, { replace: true });
   }
 
@@ -837,22 +1087,22 @@ export default function Tree() {
               {person ? (
                 <>
                   <FamilyChart
-                    key={`${person.id}:${double ? "double" : entire ? "all" : "one"}`}
+                    key={`${person.id}:${fanView ? "fan" : double ? "double" : entire ? "all" : "one"}`}
                     chart={person.chart}
                     onOpen={openPerson}
                     full={full}
                     entire={entire}
-                    mode={double ? "double" : entire ? "all" : "one"}
-                    onToggleDouble={() => {
+                    mode={fanView ? "fan" : double ? "double" : entire ? "all" : "one"}
+                    onSetMode={(next_mode) => {
                       const next = new URLSearchParams(params);
-                      if (double) next.delete("view");
-                      else next.set("view", "double");
+                      if (next_mode === "one") next.delete("view");
+                      else next.set("view", next_mode);
                       setParams(next, { replace: true });
                     }}
-                    onToggleEntire={() => {
+                    fanDepth={fanDepth}
+                    onFanDepth={(delta) => {
                       const next = new URLSearchParams(params);
-                      if (entire) next.delete("view");
-                      else next.set("view", "all");
+                      next.set("gens", String(Math.min(FAN_MAX_DEPTH, Math.max(3, fanDepth + delta))));
                       setParams(next, { replace: true });
                     }}
                     onToggleFull={full ? exitFull : enterFull}

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   completeUniqueFirstName,
+  expandShortNames,
   matchPeople,
   nameVariants,
   uniqueCatalogPerson,
@@ -31,6 +32,16 @@ test("matchPeople finds married and birth forms with or without a middle name", 
   for (const q of ["nora hale", "nora jane hale", "nora pike", "nora jane pike"]) {
     assert.deepEqual(matchPeople(q, people).map((p) => p.name), ["Nora Jane Hale"], q);
   }
+});
+
+test("matchPeople expands common short names", () => {
+  const folks = [
+    { id: 1, name: "Nicholas Ronald Evans" },
+    { id: 2, name: "Richard George Allan Evans", nickname: "Rick" },
+  ];
+  assert.equal(matchPeople("nick evans", folks)[0]?.name, "Nicholas Ronald Evans");
+  assert.deepEqual(expandShortNames("Nick Evans"), ["nick evans", "nicholas evans"]);
+  assert.deepEqual(expandShortNames("zed evans"), ["zed evans"]);
 });
 
 test("matchPeople finds a person by birth surname", () => {

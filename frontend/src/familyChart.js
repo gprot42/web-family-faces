@@ -869,3 +869,164 @@ export function layoutDoubleAncestorChart(chart, { depth = DOUBLE_DEPTH } = {}) 
   const height = Math.max(...nodes.map((n) => n.y)) + DCARD_H + PAD;
   return { nodes, edges, width, height, focus: focusId, mode: "double" };
 }
+
+// ---------------------------------------------------------------------------
+// Fan chart: the person in a half disc at the bottom, each generation a ring,
+// the father's line on the left half and the mother's on the right. Segments
+// are SVG paths; colours follow the angle so each lineage keeps its hue.
+export const FAN_DEPTH = 7;
+export const FAN_MAX_DEPTH = 10;
+const FAN_R0 = 110;
+const FAN_RINGS = [150, 150, 140, 125, 105, 85, 70, 62, 56, 50];
+
+function makeParentsOf(nodeMap, unions) {
+  return function parentsOf(id) {
+    const union = unions.find((u) => (u.children || []).includes(id) && (u.partners || []).some((p) => nodeMap[p]));
+    if (!union) return { father: null, mother: null, union: null };
+    const parts = (union.partners || []).filter((p) => nodeMap[p]);
+    let father = parts.find((p) => nodeMap[p].sex === "M");
+    let mother = parts.find((p) => p !== father && nodeMap[p].sex === "F");
+    if (!father && !mother) [father, mother] = parts;
+    else if (!father) father = parts.find((p) => p !== mother) || null;
+    else if (!mother) mother = parts.find((p) => p !== father) || null;
+    return { father: father || null, mother: mother || null, union };
+  };
+}
+
+function polar(cx, cy, r, theta) {
+  return { x: cx + r * Math.cos(theta), y: cy - r * Math.sin(theta) };
+}
+
+function ringPath(cx, cy, r0, r1, a0, a1) {
+  // a0 < a1 in radians; the outer arc runs from a1 (left) to a0 (right).
+  const large = a1 - a0 > Math.PI ? 1 : 0;
+  const p1 = polar(cx, cy, r0, a1);
+  const p2 = polar(cx, cy, r1, a1);
+  const p3 = polar(cx, cy, r1, a0);
+  const p4 = polar(cx, cy, r0, a0);
+  return [
+    `M ${p1.x.toFixed(2)} ${p1.y.toFixed(2)}`,
+    `L ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`,
+    `A ${r1} ${r1} 0 ${large} 1 ${p3.x.toFixed(2)} ${p3.y.toFixed(2)}`,
+    `L ${p4.x.toFixed(2)} ${p4.y.toFixed(2)}`,
+    `A ${r0} ${r0} 0 ${large} 0 ${p1.x.toFixed(2)} ${p1.y.toFixed(2)}`,
+    "Z",
+  ].join(" ");
+}
+
+function arcPath(cx, cy, r, a0, a1) {
+  const large = a1 - a0 > Math.PI ? 1 : 0;
+  const p1 = polar(cx, cy, r, a1);
+  const p2 = polar(cx, cy, r, a0);
+  return `M ${p1.x.toFixed(2)} ${p1.y.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
+}
+
+// Earthy palette in the app's own colours, not the pastel rainbow other
+// tree apps use: terracotta to ochre across the father's half, sage to teal
+// across the mother's, paler with each generation.
+export function fanHue(theta) {
+  const half = Math.PI / 2;
+  if (theta >= half) return Math.round(38 + ((theta - half) / half) * (16 - 38));
+  return Math.round(175 + (theta / half) * (95 - 175));
+}
+
+export function fanColours(theta, g) {
+  const hue = fanHue(theta);
+  const depth = Math.min(Math.max(g, 1), 9);
+  const light = 78 + depth * 2;
+  return {
+    fill: `hsl(${hue} 46% ${light}%)`,
+    color: `hsl(${hue} 52% ${Math.max(38, 58 - depth * 2)}%)`,
+  };
+}
+
+export function layoutFanChart(chart, { depth = FAN_DEPTH } = {}) {
+  const focusId = chart?.focus;
+  const nodeMap = Object.fromEntries((chart?.nodes || []).map((n) => [n.id, n]));
+  const unions = chart?.unions || [];
+  if (!focusId) return { nodes: [], edges: [], width: 400, height: 240, focus: focusId, mode: "fan" };
+  if (!nodeMap[focusId]) nodeMap[focusId] = { id: focusId, name: focusId };
+  const parentsOf = makeParentsOf(nodeMap, unions);
+
+  const rings = FAN_RINGS.slice(0, Math.max(1, Math.min(depth, FAN_RINGS.length)));
+  const radii = [FAN_R0];
+  for (const w of rings) radii.push(radii[radii.length - 1] + w);
+  const rMax = radii[radii.length - 1];
+  const cx = rMax + PAD;
+  const cy = rMax + PAD;
+
+  const nodes = [];
+  const seen = new Set([focusId]);
+
+  function place(id, g, a0, a1) {
+    if (!id || !nodeMap[id] || g > rings.length || seen.has(id)) return;
+    seen.add(id);
+    const r0 = radii[g - 1];
+    const r1 = radii[g];
+    const mid = (a0 + a1) / 2;
+    const span = a1 - a0;
+    const arcAtInner = r0 * span;
+    const radial = arcAtInner < 150 || g >= 4;
+    const size = [15, 15, 15, 13, 11.5, 10, 8.5, 7.5, 7, 6.5, 6][Math.min(g, 10)];
+    nodes.push({
+      ...nodeMap[id],
+      id,
+      g,
+      a0,
+      a1,
+      r0,
+      r1,
+      mid,
+      cx,
+      cy,
+      path: ringPath(cx, cy, r0, r1, a0, a1),
+      band: arcPath(cx, cy, r0 + 3, a0, a1),
+      ...fanColours(mid, g),
+      radial,
+      left: mid > Math.PI / 2,
+      size,
+      focus: false,
+      fan: true,
+    });
+    const { father, mother } = parentsOf(id);
+    // Father takes the left (larger angle) half of the span, mother the right.
+    place(father, g + 1, mid, a1);
+    place(mother, g + 1, a0, mid);
+  }
+
+  const own = parentsOf(focusId);
+  place(own.father, 1, Math.PI / 2, Math.PI);
+  place(own.mother, 1, 0, Math.PI / 2);
+
+  nodes.unshift({
+    ...nodeMap[focusId],
+    id: focusId,
+    g: 0,
+    a0: 0,
+    a1: Math.PI,
+    r0: 0,
+    r1: FAN_R0,
+    mid: Math.PI / 2,
+    cx,
+    cy,
+    path: `M ${cx - FAN_R0} ${cy} A ${FAN_R0} ${FAN_R0} 0 0 1 ${cx + FAN_R0} ${cy} Z`,
+    band: "",
+    fill: "",
+    color: "",
+    radial: false,
+    left: false,
+    size: 15,
+    focus: true,
+    fan: true,
+  });
+
+  return {
+    nodes,
+    edges: [],
+    width: 2 * rMax + 2 * PAD,
+    height: rMax + PAD + 24,
+    focus: focusId,
+    mode: "fan",
+    center: { x: cx, y: cy },
+  };
+}
