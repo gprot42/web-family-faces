@@ -36,6 +36,26 @@ export function birthFullName(name, birthSurname) {
   return [...given, birth].join(" ");
 }
 
+// Full married name, first + married surname, and both again with the birth
+// surname, so a middle name never blocks a "first last" search.
+export function nameVariants(name, birthSurname) {
+  const words = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  const given = words.length > 1 ? words.slice(0, -1) : words;
+  const surnames = words.length > 1 ? [words[words.length - 1]] : [];
+  const birth = String(birthSurname || "").trim();
+  if (birth && !surnames.some((s) => s.toLowerCase() === birth.toLowerCase())) surnames.push(birth);
+  const out = [];
+  for (const surname of surnames.length ? surnames : [""]) {
+    const firsts = given.length > 1 ? [given, [given[0]]] : [given];
+    for (const f of firsts) {
+      const text = [...f, surname].join(" ").trim();
+      if (text && !out.some((o) => o.toLowerCase() === text.toLowerCase())) out.push(text);
+    }
+  }
+  return out;
+}
+
 export function queryMatchesName(query, name) {
   const q = String(query || "").trim().toLowerCase();
   const n = String(name || "").trim().toLowerCase();
@@ -78,11 +98,14 @@ export function matchPeople(query, people, { excludeId, limit = 6 } = {}) {
     if (excludeId != null && String(person.id) === String(excludeId)) continue;
     const name = String(person.name || "").trim();
     const nick = String(person.nickname || "").trim();
-    const birth = birthFullName(name, person.birth_surname);
     const nameScore = scoreName(q, name);
     const nickScore = nick ? scoreName(q, nick) : 0;
-    const birthScore = birth && birth.toLowerCase() !== name.toLowerCase() ? scoreName(q, birth) : 0;
-    const score = Math.max(nameScore, nickScore ? nickScore + 4 : 0, birthScore ? birthScore - 2 : 0);
+    let variantScore = 0;
+    for (const variant of nameVariants(name, person.birth_surname)) {
+      if (variant.toLowerCase() === name.toLowerCase()) continue;
+      variantScore = Math.max(variantScore, scoreName(q, variant));
+    }
+    const score = Math.max(nameScore, nickScore ? nickScore + 4 : 0, variantScore ? variantScore - 2 : 0);
     if (score > 0) scored.push({ person, score });
   }
   scored.sort((a, b) => b.score - a.score || String(a.person.name).localeCompare(String(b.person.name)));

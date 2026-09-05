@@ -1121,6 +1121,29 @@ def birth_full_name(name: str | None, birth_surname: str | None) -> str:
     return " ".join([*given_names(name), birth]).strip()
 
 
+def name_variants(name: str | None, birth_surname: str | None) -> list[str]:
+    """Every way this person may be typed: full married name, first plus married
+    surname when there are middle names, and the same two with the birth surname."""
+    shown = normalize_name_part(name)
+    if not shown:
+        return []
+    out: list[str] = [shown]
+    if is_unknown_name(shown):
+        return out
+    words = shown.split()
+    surnames = [words[-1]] if len(words) > 1 else []
+    birth = normalize_name_part(birth_surname)
+    if birth and birth.casefold() not in {s.casefold() for s in surnames}:
+        surnames.append(birth)
+    given = words[:-1] if len(words) > 1 else words
+    for surname in surnames or [""]:
+        for firsts in ([*given], [given[0]]) if len(given) > 1 else ([*given],):
+            text = " ".join([*firsts, surname]).strip()
+            if text and text.casefold() not in {o.casefold() for o in out}:
+                out.append(text)
+    return out
+
+
 def nee_surname(name: str | None, birth_surname: str | None) -> str:
     """The birth surname to show as "née", or "" when it matches the displayed name."""
     birth = normalize_name_part(birth_surname)
@@ -1169,6 +1192,9 @@ def person_matches_query(person: dict[str, Any], query: str) -> bool:
     nick = str(person.get("nickname") or "").casefold()
     birth = birth_full_name(person.get("name"), person.get("birth_surname")).casefold()
     hay = f"{name} {nick} {birth}".strip()
+    variants = [v.casefold() for v in name_variants(person.get("name"), person.get("birth_surname"))]
+    if any(wanted == v or wanted in v for v in variants):
+        return True
     if wanted in hay:
         return True
     words = hay.split() + nickname_keys(nick)
@@ -1197,6 +1223,9 @@ def find_person_by_name(name: str) -> dict[str, Any] | None:
         if row:
             return dict(row)
         needle = name.casefold()
+        # Identity match: the full given names with the birth surname. A shorter
+        # "first last" form is a search hit only, since a middle name may mean a
+        # different person (see the Jonathan Reid Cole cluster test).
         born = conn.execute(
             """
             SELECT p.*, COUNT(f.id) AS named_faces

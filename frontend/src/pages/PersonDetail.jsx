@@ -372,7 +372,7 @@ export default function PersonDetail() {
         <form className="row person-sticky-name" onSubmit={saveName}>
           <div className="person-name-field">
             <label className="cluster-label person-field-label" htmlFor="person-full-name">
-              Full name (Married)
+              First name, Last name (Married)
             </label>
             <input
               id="person-full-name"
@@ -382,7 +382,7 @@ export default function PersonDetail() {
               autoComplete="off"
               autoCorrect="off"
               spellCheck={false}
-              aria-label="Full name (Married)"
+              aria-label="First name, Last name (Married)"
               aria-autocomplete="list"
               aria-expanded={nameHits.length > 0}
               disabled={saveState === "saving"}

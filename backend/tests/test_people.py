@@ -4819,7 +4819,7 @@ def test_client_log_endpoint_writes_app_log(tmp_path, monkeypatch):
 
 
 def test_birth_surname_helpers():
-    from photosort.people import birth_full_name, nee_surname
+    from photosort.people import UNKNOWN_NAME, birth_full_name, name_variants, nee_surname
 
     assert nee_surname("Jane Jones", "Smith") == "Smith"
     assert nee_surname("Jane Smith", "Smith") == ""
@@ -4828,6 +4828,10 @@ def test_birth_surname_helpers():
     assert birth_full_name("Alan Anthony Robinson", "Richardson") == "Alan Anthony Richardson"
     assert birth_full_name("Alan", "Richardson") == "Alan Richardson"
     assert birth_full_name("Alan Robinson", "") == ""
+    assert name_variants("Nora Jane Hale", "Pike") == ["Nora Jane Hale", "Nora Hale", "Nora Jane Pike", "Nora Pike"]
+    assert name_variants("Alan Robinson", "") == ["Alan Robinson"]
+    assert name_variants("Alan", "Pike") == ["Alan", "Alan Pike"]
+    assert name_variants(UNKNOWN_NAME + " 2", "Pike") == [UNKNOWN_NAME + " 2"]
 
 
 def test_person_birth_surname(tmp_path, monkeypatch):
@@ -4873,3 +4877,14 @@ def test_person_birth_surname(tmp_path, monkeypatch):
     cleared = client.patch(f"/api/people/{person['id']}", json={"birth_surname": ""}).json()
     assert cleared["birth_surname"] == ""
     assert cleared["nee"] == ""
+
+    middle = client.patch(
+        f"/api/people/{person['id']}", json={"name": "Alan Anthony Robinson", "birth_surname": "Richardson"}
+    ).json()
+    assert middle["name"] == "Alan Anthony Robinson"
+    assert find_person_by_name("alan anthony richardson")["id"] == person["id"]
+    assert find_person_by_name("alan richardson") is None  # a middle name may mean someone else
+    for q in ("alan robinson", "alan anthony robinson", "alan richardson", "alan anthony richardson"):
+        assert person_matches_query(middle, q), q
+        hit = client.get("/api/search", params={"q": q}).json()
+        assert "Alan Anthony Robinson" in {p["name"] for p in hit["people"]}, q

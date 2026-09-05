@@ -1,13 +1,37 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { completeUniqueFirstName, matchPeople, uniqueCatalogPerson, uniqueFirstName } from "./nameSuggest.js";
+import {
+  completeUniqueFirstName,
+  matchPeople,
+  nameVariants,
+  uniqueCatalogPerson,
+  uniqueFirstName,
+} from "./nameSuggest.js";
+
+test("nameVariants lists married and birth forms", () => {
+  assert.deepEqual(nameVariants("Nora Jane Hale", "Pike"), [
+    "Nora Jane Hale",
+    "Nora Hale",
+    "Nora Jane Pike",
+    "Nora Pike",
+  ]);
+  assert.deepEqual(nameVariants("Alan Robinson", ""), ["Alan Robinson"]);
+  assert.deepEqual(nameVariants("Alan Robinson", "Robinson"), ["Alan Robinson"]);
+});
 
 const people = [
   { id: 1, name: "Lila Cole" },
   { id: 2, name: "Adam Cole" },
   { id: 3, name: "Jordan Cole", nickname: "Jordy" },
   { id: 4, name: "Mara Cole", birth_surname: "Finch" },
+  { id: 5, name: "Nora Jane Hale", birth_surname: "Pike" },
 ];
+
+test("matchPeople finds married and birth forms with or without a middle name", () => {
+  for (const q of ["nora hale", "nora jane hale", "nora pike", "nora jane pike"]) {
+    assert.deepEqual(matchPeople(q, people).map((p) => p.name), ["Nora Jane Hale"], q);
+  }
+});
 
 test("matchPeople finds a person by birth surname", () => {
   assert.deepEqual(matchPeople("finch", people).map((p) => p.name), ["Mara Cole"]);
