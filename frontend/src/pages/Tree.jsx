@@ -177,7 +177,8 @@ function scorePerson(person, query) {
     const s = scoreOnePerson(person, needle);
     best = Math.max(best, i ? s - 3 : s);
   });
-  return best;
+  // Same score, prefer the person who has photos in the catalog.
+  return best > 0 && person?.catalog_id ? best + 2 : best;
 }
 
 function scoreOnePerson(person, needle) {

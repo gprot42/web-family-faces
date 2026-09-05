@@ -436,7 +436,7 @@ def _catalog_index() -> dict[str, dict[str, Any]]:
     return out
 
 
-def _tree_name_forms(person: dict[str, Any]) -> tuple[list[str], list[str], list[str]]:
+def _tree_name_forms(person: dict[str, Any]) -> tuple[list[str], list[str], list[str], set[str]]:
     """Exact keys, loose "first surname" keys, and given-name tokens for a tree person."""
     exact: list[str] = []
     for value in (
@@ -461,7 +461,27 @@ def _tree_name_forms(person: dict[str, Any]) -> tuple[list[str], list[str], list
         if full and full not in exact:
             exact.append(full)
     loose = [f"{given[0]} {surname}" for surname in surnames] if given else []
-    return exact, loose, given
+    # A married-name form made of one first name plus the husband's surname is
+    # no stronger than a loose "first surname" key: "Sarah Unknown" who married
+    # an Evans must not outrank "Sarah Louise Baum" who did the same.
+    weak = set()
+    married = str(person.get("married_surname") or "").lower()
+    if married and len(given) == 1:
+        weak.add(f"{given[0]} {married}")
+    return exact, loose, given, weak
+
+
+def _first_names_agree(a: str, b: str) -> bool:
+    from .people import _edit_distance
+
+    if a.startswith(b) or b.startswith(a):
+        return True
+    shortest = min(len(a), len(b))
+    if shortest >= 8:
+        return _edit_distance(a, b) <= 2
+    if shortest >= 5:
+        return _edit_distance(a, b) <= 1
+    return False
 
 
 def _catalog_hit(person: dict[str, Any], index: dict[str, Any]) -> dict[str, Any] | None:
@@ -469,22 +489,23 @@ def _catalog_hit(person: dict[str, Any], index: dict[str, Any]) -> dict[str, Any
     return claim[1] if claim else None
 
 
-def _catalog_claim(person: dict[str, Any], index: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:
-    """(tier, hit): 0 exact name, 1 first name plus surname, 2 token match."""
+def _catalog_claim(person: dict[str, Any], index: dict[str, Any]) -> tuple[int, dict[str, Any], int] | None:
+    """(tier, hit, matched given names): tier 0 exact name, 1 first name plus
+    surname, 2 token match. More matched given names is stronger evidence."""
     from .people import _token_matches
 
-    exact, loose, given = _tree_name_forms(person)
+    exact, loose, given, weak = _tree_name_forms(person)
     for key in exact:
         hit = index.get(key)
         if hit and _plausible(person, hit):
-            return 0, hit
+            return (1 if key in weak else 0), hit, max(1, len(given))
     for key in loose:
         hits = index.get(LOOSE + key) or []
         if isinstance(hits, dict):
             hits = [hits]
         hit = _pick_by_birth(person, hits)
         if hit:
-            return 1, hit
+            return 1, hit, 1
     # Last pass: same surname, every given name matches a token of the other
     # ("Alexandre Carl" ~ "Alex Carl"), and only one catalog person fits.
     surnames = {
@@ -494,6 +515,7 @@ def _catalog_claim(person: dict[str, Any], index: dict[str, Any]) -> tuple[int, 
     if not given or not surnames:
         return None
     found: list[dict[str, Any]] = []
+    matched = 0
     for cand in index.get(PEOPLE_KEY) or []:
         if not (cand["surnames"] & surnames) or not _plausible(person, cand):
             continue
@@ -501,17 +523,20 @@ def _catalog_claim(person: dict[str, Any], index: dict[str, Any]) -> tuple[int, 
         if not theirs:
             continue
         short, long_ = (given, theirs) if len(given) <= len(theirs) else (theirs, given)
-        # First names must agree by prefix ("Alexandre" ~ "Alex"), never by a
-        # one-letter slip ("Mary" is not "Mark"); a middle name alone must not
-        # pull in "Doris Evans" for "Claire Doris Evans".
-        first_a, first_b = long_[0], short[0]
-        if not (first_a.startswith(first_b) or first_b.startswith(first_a)):
+        # First names must agree: by prefix ("Alexandre" ~ "Alex") or, for
+        # longer names, by a spelling slip ("Alexandre" ~ "Alexander",
+        # "Catherine" ~ "Katherine"). Short names never slip: "Mary" is not
+        # "Mark". A middle name alone must not pull in "Doris Evans" for
+        # "Claire Doris Evans".
+        if not _first_names_agree(long_[0], short[0]):
             continue
-        if all(any(_token_matches(w, t) or _token_matches(t, w) for w in long_) for t in short):
+        rest_long = long_[1:]
+        if all(any(_token_matches(w, t) or _token_matches(t, w) for w in rest_long) for t in short[1:]):
             if cand["id"] not in {f["id"] for f in found}:
                 found.append(cand)
+                matched = len(short)
     if len(found) == 1:
-        return 2, {k: v for k, v in found[0].items() if k not in ("words", "surnames")}
+        return 2, {k: v for k, v in found[0].items() if k not in ("words", "surnames")}, matched
     return None
 
 
@@ -547,18 +572,22 @@ def _catalog_links(tree: dict[str, Any], index: dict[str, Any]) -> dict[str, dic
                 and len(tree_pairs.get(pair) or []) == 1
                 and (not hits[0].get("born_exact") or _plausible(person, hits[0]))
             ):
-                claim = (3, hits[0])
+                claim = (3, hits[0], 0)
         if not claim:
             continue
-        tier, hit = claim
+        tier, hit, matched = claim
         born_tree = (person.get("birth") or {}).get("year")
         born_hit = hit.get("born")
         gap = abs(int(born_tree) - int(born_hit)) if born_tree and born_hit else 10_000
-        claims.setdefault(int(hit["id"]), []).append((gap, tier, order, pid, hit))
+        # A gap of decades rules a claimant out; within that, the name decides
+        # (how many given names agree, then the tier) because the catalog's
+        # birth estimate is only good to about a decade.
+        far = 1 if gap > 40 else 0
+        claims.setdefault(int(hit["id"]), []).append((far, -matched, tier, gap, order, pid, hit))
     links: dict[str, dict[str, Any]] = {}
     for items in claims.values():
-        items.sort()
-        _gap, _tier, _order, pid, hit = items[0]
+        items.sort(key=lambda item: item[:5])
+        pid, hit = items[0][5], items[0][6]
         links[pid] = hit
     return links
 

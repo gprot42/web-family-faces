@@ -350,6 +350,8 @@ def test_catalog_hit_fallbacks():
             "I4": {"id": "I4", "name": "Darren James Evans", "given": "Darren James", "surname": "Evans", "birth": {"year": 1975}},
         }
     }
+    tree["people"]["I5"] = {"id": "I5", "name": "Sarah Unknown", "given": "Sarah", "surname": "Unknown",
+                            "married_surname": "Evans", "birth": {"year": 1959}}
     links = gedcom._catalog_links(tree, index)
     assert {k: v["id"] for k, v in links.items()} == {"I2": 53, "I4": 3}
 
@@ -372,6 +374,26 @@ def test_catalog_hit_fallbacks():
     }
     links2 = gedcom._catalog_links(tree2, index)
     assert {k: v["id"] for k, v in links2.items()} == {"E1": 279}
+
+    # Two Alexanders, one catalog "Alex Carl Evans" estimated 1976: the shared
+    # middle name outweighs a birth estimate that is only roughly right.
+    index3 = idx((61, "Alex Carl Evans", "", 1976))
+    assert gedcom._first_names_agree("alexandre", "alexander")
+    assert gedcom._first_names_agree("catherine", "katherine")
+    assert gedcom._first_names_agree("allan", "allen")
+    assert not gedcom._first_names_agree("mary", "mark")
+    assert not gedcom._first_names_agree("john", "joan")
+    tree3 = {
+        "people": {
+            "A1": {"id": "A1", "name": "Alexander Evans", "given": "Alexander", "surname": "Evans", "birth": {"year": 1973}},
+            "A2": {"id": "A2", "name": "Alexandre Carl Evans", "given": "Alexandre Carl", "surname": "Evans", "birth": {"year": 1983}},
+        }
+    }
+    assert {k: v["id"] for k, v in gedcom._catalog_links(tree3, index3).items()} == {"A2": 61}
+    # The catalog person renamed to "Alexander Carl Evans": the 1973 Alexander now
+    # matches on first name and surname, but the shared middle name still wins.
+    index4 = idx((61, "Alexander Carl Evans", "", 1976))
+    assert {k: v["id"] for k, v in gedcom._catalog_links(tree3, index4).items()} == {"A2": 61}
 
 
 def test_tree_list_carries_catalog_nicknames(tmp_path, monkeypatch):
