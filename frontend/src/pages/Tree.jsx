@@ -1077,7 +1077,7 @@ export default function Tree() {
           <h1>Family tree</h1>
           <p className="lede">
             Open a GEDCOM file (.ged) from Ancestry, FamilySearch, Gramps, or MacFamilyTree. The
-            file is stored on this Mac. Photo originals are not touched.
+            file is stored on this computer. Photo originals are not touched.
           </p>
         </div>
         <div className="page-head-actions">

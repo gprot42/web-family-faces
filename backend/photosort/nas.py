@@ -1,4 +1,9 @@
-"""Mount Synology / SMB shares through Finder so Keychain can supply the login."""
+"""Connect Synology / SMB shares.
+
+macOS mounts through Finder so Keychain supplies the login and the share
+appears under /Volumes. Windows connects with `net use` so the saved Windows
+credential is used and the share is reached by its \\server\share path.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +14,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
+from . import system
 from .browse import LOCAL_VOLUME_NAMES, remembered_volume_roots
 
 HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,250}[A-Za-z0-9])?$")
@@ -58,15 +64,47 @@ def _hosts_match(a: str | None, b: str | None) -> bool:
 
 
 def _volume_path(share: str) -> Path:
-    return Path("/Volumes") / share
+    if system.IS_WINDOWS:
+        for root in remembered_volume_roots():
+            parts = system.unc_parts(root)
+            if parts and parts[1].lower() == share.lower():
+                return Path(root)
+        host = preferred_host()
+        return Path(f"\\\\{host}\\{share}") if host else Path(f"\\\\?\\{share}")
+    if system.IS_MAC:
+        return Path("/Volumes") / share
+    return Path("/mnt") / share
 
 
-def is_mounted(share: str) -> bool:
-    path = _volume_path(share)
-    try:
-        return path.is_dir()
-    except OSError:
-        return False
+def share_path(share: str, host: str | None = None) -> str:
+    """Where a connected share is reached from, for the UI."""
+    if system.IS_WINDOWS and host:
+        return f"\\\\{host}\\{share}"
+    return str(_volume_path(share))
+
+
+def is_mounted(share: str, host: str | None = None) -> bool:
+    candidates = [_volume_path(share)]
+    if system.IS_WINDOWS and host:
+        candidates.insert(0, Path(f"\\\\{host}\\{share}"))
+    for path in candidates:
+        try:
+            if path.is_dir():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def remembered_hosts() -> list[str]:
+    """Servers of the UNC share roots the catalog has already used (Windows)."""
+    hosts: list[str] = []
+    for root in remembered_volume_roots():
+        parts = system.unc_parts(root)
+        host = _safe_host(parts[0]) if parts else None
+        if host and host not in hosts:
+            hosts.append(host)
+    return hosts
 
 
 def discover_smb_hosts(timeout: float = 1.6) -> list[str]:
@@ -159,6 +197,12 @@ def finder_recent_shares() -> list[str]:
 
 
 def preferred_host() -> str | None:
+    if system.IS_WINDOWS:
+        remembered = remembered_hosts()
+        if remembered:
+            return remembered[0]
+        bonjour = discover_smb_hosts()
+        return f"{bonjour[0].removesuffix('.local')}.local" if bonjour else None
     bonjour = discover_smb_hosts()
     finder = finder_last_smb_host()
     netauth = list(netauth_shares())
@@ -206,31 +250,37 @@ def mount_share(host: str, share: str, timeout: float = MOUNT_TIMEOUT) -> dict:
     share = _safe_share(share)
     if not host or not share:
         return {"share": share, "host": host, "ok": False, "mounted": False, "error": "Bad host or share name."}
-    if is_mounted(share):
+    if is_mounted(share, host):
         return {"share": share, "host": host, "ok": True, "mounted": True, "error": None}
     url = f"smb://{host}/{share}"
+    if system.IS_WINDOWS:
+        command = ["net", "use", f"\\\\{host}\\{share}", "/persistent:no"]
+    elif system.IS_MAC:
+        command = ["osascript", "-e", f'tell application "Finder" to mount volume "{url}"']
+    else:
+        command = ["gio", "mount", url]
     try:
         proc = subprocess.run(
-            ["osascript", "-e", f'tell application "Finder" to mount volume "{url}"'],
+            command,
             capture_output=True,
             text=True,
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        mounted = is_mounted(share)
+        mounted = is_mounted(share, host)
         return {
             "share": share,
             "host": host,
             "ok": mounted,
             "mounted": mounted,
-            "error": None if mounted else "Finder did not finish connecting. Check the login dialog.",
+            "error": None if mounted else "The system did not finish connecting. Check for a login prompt.",
         }
     except OSError as exc:
         return {"share": share, "host": host, "ok": False, "mounted": False, "error": str(exc)}
-    mounted = is_mounted(share)
+    mounted = is_mounted(share, host)
     err = None
     if proc.returncode != 0 or not mounted:
-        err = (proc.stderr or proc.stdout or "Finder could not mount the share.").strip()
+        err = (proc.stderr or proc.stdout or "Could not connect the share.").strip()
         if mounted:
             err = None
     return {"share": share, "host": host, "ok": mounted, "mounted": mounted, "error": err}
@@ -252,7 +302,7 @@ def mount_known(share: str | None = None, *, recent: bool = False) -> dict:
             "host": host,
             "ok": False,
             "items": [],
-            "error": "No SMB share names are known yet. Choose a folder or mount the volume in Finder.",
+            "error": f"No SMB share names are known yet. Choose a folder, or {system.mount_hint().lower()}.",
         }
     items = [mount_share(host, item) for item in wanted]
     ok = any(item["mounted"] for item in items)
@@ -268,6 +318,12 @@ def mount_known(share: str | None = None, *, recent: bool = False) -> dict:
 def shares_for_paths(paths: list[Path | str]) -> list[str]:
     names: list[str] = []
     for raw in paths or []:
+        unc = system.unc_parts(raw)
+        if unc:
+            share = _safe_share(unc[1])
+            if share and share not in names:
+                names.append(share)
+            continue
         parts = Path(raw).expanduser().parts
         if len(parts) >= 3 and parts[1] == "Volumes":
             share = _safe_share(parts[2])
@@ -276,8 +332,29 @@ def shares_for_paths(paths: list[Path | str]) -> list[str]:
     return names
 
 
+def unc_targets_for_paths(paths: list[Path | str]) -> list[tuple[str, str]]:
+    """(server, share) pairs from UNC album paths, for Windows."""
+    out: list[tuple[str, str]] = []
+    for raw in paths or []:
+        unc = system.unc_parts(raw)
+        if not unc:
+            continue
+        host, share = _safe_host(unc[0]), _safe_share(unc[1])
+        if host and share and (host, share) not in out:
+            out.append((host, share))
+    return out
+
+
 def mount_for_paths(paths: list[Path | str]) -> dict:
-    """Mount /Volumes shares used by stored album paths, if they are not up yet."""
+    """Connect the shares used by stored album paths, if they are not up yet."""
+    if system.IS_WINDOWS:
+        targets = [(h, s) for h, s in unc_targets_for_paths(paths) if not is_mounted(s, h)]
+        if not targets:
+            return {"ok": True, "items": [], "error": None, "host": preferred_host()}
+        items = [mount_share(h, s) for h, s in targets]
+        ok = any(item["mounted"] for item in items)
+        first_err = next((item["error"] for item in items if item["error"] and not item["mounted"]), None)
+        return {"host": targets[0][0], "ok": ok, "items": items, "error": None if ok else first_err}
     wanted = [share for share in shares_for_paths(paths) if not is_mounted(share)]
     if not wanted:
         return {"ok": True, "items": [], "error": None, "host": preferred_host()}

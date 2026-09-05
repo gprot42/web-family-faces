@@ -834,7 +834,7 @@ function FolderPhotos() {
       const raw = ex.message || "";
       setScanErr(
         /Folder not found|isn't available|aren't available|not mounted/i.test(raw)
-          ? "That album isn't on this Mac right now. Mount the NAS in Finder, then Find Known Faces. Files stay where they are."
+          ? "That album isn't on this computer right now. Connect the NAS, then Find Known Faces. Files stay where they are."
           : raw,
       );
     }

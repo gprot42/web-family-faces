@@ -113,7 +113,7 @@ export default function Search() {
       {err ? <p className="error">{err}</p> : null}
       {!q ? (
         <div className="card empty">
-          {byPhoto ? "Type a filename or folder. Results stay on this Mac." : "Type a name. Results stay on this Mac."}
+          {byPhoto ? "Type a filename or folder. Results stay on this computer." : "Type a name. Results stay on this computer."}
         </div>
       ) : null}
       {q && !data.people.length && !data.photos.length ? (

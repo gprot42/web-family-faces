@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import os
 import sqlite3
 import time
@@ -22,10 +24,18 @@ from .originals import (
     skip_dir,
     verify_file,
 )
+from . import system
 from .util import now_iso
 
 def _norm_folder(path: Path | str) -> str:
-    text = str(Path(path).expanduser()).rstrip("/")
+    text = str(Path(path).expanduser())
+    if system.IS_WINDOWS:
+        text = text.rstrip("\\/")
+        # "C:" alone means the drive's current folder; keep the root slash.
+        if re.fullmatch(r"[A-Za-z]:", text):
+            text += "\\"
+        return text or "\\"
+    text = text.rstrip("/")
     return text or "/"
 
 

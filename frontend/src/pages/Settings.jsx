@@ -134,7 +134,7 @@ export default function Settings() {
       setInfo(next);
       setKey("");
       setShow(false);
-      setOk(next.warning || "Key saved on this Mac.");
+      setOk(next.warning || "Key saved on this computer.");
     } catch (ex) {
       setErr(ex.message);
     } finally {
@@ -334,7 +334,7 @@ export default function Settings() {
           <p className="lede">
             Pick a theme and where names sit on a photo, choose whether listed albums update on
             their own, then add SuperGrok or an xAI key for famous-face lookup. Reset matching and
-            purge live at the bottom. Keys stay on this Mac, not in the photo catalog backup, and
+            purge live at the bottom. Keys stay on this computer, not in the photo catalog backup, and
             never go into the album.
           </p>
         </div>
@@ -716,7 +716,7 @@ export default function Settings() {
               className="secondary"
               disabled={busy || (!key && !info?.xai_key_set)}
               onClick={toggleShow}
-              {...tip(show ? "Hide the key on this screen." : "Show the xAI key saved on this Mac.")}
+              {...tip(show ? "Hide the key on this screen." : "Show the xAI key saved on this computer.")}
             >
               {show ? "Hide key" : "Show key"}
             </button>

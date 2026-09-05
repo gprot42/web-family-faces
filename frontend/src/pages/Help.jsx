@@ -19,7 +19,7 @@ export default function Help() {
           <h2>1. Choose folders, then Find Known Faces</h2>
           <p>
             On the home page click <strong>Choose folders</strong>. The app connects the Synology
-            NAS (Finder may ask for the login once). Tick a folder to include every album inside
+            NAS (your system may ask for the login once). Tick a folder to include every album inside
             it. Untick an album to skip it.{" "}
             <strong>Find Known Faces</strong> starts on its own for each new album. On Folder View,
             albums not in the catalog yet are listed first. Click <strong>Find Known Faces</strong>{" "}
@@ -123,7 +123,7 @@ export default function Help() {
             Scroll or pinch to zoom, drag to move, and click a person to center the tree on them.
             <strong> Entire tree</strong> shows everyone in the file, not only this person’s close relatives.
             Full screen expands the tree; Esc or Exit leaves it.
-            The file is stored on this Mac. If a name already exists
+            The file is stored on this computer. If a name already exists
             in Faces in DB View, you can jump to that person. Photo originals are not touched.
           </p>
         </section>

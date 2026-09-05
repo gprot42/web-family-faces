@@ -63,6 +63,9 @@ chmod +x scripts/app.sh scripts/dev.sh
 
 Open http://127.0.0.1:5174
 
+On Windows see [README.windows.md](README.windows.md); `scripts/app.cmd` and
+`scripts/app.py` do what `app.sh` does there.
+
 ```bash
 ./scripts/app.sh stop
 ./scripts/app.sh status

@@ -2137,7 +2137,7 @@ export default function PhotoDetail() {
           ) : null}
           {photo.file_available === false ? (
             <p className="error">
-              The original is offline. Showing the saved preview. Mount the NAS album in Finder to
+              The original is offline. Showing the saved preview. Connect the NAS album to
               open the full photo.
             </p>
           ) : null}

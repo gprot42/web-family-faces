@@ -152,7 +152,7 @@ export default function FolderPicker({ onSelect, onClose, selected = [], exclude
         setErr("");
       } else {
         setMountNote("");
-        setErr(result.error || "Could not mount the NAS. Sign in if Finder asks, then try again.");
+        setErr(result.error || "Could not mount the NAS. Sign in if your system asks, then try again.");
       }
     } catch (ex) {
       setMountNote("");
@@ -291,7 +291,7 @@ export default function FolderPicker({ onSelect, onClose, selected = [], exclude
             className="ghost"
             type="button"
             onClick={() => go("volumes")}
-            {...tip("List NAS shares mounted in Finder.")}
+            {...tip("List NAS shares that are connected.")}
           >
             NAS drives
           </button>
@@ -299,7 +299,7 @@ export default function FolderPicker({ onSelect, onClose, selected = [], exclude
             className="ghost"
             type="button"
             onClick={() => go(null)}
-            {...tip("Show folders on this Mac.")}
+            {...tip("Show folders on this computer.")}
           >
             This computer
           </button>
@@ -318,7 +318,7 @@ export default function FolderPicker({ onSelect, onClose, selected = [], exclude
             type="button"
             disabled={mounting}
             onClick={() => connectNas()}
-            {...tip("Connect the Synology NAS using the login already saved on this Mac.")}
+            {...tip("Connect the Synology NAS using the login already saved on this computer.")}
           >
             {mounting ? "Connecting…" : "Connect NAS"}
           </button>
@@ -365,8 +365,8 @@ export default function FolderPicker({ onSelect, onClose, selected = [], exclude
         {!loading && !mounting && isVolumesPath(current) && (listing?.entries || []).length > 0
         && (listing.entries || []).every((entry) => entry.mounted === false) ? (
           <p className="hint">
-            The Synology share is on the network but not connected. Click Connect NAS — Finder
-            may ask for the login once, then this Mac remembers it.
+            The Synology share is on the network but not connected. Click Connect NAS. Your system
+            may ask for the login once, then remembers it.
           </p>
         ) : null}
 

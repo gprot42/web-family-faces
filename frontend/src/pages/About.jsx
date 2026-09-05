@@ -29,7 +29,7 @@ export default function About() {
       <section className="card help-block">
         <h2>How AI is used</h2>
         <p>
-          Finding and matching faces is done on this Mac. The app uses{" "}
+          Finding and matching faces is done on this computer. The app uses{" "}
           <a href="https://github.com/deepinsight/insightface" target="_blank" rel="noreferrer">
             InsightFace
           </a>{" "}
@@ -92,7 +92,7 @@ export default function About() {
             <a href="https://grok.com" target="_blank" rel="noreferrer">
               grok.com
             </a>
-            ). Tokens stay in the app data folder on this Mac. Create an API key at{" "}
+            ). Tokens stay in the app data folder on this computer. Create an API key at{" "}
             <a href="https://console.x.ai/team/default/api-keys" target="_blank" rel="noreferrer">
               https://console.x.ai/team/default/api-keys
             </a>
@@ -103,7 +103,7 @@ export default function About() {
             A suggested name is not written until you click <strong>Use this name</strong>.
           </li>
         </ul>
-        <p className="hint">Version 0.1 · data stays on this Mac · originals stay on the NAS.</p>
+        <p className="hint">Version 0.1 · data stays on this computer · originals stay on the NAS.</p>
       </section>
 
       <p className="hint">

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from . import system
 from .config import DATA_DIR, IMAGE_EXTS
 from .originals import SKIP_DIR_NAMES
 
@@ -12,8 +13,14 @@ LOCAL_VOLUME_NAMES = {"macintosh hd", "macintosh hd - data", "recovery", "preboo
 VOLUMES_TOKEN = "volumes"
 
 
-def _volumes_dir() -> Path:
-    return Path("/Volumes")
+def _volumes_dir() -> Path | None:
+    """Where network shares appear as folders. Windows has no such folder: it
+    uses UNC paths and drive letters, so the "volumes" listing is built instead."""
+    if system.IS_WINDOWS:
+        return None
+    if system.IS_MAC:
+        return Path("/Volumes")
+    return Path("/mnt")
 
 
 def _is_volumes_request(path: str | None) -> bool:
@@ -34,7 +41,8 @@ def _is_volumes_request(path: str | None) -> bool:
 
 def _public_path(folder: Path) -> str | None:
     try:
-        if folder == _volumes_dir():
+        volumes = _volumes_dir()
+        if volumes is not None and folder == volumes:
             return VOLUMES_TOKEN
     except OSError:
         pass
@@ -42,6 +50,10 @@ def _public_path(folder: Path) -> str | None:
 
 
 def _volume_root_of(path: str | None) -> str | None:
+    r"""The share root an album path lives on: /Volumes/name or \server\share."""
+    unc = system.unc_root(path)
+    if unc:
+        return unc
     parts = Path(str(path or "")).parts
     if len(parts) >= 3 and parts[1].lower() == "volumes":
         return str(Path("/Volumes") / parts[2])
@@ -87,9 +99,12 @@ def remembered_volume_roots() -> list[str]:
 
 def _public_parent(folder: Path) -> str | None:
     try:
-        if folder == _volumes_dir() or folder.parent == folder:
+        volumes = _volumes_dir()
+        if (volumes is not None and folder == volumes) or folder.parent == folder:
             return None
-        if folder.parent == _volumes_dir():
+        if volumes is not None and folder.parent == volumes:
+            return VOLUMES_TOKEN
+        if system.IS_WINDOWS and system.unc_root(folder) == str(folder):
             return VOLUMES_TOKEN
     except OSError:
         pass
@@ -103,10 +118,51 @@ def _is_dir(path: Path) -> bool:
         return False
 
 
+def _windows_network_entries() -> list[dict]:
+    """Network drives and the UNC share roots the catalog has used."""
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for drive in system.drive_roots():
+        if drive["kind"] != "network":
+            continue
+        seen.add(drive["path"].lower())
+        entries.append(
+            {"name": drive["path"], "path": drive["path"], "kind": "nas-volume", "hint": "Network drive"}
+        )
+    for root in remembered_volume_roots():
+        if root.lower() in seen or not system.unc_parts(root):
+            continue
+        seen.add(root.lower())
+        mounted = _is_dir(Path(root))
+        entries.append(
+            {
+                "name": root,
+                "path": root,
+                "kind": "nas-volume",
+                "hint": "NAS share" if mounted else "Not connected",
+                "mounted": mounted,
+                "image_count": None,
+                "error": None if mounted else f"Not connected. {system.mount_hint()}, then click Refresh.",
+            }
+        )
+    return entries
+
+
 def roots() -> list[dict]:
     items: list[dict] = []
+    if system.IS_WINDOWS:
+        for drive in system.drive_roots():
+            kind = {"network": "nas-volume", "removable": "nas-volume"}.get(drive["kind"], "local-volume")
+            hint = {"network": "Network drive", "removable": "Removable"}.get(drive["kind"], system.local_label())
+            items.append({"name": drive["path"], "path": drive["path"], "kind": kind, "hint": hint})
+        for entry in _windows_network_entries():
+            if entry["kind"] == "nas-volume" and entry["name"] not in {i["name"] for i in items}:
+                items.append({k: entry[k] for k in ("name", "path", "kind", "hint")})
+        home = Path.home()
+        items.append({"name": "Home", "path": str(home), "kind": "home", "hint": system.local_label()})
+        return items
     volumes = _volumes_dir()
-    if volumes.is_dir():
+    if volumes is not None and volumes.is_dir():
         try:
             kids = sorted(volumes.iterdir(), key=lambda p: p.name.lower())
         except OSError:
@@ -120,13 +176,13 @@ def roots() -> list[dict]:
                     "name": child.name,
                     "path": str(child),
                     "kind": kind,
-                    "hint": "NAS / external" if kind == "nas-volume" else "This Mac",
+                    "hint": "NAS / external" if kind == "nas-volume" else system.local_label(),
                 }
             )
     home = Path.home()
-    items.append({"name": "Home", "path": str(home), "kind": "home", "hint": "This Mac"})
+    items.append({"name": "Home", "path": str(home), "kind": "home", "hint": system.local_label()})
     mnt = Path("/mnt")
-    if mnt.is_dir():
+    if mnt.is_dir() and volumes != mnt:
         items.append({"name": "mnt", "path": str(mnt), "kind": "mount", "hint": "Linux mounts"})
     return items
 
@@ -236,11 +292,19 @@ def list_folder(path: str | None) -> dict:
             "error": None,
         }
 
+    if _is_volumes_request(path) and system.IS_WINDOWS:
+        return {
+            "path": VOLUMES_TOKEN,
+            "parent": None,
+            "entries": sorted(_windows_network_entries(), key=lambda e: e["name"].lower()),
+            "image_count": 0,
+            "error": None,
+        }
     folder = _volumes_dir() if _is_volumes_request(path) else _abspath(Path(path))
     if not _is_dir(folder):
         return _offline_listing(
             folder,
-            message="Not a folder, or the NAS share is not mounted. Mount it in Finder first, then open NAS drives.",
+            message=f"Not a folder, or the NAS share is not connected. {system.mount_hint()}, then open NAS drives.",
         )
 
     entries: list[dict] = []
@@ -294,10 +358,10 @@ def list_folder(path: str | None) -> dict:
     except OSError as exc:
         return _offline_listing(
             folder,
-            message=f"Cannot read folder ({exc}). If this is a NAS, mount the share in Finder and retry.",
+            message=f"Cannot read folder ({exc}). If this is a NAS: {system.mount_hint().lower()} and retry.",
         )
 
-    if folder == _volumes_dir():
+    if _volumes_dir() is not None and folder == _volumes_dir():
         present = {Path(item["path"]).name.lower() for item in entries}
         for root in remembered_volume_roots():
             name = Path(root).name
@@ -313,7 +377,7 @@ def list_folder(path: str | None) -> dict:
                     "hint": "Not mounted",
                     "mounted": False,
                     "image_count": None,
-                    "error": "Not mounted. Connect this share in Finder, then click Refresh.",
+                    "error": f"Not mounted. {system.mount_hint()}, then click Refresh.",
                 }
             )
 

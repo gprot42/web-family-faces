@@ -176,23 +176,43 @@ BROWSERS: dict[str, dict[str, Any]] = {
         "label": "Brave",
         "darwin": ("Brave Browser", "Brave Browser Beta", "Brave Browser Nightly"),
         "linux": ("brave-browser", "brave"),
+        "win32": (r"BraveSoftware\Brave-Browser\Application\brave.exe",),
     },
     "chrome": {
         "label": "Chrome",
         "darwin": ("Google Chrome", "Google Chrome Beta", "Chromium"),
         "linux": ("google-chrome", "chromium", "chromium-browser"),
+        "win32": (r"Google\Chrome\Application\chrome.exe", r"Chromium\Application\chrome.exe"),
     },
     "firefox": {
         "label": "Firefox",
         "darwin": ("Firefox", "Firefox Developer Edition", "Firefox Nightly"),
         "linux": ("firefox",),
+        "win32": (r"Mozilla Firefox\firefox.exe",),
     },
     "safari": {
         "label": "Safari",
         "darwin": ("Safari",),
         "linux": (),
+        "win32": (),
     },
 }
+
+
+def _windows_browser_exe(spec: dict[str, Any]) -> str | None:
+    """The first installed executable for this browser under the usual Windows folders."""
+    import os
+    from pathlib import Path
+
+    bases = [os.environ.get(k) for k in ("ProgramFiles", "ProgramFiles(x86)", "LocalAppData")]
+    for rel in spec.get("win32", ()):
+        for base in bases:
+            if not base:
+                continue
+            candidate = Path(base).joinpath(*rel.split("\\"))
+            if candidate.is_file():
+                return str(candidate)
+    return None
 
 
 def listed_browsers() -> list[dict[str, Any]]:
@@ -208,6 +228,8 @@ def browser_available(browser_id: str) -> bool:
         return False
     if sys.platform == "darwin":
         return any(_darwin_app_exists(app) for app in spec["darwin"])
+    if sys.platform == "win32":
+        return _windows_browser_exe(spec) is not None
     return any(_which(name) for name in spec["linux"])
 
 
@@ -272,6 +294,17 @@ def launch_browser(browser_id: str, url: str) -> str:
             opened = subprocess.run(["open", "-a", app, url], capture_output=True, check=False)
             if opened.returncode == 0:
                 return app
+        raise OAuthError(f"{label} is not installed.")
+    if sys.platform == "win32":
+        exe = _windows_browser_exe(spec)
+        if exe:
+            subprocess.Popen([exe, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return exe
+        # Fall back to the default browser rather than fail the sign-in.
+        import webbrowser
+
+        if webbrowser.open(url):
+            return "default browser"
         raise OAuthError(f"{label} is not installed.")
     binary = next((name for name in spec["linux"] if _which(name)), None)
     if not binary:

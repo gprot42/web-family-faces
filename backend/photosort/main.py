@@ -396,7 +396,7 @@ def nas_status() -> dict[str, Any]:
     return {
         "host": host,
         "shares": [
-            {"name": name, "mounted": nas_mod.is_mounted(name), "path": f"/Volumes/{name}"}
+            {"name": name, "mounted": nas_mod.is_mounted(name, host), "path": nas_mod.share_path(name, host)}
             for name in shares
         ],
     }
