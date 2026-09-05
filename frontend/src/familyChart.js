@@ -1,8 +1,10 @@
-export const CARD_W = 176;
-export const CARD_H = 64;
+export const CARD_W = 200;
+export const CARD_H = 156;
+// The portrait circle sits above the card top; lines stop short of it.
+export const PHOTO_OVERHANG = 30;
 const GAP_X = 36;
-const ROW = 136;
-const PAD = 32;
+export const ROW = CARD_H + 104;
+const PAD = 48;
 
 function clamp(n, lo, hi) {
   return Math.min(hi, Math.max(lo, n));
@@ -377,6 +379,7 @@ function layoutEntireTree(chart) {
   const rows = [...new Set(Object.values(pos).map((p) => p.y))].sort((a, b) => a - b);
   for (const y of rows) packRowSubtrees(y);
   for (const y of rows) resolveRow(pos, y);
+  squeezeEmptyBands(pos);
 
   const size = shiftPositive(pos);
   const edges = [];
@@ -408,7 +411,7 @@ function layoutEntireTree(chart) {
     const mx = midX(partners, pos);
     const joinY = parentY + CARD_H;
     const childY = Math.min(...kids.map((id) => pos[id].y));
-    const barY = childY - 26;
+    const barY = childY - PHOTO_OVERHANG - 30;
     const kidPts = kids
       .map((id) => ({ x: pos[id].x + CARD_W / 2, y: pos[id].y, id }))
       .sort((a, b) => a.x - b.x);
@@ -446,7 +449,7 @@ function layoutEntireTree(chart) {
       }
       if (barHi - barLo > 1) lines.push({ type: "stem", x1: barLo, y1: barY, x2: barHi, y2: barY });
       for (const pt of cluster) {
-        lines.push({ type: "arrow", x1: pt.x, y1: barY, x2: pt.x, y2: pt.y - 6 });
+        lines.push({ type: "arrow", x1: pt.x, y1: barY, x2: pt.x, y2: pt.y - PHOTO_OVERHANG - 4 });
       }
     }
     return lines;
@@ -500,6 +503,26 @@ export function layoutFamilyTree(chart) {
     const spouse = (union.partners || []).find((id) => id && id !== focusId && nodeMap[id]);
     if (spouse && !pos[spouse]) {
       pos[spouse] = { x: spouseX, y: yFocus };
+      spouseX += CARD_W + GAP_X;
+    }
+  }
+
+  // Brothers and sisters share the focus row: older ones to the left, younger
+  // ones after the spouse, in the order the file lists them.
+  let leftX = pos[focusId].x;
+  for (const union of ancestorU) {
+    if (generationOf(union) !== 1) continue;
+    const kids = (union.children || []).filter((id) => nodeMap[id]);
+    const at = kids.indexOf(focusId);
+    if (at < 0) continue;
+    for (const id of kids.slice(0, at).reverse()) {
+      if (pos[id]) continue;
+      leftX -= CARD_W + GAP_X;
+      pos[id] = { x: leftX, y: yFocus };
+    }
+    for (const id of kids.slice(at + 1)) {
+      if (pos[id]) continue;
+      pos[id] = { x: spouseX, y: yFocus };
       spouseX += CARD_W + GAP_X;
     }
   }
@@ -593,7 +616,7 @@ export function layoutFamilyTree(chart) {
     if (!kids.length) return [];
     const mx = midX(partners, pos);
     const joinY = parentY + CARD_H;
-    const barY = Math.min(...kids.map((id) => pos[id].y)) - 26;
+    const barY = Math.min(...kids.map((id) => pos[id].y)) - PHOTO_OVERHANG - 30;
     const kidPts = kids
       .map((id) => ({ x: pos[id].x + CARD_W / 2, y: pos[id].y }))
       .sort((a, b) => a.x - b.x);
@@ -604,7 +627,7 @@ export function layoutFamilyTree(chart) {
       lines.push({ type: "stem", x1: left, y1: barY, x2: right, y2: barY });
     }
     for (const pt of kidPts) {
-      lines.push({ type: "arrow", x1: pt.x, y1: barY, x2: pt.x, y2: pt.y - 6 });
+      lines.push({ type: "arrow", x1: pt.x, y1: barY, x2: pt.x, y2: pt.y - PHOTO_OVERHANG - 4 });
     }
     return lines;
   }
@@ -628,8 +651,40 @@ export function layoutFamilyTree(chart) {
   return { nodes, edges, width: size.width, height: size.height, focus: focusId };
 }
 
-export function clampZoom(value) {
-  return clamp(Number(value) || 1, 0.12, 2.5);
+export function clampZoom(value, min = 0.12) {
+  const lo = clamp(Number(min) || 0.12, 0.005, 0.12);
+  return clamp(Number(value) || 1, lo, 2.5);
+}
+
+/** Close empty vertical bands that no card in any row occupies, keeping order. */
+export function squeezeEmptyBands(pos, maxGap = GAP_X * 3) {
+  const spans = Object.values(pos)
+    .map((p) => [p.x, p.x + CARD_W])
+    .sort((a, b) => a[0] - b[0]);
+  if (!spans.length) return;
+  const bands = [];
+  for (const [x0, x1] of spans) {
+    const last = bands[bands.length - 1];
+    if (last && x0 <= last[1] + maxGap) last[1] = Math.max(last[1], x1);
+    else bands.push([x0, x1]);
+  }
+  if (bands.length < 2) return;
+  // For each band after the first: shift = accumulated width removed to its left.
+  const shifts = [];
+  let removed = 0;
+  for (let i = 1; i < bands.length; i += 1) {
+    const gap = bands[i][0] - bands[i - 1][1];
+    removed += Math.max(0, gap - maxGap);
+    shifts.push({ from: bands[i][0], dx: removed });
+  }
+  for (const p of Object.values(pos)) {
+    let dx = 0;
+    for (const s of shifts) {
+      if (p.x >= s.from - 0.5) dx = s.dx;
+      else break;
+    }
+    p.x -= dx;
+  }
 }
 
 export function viewOnFocus(layout, viewW, viewH) {
@@ -675,4 +730,142 @@ export function treePersonIdForCatalog(people, catalogId, catalogName = "") {
   if (!needle) return "";
   const named = (people || []).filter((person) => String(person.name || "").trim().toLowerCase() === needle);
   return named.length === 1 ? named[0].id : "";
+}
+
+// ---------------------------------------------------------------------------
+// Double ancestor chart: the person in the middle with brothers and sisters,
+// the father's line fanning out to the right and the mother's to the left,
+// one column per generation. Cards are compact and horizontal.
+export const DCARD_W = 196;
+export const DCARD_H = 72;
+const DCOL = DCARD_W + 64;
+const DROW = DCARD_H + 14;
+export const DOUBLE_DEPTH = 5;
+
+export function layoutDoubleAncestorChart(chart, { depth = DOUBLE_DEPTH } = {}) {
+  const focusId = chart?.focus;
+  const nodeMap = Object.fromEntries((chart?.nodes || []).map((n) => [n.id, n]));
+  const unions = chart?.unions || [];
+  if (!focusId) return { nodes: [], edges: [], width: 400, height: 240, focus: focusId, mode: "double" };
+  if (!nodeMap[focusId]) nodeMap[focusId] = { id: focusId, name: focusId };
+
+  function parentsOf(id) {
+    const union = unions.find((u) => (u.children || []).includes(id) && (u.partners || []).some((p) => nodeMap[p]));
+    if (!union) return { father: null, mother: null, union: null };
+    const parts = (union.partners || []).filter((p) => nodeMap[p]);
+    let father = parts.find((p) => nodeMap[p].sex === "M");
+    let mother = parts.find((p) => p !== father && nodeMap[p].sex === "F");
+    if (!father && !mother) [father, mother] = parts;
+    else if (!father) father = parts.find((p) => p !== mother) || null;
+    else if (!mother) mother = parts.find((p) => p !== father) || null;
+    return { father: father || null, mother: mother || null, union };
+  }
+
+  const placed = {};
+  const links = [];
+
+  // Lay one side out in local coordinates: column d (1 = parent), rows from a
+  // cursor so every leaf gets its own row and each person sits between their parents.
+  function buildSide(rootId, dir, sideBranch) {
+    let cursor = 0;
+    const lastInCol = {};
+    function walk(id, d, branch) {
+      if (!id || placed[id]) return null;
+      const own = d === 1 ? sideBranch : branch;
+      let y;
+      let parents = { father: null, mother: null };
+      if (d < depth) parents = parentsOf(id);
+      const ups = [];
+      if (parents.father && !placed[parents.father]) {
+        ups.push(walk(parents.father, d + 1, d === 1 ? `${sideBranch}f` : own));
+      }
+      if (parents.mother && !placed[parents.mother]) {
+        ups.push(walk(parents.mother, d + 1, d === 1 ? `${sideBranch}m` : own));
+      }
+      const upYs = ups.filter((v) => v != null);
+      if (upYs.length) y = (Math.min(...upYs) + Math.max(...upYs)) / 2;
+      else {
+        y = cursor;
+        cursor += DROW;
+      }
+      if (lastInCol[d] != null && y < lastInCol[d] + DROW) y = lastInCol[d] + DROW;
+      lastInCol[d] = y;
+      placed[id] = { x: dir * d * DCOL, y, d, dir, branch: own };
+      for (const pid of [parents.father, parents.mother]) {
+        if (pid && placed[pid]) links.push({ child: id, parent: pid, dir });
+      }
+      return y;
+    }
+    return walk(rootId, 1, sideBranch);
+  }
+
+  const own = parentsOf(focusId);
+  // Right side first so the father's line is laid out before the mother's.
+  const yFather = own.father ? buildSide(own.father, 1, "f") : null;
+  const yMother = own.mother ? buildSide(own.mother, -1, "m") : null;
+  const sides = { 1: yFather, [-1]: yMother };
+  const focusY = Math.max(yFather ?? 0, yMother ?? 0);
+  for (const p of Object.values(placed)) {
+    const rootY = sides[p.dir];
+    if (rootY != null) p.y += focusY - rootY;
+  }
+  placed[focusId] = { x: 0, y: focusY, d: 0, dir: 0, branch: "self" };
+  // The parents sit either side of their child; say they are a couple.
+  const marriage = own.union?.marriage?.year ? `married ${own.union.marriage.year}` : own.father && own.mother ? "married" : "";
+  if (own.father) links.push({ child: focusId, parent: own.father, dir: 1, label: marriage });
+  if (own.mother) links.push({ child: focusId, parent: own.mother, dir: -1 });
+
+  // Brothers and sisters share the middle column, older above, younger below.
+  const kids = ((own.union || {}).children || []).filter((id) => nodeMap[id]);
+  const at = kids.indexOf(focusId);
+  if (at >= 0) {
+    kids.slice(0, at).reverse().forEach((id, i) => {
+      if (!placed[id]) placed[id] = { x: 0, y: focusY - DROW * (i + 1), d: 0, dir: 0, branch: "sibling" };
+    });
+    kids.slice(at + 1).forEach((id, i) => {
+      if (!placed[id]) placed[id] = { x: 0, y: focusY + DROW * (i + 1), d: 0, dir: 0, branch: "sibling" };
+    });
+  }
+
+  const xs = Object.values(placed).map((p) => p.x);
+  const ys = Object.values(placed).map((p) => p.y);
+  const dx = PAD - Math.min(...xs);
+  const dy = PAD + DCARD_H / 2 - Math.min(...ys);
+  for (const p of Object.values(placed)) {
+    p.x += dx;
+    p.y += dy;
+  }
+
+  const edges = [];
+  for (const link of links) {
+    const c = placed[link.child];
+    const p = placed[link.parent];
+    if (!c || !p) continue;
+    const cy = c.y + DCARD_H / 2;
+    const py = p.y + DCARD_H / 2;
+    const cx = link.dir > 0 ? c.x + DCARD_W : c.x;
+    const px = link.dir > 0 ? p.x : p.x + DCARD_W;
+    const bus = (cx + px) / 2;
+    if (link.label && Math.abs(py - cy) <= 0.5) {
+      edges.push({ type: "marriage", x1: cx, y1: cy, x2: px, y2: py, label: link.label });
+      continue;
+    }
+    edges.push({ type: "stem", x1: cx, y1: cy, x2: bus, y2: cy });
+    if (Math.abs(py - cy) > 0.5) edges.push({ type: "stem", x1: bus, y1: cy, x2: bus, y2: py });
+    edges.push({ type: "stem", x1: bus, y1: py, x2: px, y2: py });
+  }
+
+  const nodes = Object.entries(placed).map(([id, p]) => ({
+    ...(nodeMap[id] || { id, name: id }),
+    x: p.x,
+    y: p.y,
+    w: DCARD_W,
+    h: DCARD_H,
+    focus: id === focusId,
+    branch: p.branch,
+    compact: true,
+  }));
+  const width = Math.max(...nodes.map((n) => n.x)) + DCARD_W + PAD;
+  const height = Math.max(...nodes.map((n) => n.y)) + DCARD_H + PAD;
+  return { nodes, edges, width, height, focus: focusId, mode: "double" };
 }

@@ -46,6 +46,15 @@ async def _lifespan(_app: FastAPI):
     pipeline_mod.resume_interrupted_pipeline()
     catalog_mod.start_backup_loop()
     pipeline_mod.start_auto_update_loop()
+
+    def warm_tree_covers() -> None:
+        # The family tree shows Faces in DB View covers; ranking them takes seconds.
+        try:
+            gedcom_mod._catalog_index()
+        except Exception:
+            log_mod.exception("tree cover warm-up failed")
+
+    threading.Thread(target=warm_tree_covers, daemon=True, name="photosort-tree-covers").start()
     yield
 
 

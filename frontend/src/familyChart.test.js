@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CARD_H, CARD_W, layoutFamilyTree, treePersonIdForCatalog, viewOnFocus } from "./familyChart.js";
+import { CARD_H, CARD_W, ROW, layoutFamilyTree, treePersonIdForCatalog, viewOnFocus } from "./familyChart.js";
 
 test("layoutEntireTree places every generation of the file", () => {
   const layout = layoutFamilyTree({
@@ -124,13 +124,13 @@ test("viewOnFocus keeps the selected person on screen", () => {
   const layout = {
     nodes: [
       { id: "up", x: 200, y: 0, focus: false },
-      { id: "me", x: 200, y: 400, focus: true },
-      { id: "kid", x: 200, y: 800, focus: false },
+      { id: "me", x: 200, y: ROW, focus: true },
+      { id: "kid", x: 200, y: 2 * ROW, focus: false },
     ],
   };
   const view = viewOnFocus(layout, 800, 500);
   const cx = 200 + CARD_W / 2;
-  const cy = 400 + CARD_H / 2;
+  const cy = ROW + CARD_H / 2;
   const screenX = cx * view.zoom + view.x;
   const screenY = cy * view.zoom + view.y;
   assert.ok(screenX > 80 && screenX < 720, `x ${screenX}`);
@@ -148,4 +148,85 @@ test("treePersonIdForCatalog prefers a linked catalog id, then a unique name", (
   assert.equal(treePersonIdForCatalog(people, 99, "Ada Cole"), "I1");
   assert.equal(treePersonIdForCatalog(people, 99, "Sam Reed"), "");
   assert.equal(treePersonIdForCatalog(people, 0, "Ada Cole"), "");
+});
+
+test("squeezeEmptyBands closes wide empty bands but keeps order and overlaps", async () => {
+  const { squeezeEmptyBands } = await import("./familyChart.js");
+  const pos = {
+    a: { x: 0, y: 0 },
+    b: { x: 5000, y: 0 },
+    c: { x: 5100, y: 260 },
+    d: { x: 20000, y: 520 },
+  };
+  squeezeEmptyBands(pos, 100);
+  assert.equal(pos.a.x, 0);
+  assert.equal(pos.b.x, CARD_W + 100, "first gap closed to the max gap");
+  assert.equal(pos.c.x - pos.b.x, 100, "overlapping band keeps its internal spacing");
+  assert.equal(pos.d.x, pos.c.x + CARD_W + 100, "second gap closed");
+  assert.ok(pos.a.x < pos.b.x && pos.b.x < pos.c.x && pos.c.x < pos.d.x);
+});
+
+
+test("layoutFamilyTree places brothers and sisters beside the focus person", () => {
+  const chart = {
+    focus: "me",
+    nodes: [
+      { id: "dad", name: "Dad" },
+      { id: "mum", name: "Mum" },
+      { id: "big", name: "Older" },
+      { id: "me", name: "Me" },
+      { id: "wee", name: "Younger" },
+      { id: "wife", name: "Wife" },
+    ],
+    unions: [
+      { id: "F1", role: "parents", generation: 1, partners: ["dad", "mum"], children: ["big", "me", "wee"] },
+      { id: "F2", role: "own", partners: ["me", "wife"], children: [] },
+    ],
+  };
+  const layout = layoutFamilyTree(chart);
+  const byId = Object.fromEntries(layout.nodes.map((n) => [n.id, n]));
+  assert.equal(byId.big.y, byId.me.y, "older sibling on the focus row");
+  assert.equal(byId.wee.y, byId.me.y, "younger sibling on the focus row");
+  assert.ok(byId.big.x < byId.me.x, "older sibling to the left");
+  assert.ok(byId.wife.x > byId.me.x && byId.wee.x > byId.wife.x, "younger sibling after the spouse");
+  const row = layout.nodes.filter((n) => n.y === byId.me.y).sort((a, b) => a.x - b.x);
+  for (let i = 1; i < row.length; i += 1) {
+    assert.ok(row[i].x >= row[i - 1].x + CARD_W, `overlap ${row[i - 1].id} ${row[i].id}`);
+  }
+  const arrows = layout.edges.filter((e) => e.type === "arrow" && e.y2 < byId.me.y);
+  assert.equal(arrows.length, 3, "one descent arrow per child");
+});
+
+test("layoutDoubleAncestorChart fans the father right and the mother left", async () => {
+  const { layoutDoubleAncestorChart, DCARD_W, DCARD_H } = await import("./familyChart.js");
+  const chart = {
+    focus: "me",
+    nodes: [
+      { id: "me", name: "Me", sex: "M" },
+      { id: "sis", name: "Sister", sex: "F" },
+      { id: "dad", name: "Dad", sex: "M" },
+      { id: "mum", name: "Mum", sex: "F" },
+      { id: "gf", name: "Grandad", sex: "M" },
+      { id: "gm", name: "Granny", sex: "F" },
+      { id: "mgm", name: "Nana", sex: "F" },
+    ],
+    unions: [
+      { id: "F1", role: "parents", generation: 1, partners: ["dad", "mum"], children: ["sis", "me"], marriage: { year: 1970 } },
+      { id: "F2", role: "grandparents", generation: 2, partners: ["gf", "gm"], children: ["dad"] },
+      { id: "F3", role: "grandparents", generation: 2, partners: ["mgm"], children: ["mum"] },
+    ],
+  };
+  const layout = layoutDoubleAncestorChart(chart);
+  const byId = Object.fromEntries(layout.nodes.map((n) => [n.id, n]));
+  assert.ok(byId.dad.x > byId.me.x && byId.gf.x > byId.dad.x, "father's line goes right");
+  assert.ok(byId.mum.x < byId.me.x && byId.mgm.x < byId.mum.x, "mother's line goes left");
+  assert.equal(byId.sis.x, byId.me.x, "sister in the middle column");
+  assert.ok(byId.sis.y < byId.me.y, "older sister above");
+  assert.ok(byId.gf.y < byId.dad.y + DCARD_H / 2 && byId.gm.y > byId.dad.y - DCARD_H / 2, "father between his parents");
+  assert.ok(Math.abs(byId.gm.y - byId.gf.y) >= DCARD_H, "grandparents do not overlap");
+  assert.equal(byId.me.w, DCARD_W);
+  assert.ok(layout.edges.length >= 5, "connectors drawn");
+  const wed = layout.edges.find((e) => e.type === "marriage");
+  assert.equal(wed?.label, "married 1970", "parents shown as a couple");
+  assert.ok(layout.nodes.every((n) => n.x >= 0 && n.y >= 0));
 });

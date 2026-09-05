@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 import json
 import re
 from pathlib import Path
@@ -194,6 +196,7 @@ def parse_gedcom(text: str) -> dict[str, Any]:
             }
 
     _link_family_pointers(people, families)
+    _fill_married_surnames(people, families)
     if not people:
         raise GedcomError("That file has no people in it.")
     return {"source": source, "people": people, "families": families}
@@ -231,56 +234,330 @@ def _brief(person: dict[str, Any] | None) -> dict[str, Any] | None:
         "lifespan": person.get("lifespan") or "",
         "birth_year": (person.get("birth") or {}).get("year"),
         "surname": person.get("surname") or "",
+        "married_surname": person.get("married_surname") or "",
+        "birth": person.get("birth"),
+        "death": person.get("death"),
+        "occupation": person.get("occupation") or "",
     }
+
+
+def _fill_married_surnames(people: dict[str, dict[str, Any]], families: dict[str, dict[str, Any]]) -> None:
+    """A wife recorded under her birth surname also carries her husband's surname."""
+    for fam in families.values():
+        husband = people.get(fam.get("husband") or "")
+        wife = people.get(fam.get("wife") or "")
+        if not husband or not wife:
+            continue
+        his = (husband.get("surname") or "").strip()
+        hers = (wife.get("surname") or "").strip()
+        if his and his.casefold() != hers.casefold() and not wife.get("married_surname"):
+            wife["married_surname"] = his
 
 
 def _person_ref(tree: dict[str, Any], pid: str) -> dict[str, Any] | None:
     return _brief((tree.get("people") or {}).get(pid))
 
 
+_cover_cache: dict[int, int] = {}
+_cover_cache_stamp: tuple[Any, ...] | None = None
+_cover_lock = threading.Lock()
+
+
+def _catalog_cover_stamp(conn) -> tuple[Any, ...]:
+    """Changes whenever a face is added, renamed, junked, or a cover is pinned."""
+    faces = conn.execute(
+        "SELECT COUNT(*), IFNULL(MAX(id), 0), IFNULL(SUM(person_id), 0), "
+        "SUM(CASE WHEN assigned_how = 'junk' THEN 1 ELSE 0 END) FROM faces"
+    ).fetchone()
+    people = conn.execute("SELECT COUNT(*), IFNULL(SUM(cover_face_id), 0) FROM people").fetchone()
+    return tuple(faces) + tuple(people)
+
+
+def _catalog_covers(conn) -> dict[int, int]:
+    """The same cover crop Faces in DB View shows: a pinned cover, else the ranked pick.
+
+    The ranking scans every named face, so it is cached until the catalog changes."""
+    global _cover_cache, _cover_cache_stamp
+    stamp = _catalog_cover_stamp(conn)
+    if _cover_cache_stamp == stamp:
+        return _cover_cache
+    # One ranking at a time: a page request arriving during the startup
+    # warm-up waits for that result instead of running a second scan.
+    with _cover_lock:
+        if _cover_cache_stamp == stamp:
+            return _cover_cache
+        from . import people as people_mod
+
+        covers: dict[int, int] = {}
+        for row in people_mod._list_people_covers_lite():
+            face_id = row.get("cover_face_id")
+            if face_id:
+                covers[int(row["id"])] = int(face_id)
+        _cover_cache = covers
+        _cover_cache_stamp = stamp
+        return covers
+
+
+LOOSE = "~"
+PEOPLE_KEY = "*people"
+PAIRS_KEY = "*pairs"
+_SUFFIXES = {"snr", "jnr", "sr", "jr", "sr.", "jr.", "senior", "junior", "ii", "iii", "iv"}
+
+
+def _name_words(name: str) -> list[str]:
+    """Lower-case words without a generational suffix: "George Barnes Snr" -> george barnes."""
+    words = str(name or "").lower().split()
+    while len(words) > 1 and words[-1].strip(".,") in _SUFFIXES:
+        words.pop()
+    return words
+
+
+def _pick_by_birth(person: dict[str, Any], hits: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Among same-name catalog people, the one whose birth year clearly fits."""
+    hits = [h for h in hits if _plausible(person, h)]
+    if len(hits) == 1:
+        return hits[0]
+    born = (person.get("birth") or {}).get("year")
+    if not born or len(hits) < 2:
+        return None
+    ranked = sorted(
+        ((abs(int(born) - int(h["born"])), h) for h in hits if h.get("born")),
+        key=lambda item: item[0],
+    )
+    if not ranked or ranked[0][0] > BORN_TOLERANCE:
+        return None
+    if len(ranked) > 1 and ranked[1][0] - ranked[0][0] < 10:
+        return None
+    return ranked[0][1]
+MIN_DATED_FACES = 3
+BORN_TOLERANCE = 70
+
+
+def _plausible(person: dict[str, Any], hit: dict[str, Any] | None) -> bool:
+    """A same-name catalog person born about a century apart is someone else.
+
+    The catalog's birth estimate comes from photo dates minus estimated ages,
+    and scanned prints carry the scan date, so it runs decades late for older
+    relatives. Only a very wide gap is decisive; closer calls are settled by
+    competition between tree people in `_catalog_links`."""
+    if not hit:
+        return False
+    born_tree = (person.get("birth") or {}).get("year")
+    born_hit = hit.get("born")
+    if not born_tree or not born_hit:
+        return True
+    return abs(int(born_tree) - int(born_hit)) <= BORN_TOLERANCE
+
+
 def _catalog_index() -> dict[str, dict[str, Any]]:
+    """Catalog names to link tree people with photos.
+
+    Exact keys: the full name, its birth-surname forms, and nicknames. Loose
+    keys (prefixed "~"): first name plus surname, only when that pair is unique
+    in the catalog. A "*people" entry lists everyone for a last token-based pass.
+    People with named faces come first so a duplicate with no photos never wins.
+    """
     from .db import connect, init_db
-    from .people import birth_full_name
+    from .people import name_variants
 
     conn = connect()
     init_db(conn)
     try:
         rows = conn.execute(
-            "SELECT id, name, nickname, birth_surname FROM people WHERE name IS NOT NULL AND name != ''"
+            """
+            SELECT p.id, p.name, p.nickname, p.birth_surname, p.birth_year,
+                   (SELECT COUNT(*) FROM faces f
+                    WHERE f.person_id = p.id AND IFNULL(f.assigned_how, '') != 'junk') AS faces,
+                   (SELECT COUNT(*) FROM faces f JOIN photos ph ON ph.id = f.photo_id
+                    WHERE f.person_id = p.id AND f.age_est IS NOT NULL AND ph.taken_at IS NOT NULL
+                      AND IFNULL(f.assigned_how, '') != 'junk') AS dated,
+                   (SELECT AVG(CAST(substr(ph.taken_at, 1, 4) AS INTEGER) - f.age_est)
+                    FROM faces f JOIN photos ph ON ph.id = f.photo_id
+                    WHERE f.person_id = p.id AND f.age_est IS NOT NULL AND ph.taken_at IS NOT NULL
+                      AND IFNULL(f.assigned_how, '') != 'junk') AS born_est
+            FROM people p
+            WHERE p.name IS NOT NULL AND p.name != ''
+            ORDER BY faces DESC, p.id
+            """
         ).fetchall()
+        covers = _catalog_covers(conn)
     finally:
         conn.close()
-    out: dict[str, dict[str, Any]] = {}
+    from .serialize import face_crop_url
+
+    out: dict[str, Any] = {}
+    loose: dict[str, list[dict[str, Any]]] = {}
+    pairs: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    everyone: list[dict[str, Any]] = []
     for row in rows:
         hit = {"id": int(row["id"]), "name": row["name"]}
-        keys = [str(row["name"] or "").strip().lower()]
-        birth = birth_full_name(row["name"], row["birth_surname"] if "birth_surname" in row.keys() else "")
-        if birth:
-            keys.append(birth.lower())
+        face_id = covers.get(int(row["id"]))
+        if face_id:
+            hit["cover_url"] = face_crop_url(face_id, 0, 192)
+        # When they were born: the saved year, else photo dates minus estimated ages.
+        if row["birth_year"]:
+            hit["born"] = int(row["birth_year"])
+            hit["born_exact"] = True
+        elif row["born_est"] is not None and int(row["dated"] or 0) >= MIN_DATED_FACES:
+            hit["born"] = int(round(float(row["born_est"])))
+        name = str(row["name"] or "").strip()
+        birth = row["birth_surname"] if "birth_surname" in row.keys() else ""
         nick = str(row["nickname"] if "nickname" in row.keys() else "") or ""
+        exact = [name.lower()]
+        exact.extend(v.lower() for v in name_variants(name, birth))
         for part in re.split(r"[,;/]", nick):
-            keys.append(part.strip().lower())
-        for key in keys:
+            exact.append(part.strip().lower())
+        words = _name_words(name)
+        exact.append(" ".join(words))
+        if len(words) > 2:
+            # "darren evans" for "Darren James Evans": exact for the catalog person,
+            # loose when a tree name carries a different middle name.
+            exact = [k for k in exact if k != f"{words[0]} {words[-1]}"]
+        for key in exact:
             if key and key not in out:
                 out[key] = hit
+        for surname in {words[-1], str(birth or "").lower()} if len(words) > 1 else set():
+            if not surname:
+                continue
+            key = f"{words[0]} {surname}"
+            bucket = loose.setdefault(key, [])
+            if all(h["id"] != hit["id"] for h in bucket):
+                bucket.append(hit)
+        if birth and len(words) > 1:
+            pairs.setdefault((str(birth).lower(), words[-1]), []).append(hit)
+        everyone.append({**hit, "words": words, "surnames": {words[-1], str(birth or "").lower()} - {""}})
+    for key, hits in loose.items():
+        out[LOOSE + key] = hits
+    out[PEOPLE_KEY] = everyone
+    out[PAIRS_KEY] = pairs
     return out
 
 
-def _catalog_hit(person: dict[str, Any], index: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
-    names = []
+def _tree_name_forms(person: dict[str, Any]) -> tuple[list[str], list[str], list[str]]:
+    """Exact keys, loose "first surname" keys, and given-name tokens for a tree person."""
+    exact: list[str] = []
     for value in (
         person.get("name"),
         person.get("nickname"),
         f"{person.get('given') or ''} {person.get('surname') or ''}".strip(),
     ):
         key = str(value or "").strip().lower()
-        if key and key not in names:
-            names.append(key)
-    for key in names:
+        if key and key not in exact:
+            exact.append(key)
+    given = str(person.get("given") or "").lower().split()
+    if not given:
+        words = str(person.get("name") or "").lower().split()
+        given = words[:-1] if len(words) > 1 else words
+    surnames = [
+        str(person.get("surname") or "").lower(),
+        str(person.get("married_surname") or "").lower(),
+    ]
+    surnames = [x for x in surnames if x]
+    for surname in surnames:
+        full = " ".join([*given, surname])
+        if full and full not in exact:
+            exact.append(full)
+    loose = [f"{given[0]} {surname}" for surname in surnames] if given else []
+    return exact, loose, given
+
+
+def _catalog_hit(person: dict[str, Any], index: dict[str, Any]) -> dict[str, Any] | None:
+    claim = _catalog_claim(person, index)
+    return claim[1] if claim else None
+
+
+def _catalog_claim(person: dict[str, Any], index: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:
+    """(tier, hit): 0 exact name, 1 first name plus surname, 2 token match."""
+    from .people import _token_matches
+
+    exact, loose, given = _tree_name_forms(person)
+    for key in exact:
         hit = index.get(key)
+        if hit and _plausible(person, hit):
+            return 0, hit
+    for key in loose:
+        hits = index.get(LOOSE + key) or []
+        if isinstance(hits, dict):
+            hits = [hits]
+        hit = _pick_by_birth(person, hits)
         if hit:
-            return hit
+            return 1, hit
+    # Last pass: same surname, every given name matches a token of the other
+    # ("Alexandre Carl" ~ "Alex Carl"), and only one catalog person fits.
+    surnames = {
+        str(person.get("surname") or "").lower(),
+        str(person.get("married_surname") or "").lower(),
+    } - {""}
+    if not given or not surnames:
+        return None
+    found: list[dict[str, Any]] = []
+    for cand in index.get(PEOPLE_KEY) or []:
+        if not (cand["surnames"] & surnames) or not _plausible(person, cand):
+            continue
+        theirs = cand["words"][:-1]
+        if not theirs:
+            continue
+        short, long_ = (given, theirs) if len(given) <= len(theirs) else (theirs, given)
+        # First names must agree by prefix ("Alexandre" ~ "Alex"), never by a
+        # one-letter slip ("Mary" is not "Mark"); a middle name alone must not
+        # pull in "Doris Evans" for "Claire Doris Evans".
+        first_a, first_b = long_[0], short[0]
+        if not (first_a.startswith(first_b) or first_b.startswith(first_a)):
+            continue
+        if all(any(_token_matches(w, t) or _token_matches(t, w) for w in long_) for t in short):
+            if cand["id"] not in {f["id"] for f in found}:
+                found.append(cand)
+    if len(found) == 1:
+        return 2, {k: v for k, v in found[0].items() if k not in ("words", "surnames")}
     return None
+
+
+def _catalog_links(tree: dict[str, Any], index: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Tree id -> catalog hit, one tree person per catalog person.
+
+    When several tree people claim the same catalog person (three Sarahs for
+    one "Sarah Evans"), keep the one born closest to the catalog estimate,
+    then the tighter name tier. The rest stay unlinked rather than wrong."""
+    people = tree.get("people") or {}
+    # Birth surname plus married surname, counted on the tree side. A pair that
+    # is unique in both the tree and the catalog identifies a woman even when
+    # the two records spell her first name differently (Eleanor / Helena).
+    tree_pairs: dict[tuple[str, str], list[str]] = {}
+    for pid, person in people.items():
+        birth = str(person.get("surname") or "").lower()
+        married = str(person.get("married_surname") or "").lower()
+        if birth and married:
+            tree_pairs.setdefault((birth, married), []).append(pid)
+    catalog_pairs = index.get(PAIRS_KEY) or {}
+    claims: dict[int, list[tuple[float, int, int, str, dict[str, Any]]]] = {}
+    for order, (pid, person) in enumerate(people.items()):
+        claim = _catalog_claim(person, index)
+        if not claim:
+            birth = str(person.get("surname") or "").lower()
+            married = str(person.get("married_surname") or "").lower()
+            pair = (birth, married)
+            hits = catalog_pairs.get(pair) or []
+            # The estimate from scanned prints runs decades late, so only a
+            # saved birth year can veto a unique surname pair.
+            if (
+                len(hits) == 1
+                and len(tree_pairs.get(pair) or []) == 1
+                and (not hits[0].get("born_exact") or _plausible(person, hits[0]))
+            ):
+                claim = (3, hits[0])
+        if not claim:
+            continue
+        tier, hit = claim
+        born_tree = (person.get("birth") or {}).get("year")
+        born_hit = hit.get("born")
+        gap = abs(int(born_tree) - int(born_hit)) if born_tree and born_hit else 10_000
+        claims.setdefault(int(hit["id"]), []).append((gap, tier, order, pid, hit))
+    links: dict[str, dict[str, Any]] = {}
+    for items in claims.values():
+        items.sort()
+        _gap, _tier, _order, pid, hit = items[0]
+        links[pid] = hit
+    return links
 
 
 def person_detail(
@@ -330,7 +607,7 @@ def person_detail(
         "parents": parents,
         "spouses": spouses,
         "children": children,
-        "catalog": _catalog_hit(person, catalog),
+        "catalog": _catalog_links(tree, catalog).get(person_id),
         "chart": family_chart(tree, person_id, catalog, entire=entire),
     }
     return payload
@@ -424,6 +701,7 @@ def family_chart(
     if person_id not in people:
         raise KeyError(person_id)
     catalog = catalog if catalog is not None else _catalog_index()
+    links = _catalog_links(tree, catalog)
     nodes: dict[str, dict[str, Any]] = {}
     unions: list[dict[str, Any]] = []
     seen_unions: set[str] = set()
@@ -435,9 +713,11 @@ def family_chart(
         if not raw:
             return
         item = _brief(raw) or {"id": pid, "name": pid}
-        hit = _catalog_hit(raw, catalog)
+        hit = links.get(pid)
         if hit:
             item["catalog_id"] = hit["id"]
+            if hit.get("cover_url"):
+                item["cover_url"] = hit["cover_url"]
         nodes[pid] = item
 
     def add_union(fid: str, role: str, generation: int | None = None) -> None:
@@ -523,10 +803,11 @@ def family_chart(
 
 def tree_public(tree: dict[str, Any], *, filename: str = "", loaded_at: str = "") -> dict[str, Any]:
     catalog = _catalog_index()
+    links = _catalog_links(tree, catalog)
     people = []
     for person in (tree.get("people") or {}).values():
         item = _brief(person) or {}
-        hit = _catalog_hit(person, catalog)
+        hit = links.get(person["id"])
         if hit:
             item["catalog_id"] = hit["id"]
         people.append(item)

@@ -1,27 +1,69 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import { CARD_H, CARD_W, clampZoom, layoutFamilyTree, treePersonIdForCatalog, viewOnFocus, wheelZoomFactor } from "../familyChart.js";
-import { queryMatchesName } from "../nameSuggest.js";
+import {
+  CARD_H,
+  CARD_W,
+  clampZoom,
+  layoutDoubleAncestorChart,
+  layoutFamilyTree,
+  treePersonIdForCatalog,
+  viewOnFocus,
+  wheelZoomFactor,
+} from "../familyChart.js";
+import { nameVariants, queryMatchesName } from "../nameSuggest.js";
 import { enterBrowserFullscreen, exitBrowserFullscreen } from "../play.js";
 import { tip } from "../tip.js";
 
-function shortName(name) {
-  const text = String(name || "");
-  return text.length > 22 ? `${text.slice(0, 21)}…` : text;
+// Married name first, birth surname as née: "Joan Margaret Evans (née Henbrey)".
+export function cardName(node) {
+  const name = String(node?.name || "").trim();
+  const married = String(node?.married_surname || "").trim();
+  if (!married) return name;
+  const birth = String(node?.surname || "").trim();
+  const words = name.split(/\s+/).filter(Boolean);
+  const endsWithBirth = birth && words.length > 1 && words[words.length - 1].toLowerCase() === birth.toLowerCase();
+  if (!endsWithBirth) return `${name} (${married})`;
+  return `${words.slice(0, -1).join(" ")} ${married} (née ${birth})`;
+}
+
+function PersonGlyph() {
+  return (
+    <svg viewBox="0 0 64 64" aria-hidden="true" className="ged-glyph">
+      <circle cx="32" cy="24" r="12" />
+      <path d="M12 56c2-12 10-18 20-18s18 6 20 18z" />
+    </svg>
+  );
+}
+
+function CardFact({ label, event, text }) {
+  const date = String(event?.date || "").trim();
+  const place = String(event?.place || "").trim();
+  const value = text || date;
+  if (!value && !place) return null;
+  return (
+    <span className="ged-fact">
+      <em>{label}</em>
+      {value ? <span>{value}</span> : null}
+      {place ? <small title={place}>{place}</small> : null}
+    </span>
+  );
 }
 
 function scorePerson(person, needle) {
   const name = String(person?.name || "").toLowerCase();
   const surname = String(person?.surname || "").toLowerCase();
+  const married = String(person?.married_surname || "").toLowerCase();
   const nick = String(person?.nickname || "").toLowerCase();
-  const hay = `${name} ${surname} ${nick}`.replace(/\s+/g, " ").trim();
-  if (!queryMatchesName(needle, hay)) return 0;
+  // Tree names carry the birth surname; a wife is also known by her married one.
+  const variants = nameVariants(name, married).map((v) => v.toLowerCase());
+  const hay = `${name} ${surname} ${married} ${nick}`.replace(/\s+/g, " ").trim();
+  if (!queryMatchesName(needle, hay) && !variants.some((v) => queryMatchesName(needle, v))) return 0;
   const tokens = needle.split(/\s+/).filter(Boolean);
-  const words = `${name} ${nick}`.split(/\s+/).filter(Boolean);
-  if (name === needle || nick === needle) return 100;
-  if (name.startsWith(needle) || nick.startsWith(needle)) return 90;
-  if (surname.startsWith(needle)) return 85;
+  const words = `${name} ${married} ${nick}`.split(/\s+/).filter(Boolean);
+  if (name === needle || nick === needle || variants.includes(needle)) return 100;
+  if (name.startsWith(needle) || nick.startsWith(needle) || variants.some((v) => v.startsWith(needle))) return 90;
+  if (surname.startsWith(needle) || (married && married.startsWith(needle))) return 85;
   if (tokens.every((token) => words.some((word) => word.startsWith(token)))) return 80;
   if (words.some((word) => word.startsWith(needle))) return 70;
   return 55;
@@ -97,7 +139,7 @@ function NameSearch({
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => onJump(item.id)}
               >
-                <span>{item.name}</span>
+                <span>{cardName(item)}</span>
                 {item.lifespan || item.source === "catalog" ? (
                   <span className="hint">{item.lifespan || "In photos"}</span>
                 ) : null}
@@ -110,18 +152,32 @@ function NameSearch({
   );
 }
 
-function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire }) {
-  const layout = useMemo(() => layoutFamilyTree(chart), [chart]);
+// Which person the entire-tree view last opened on. Switching person while the
+// whole file is shown centres on them; switching into the view fits everything.
+let lastEntireFocus = null;
+
+function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire, mode = "one", onToggleDouble }) {
+  const double = mode === "double";
+  const layout = useMemo(
+    () => (double ? layoutDoubleAncestorChart(chart) : layoutFamilyTree(chart)),
+    [chart, double],
+  );
+  const focusName = cardName(layout.nodes.find((n) => n.focus));
   const stageRef = useRef(null);
   const zoomRef = useRef(1);
   const panRef = useRef({ x: 0, y: 0 });
   const dragRef = useRef(null);
+  // Entire tree: allow zooming out far enough to see all of it.
+  const minZoomRef = useRef(0.12);
+  const movedRef = useRef(false);
+  const openRef = useRef(onOpen);
+  openRef.current = onOpen;
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
 
   function applyZoom(next, origin) {
-    const z = clampZoom(next);
+    const z = clampZoom(next, minZoomRef.current);
     const prev = zoomRef.current;
     const p = panRef.current;
     if (origin && prev > 0) {
@@ -155,7 +211,8 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
     const pad = 36;
     const sx = (el.clientWidth - pad * 2) / layout.width;
     const sy = (el.clientHeight - pad * 2) / layout.height;
-    const z = clampZoom(Math.min(sx, sy, 1.15));
+    minZoomRef.current = Math.min(0.12, Math.min(sx, sy));
+    const z = clampZoom(Math.min(sx, sy, 1.15), minZoomRef.current);
     applyView({
       zoom: z,
       x: (el.clientWidth - layout.width * z) / 2,
@@ -164,7 +221,15 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
   }
 
   useEffect(() => {
-    const run = entire ? fit : centerOnFocus;
+    let run = centerOnFocus;
+    if (double) {
+      run = fit;
+    } else if (entire) {
+      run = lastEntireFocus && lastEntireFocus !== layout.focus ? centerOnFocus : fit;
+      lastEntireFocus = layout.focus;
+    } else {
+      lastEntireFocus = null;
+    }
     const id = window.requestAnimationFrame(() => {
       window.requestAnimationFrame(run);
     });
@@ -175,7 +240,7 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
       window.clearTimeout(t);
       window.clearTimeout(t2);
     };
-  }, [entire, full, layout.focus, layout.width, layout.height]);
+  }, [entire, double, full, layout.focus, layout.width, layout.height]);
 
   useEffect(() => {
     const el = stageRef.current;
@@ -199,8 +264,9 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
 
   function onPointerDown(event) {
     if (event.button != null && event.button !== 0) return;
-    if (event.target.closest?.(".ged-card, .ged-zoom, .ged-full-bar")) return;
+    if (event.target.closest?.(".ged-zoom, .ged-full-bar")) return;
     event.preventDefault();
+    movedRef.current = false;
     dragRef.current = {
       pointerId: event.pointerId,
       x: event.clientX,
@@ -219,6 +285,9 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
       x: drag.panX + (event.clientX - drag.x),
       y: drag.panY + (event.clientY - drag.y),
     };
+    if (Math.abs(event.clientX - drag.x) > 4 || Math.abs(event.clientY - drag.y) > 4) {
+      movedRef.current = true;
+    }
     panRef.current = next;
     setPan(next);
   }
@@ -229,6 +298,80 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
     setDragging(false);
   }
 
+  // 1,300 cards re-rendering on every pointer move made dragging the entire
+  // tree stutter; the cards and lines only change with the layout.
+  const canvas = useMemo(
+    () => (
+      <>
+              <svg className="ged-lines" width={layout.width} height={layout.height} aria-hidden="true">
+                <defs>
+                  <marker
+                    id="ged-arrow-down"
+                    viewBox="0 0 10 10"
+                    refX="5"
+                    refY="9"
+                    markerWidth="7"
+                    markerHeight="7"
+                    orient="0"
+                  >
+                    <path d="M 0 0 L 10 0 L 5 10 z" />
+                  </marker>
+                </defs>
+                {layout.edges.map((edge, i) =>
+                  edge.type === "marriage" ? (
+                    <g key={`m-${i}`}>
+                      <line x1={edge.x1} y1={edge.y1} x2={edge.x2} y2={edge.y2} />
+                      {edge.label ? (
+                        <text x={(edge.x1 + edge.x2) / 2} y={edge.y1 - 6} textAnchor="middle">
+                          {edge.label}
+                        </text>
+                      ) : null}
+                    </g>
+                  ) : (
+                    <line
+                      key={`d-${i}`}
+                      x1={edge.x1}
+                      y1={edge.y1}
+                      x2={edge.x2}
+                      y2={edge.y2}
+                      markerEnd={edge.type === "arrow" ? "url(#ged-arrow-down)" : undefined}
+                    />
+                  ),
+                )}
+              </svg>
+              {layout.nodes.map((node) => (
+                <button
+                  key={node.id}
+                  type="button"
+                  className={`ged-card${node.focus ? " focus" : ""}${node.sex === "F" ? " female" : node.sex === "M" ? " male" : ""}${
+                    node.compact ? " compact" : ""
+                  }${node.branch ? ` branch-${node.branch}` : ""}${String(node.branch || "").startsWith("m") ? " left" : ""}`}
+                  style={{ left: node.x, top: node.y, width: node.w || CARD_W, height: node.h || CARD_H }}
+                  onClick={() => {
+                    if (movedRef.current) return;
+                    openRef.current(node.id);
+                  }}
+                  title={cardName(node)}
+                >
+                  <span className="ged-card-photo">
+                    {node.cover_url ? <img src={node.cover_url} alt="" loading="lazy" /> : <PersonGlyph />}
+                  </span>
+                  <span className="ged-card-head">{cardName(node)}</span>
+                  <span className="ged-card-facts">
+                    <CardFact label="Birth" event={node.birth} />
+                    <CardFact label="Death" event={node.death} />
+                    {node.occupation ? <CardFact label="Work" text={node.occupation} /> : null}
+                    {!node.birth && !node.death && !node.occupation && node.lifespan ? (
+                      <CardFact label="Lived" text={node.lifespan} />
+                    ) : null}
+                  </span>
+                </button>
+              ))}
+      </>
+    ),
+    [layout],
+  );
+
   return (
     <div className="ged-stage-wrap">
       <div
@@ -238,7 +381,7 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        {...tip("Scroll or pinch to zoom. Drag the background to move. Click a person to center the tree on them.")}
+        {...tip("Scroll or pinch to zoom. Drag anywhere to move. Click a person to center the tree on them.")}
       >
         <div
           className="ged-tree"
@@ -248,57 +391,15 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
             transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
           }}
         >
-          <svg className="ged-lines" width={layout.width} height={layout.height} aria-hidden="true">
-            <defs>
-              <marker
-                id="ged-arrow-down"
-                viewBox="0 0 10 10"
-                refX="5"
-                refY="9"
-                markerWidth="7"
-                markerHeight="7"
-                orient="0"
-              >
-                <path d="M 0 0 L 10 0 L 5 10 z" />
-              </marker>
-            </defs>
-            {layout.edges.map((edge, i) =>
-              edge.type === "marriage" ? (
-                <g key={`m-${i}`}>
-                  <line x1={edge.x1} y1={edge.y1} x2={edge.x2} y2={edge.y2} />
-                  {edge.label ? (
-                    <text x={(edge.x1 + edge.x2) / 2} y={edge.y1 - 6} textAnchor="middle">
-                      {edge.label}
-                    </text>
-                  ) : null}
-                </g>
-              ) : (
-                <line
-                  key={`d-${i}`}
-                  x1={edge.x1}
-                  y1={edge.y1}
-                  x2={edge.x2}
-                  y2={edge.y2}
-                  markerEnd={edge.type === "arrow" ? "url(#ged-arrow-down)" : undefined}
-                />
-              ),
-            )}
-          </svg>
-          {layout.nodes.map((node) => (
-            <button
-              key={node.id}
-              type="button"
-              className={`ged-card${node.focus ? " focus" : ""}${node.sex === "F" ? " female" : node.sex === "M" ? " male" : ""}`}
-              style={{ left: node.x, top: node.y, width: CARD_W, height: CARD_H }}
-              onClick={() => onOpen(node.id)}
-              title={node.name}
-            >
-              <span className="ged-card-name">{shortName(node.name)}</span>
-              <span className="ged-card-life">{node.lifespan || " "}</span>
-            </button>
-          ))}
+          {canvas}
         </div>
       </div>
+      {focusName ? (
+        <div className="ged-chart-title" aria-hidden="true">
+          <span className="ged-chart-kicker">{double ? "Double ancestor chart" : "Family chart"}</span>
+          <strong>{focusName}</strong>
+        </div>
+      ) : null}
       <div className="ged-zoom zoom-tools">
         <button type="button" onClick={() => applyZoom(zoomRef.current * 1.2)} {...tip("Zoom in")}>
           +
@@ -326,6 +427,20 @@ function FamilyChart({ chart, onOpen, full, onToggleFull, entire, onToggleEntire
             Entire tree
           </button>
         ) : null}
+        {onToggleDouble ? (
+          <button
+            type="button"
+            aria-pressed={double}
+            onClick={onToggleDouble}
+            {...tip(
+              double
+                ? "Back to the family chart with spouse and children."
+                : "Double ancestor chart: this person in the middle, the father's line to the right, the mother's line to the left.",
+            )}
+          >
+            Double ancestors
+          </button>
+        ) : null}
         {onToggleFull ? (
           <button
             type="button"
@@ -344,7 +459,9 @@ export default function Tree() {
   const [params, setParams] = useSearchParams();
   const nav = useNavigate();
   const selected = (params.get("p") || "").trim();
-  const entire = (params.get("view") || "").trim().toLowerCase() === "all";
+  const view = (params.get("view") || "").trim().toLowerCase();
+  const entire = view === "all";
+  const double = view === "double";
   const catalogFromUrl = (params.get("person") || "").trim();
   const fileRef = useRef(null);
   const [data, setData] = useState(null);
@@ -507,7 +624,11 @@ export default function Tree() {
     setPick(0);
     const treeId = treeIdForJump(id);
     if (treeId) {
-      openPerson(treeId);
+      // A search jump shows that person's own family, not the whole file at 1%.
+      const next = new URLSearchParams(params);
+      next.set("p", treeId);
+      next.delete("view");
+      setParams(next, { replace: true });
       return;
     }
     const catalogId = catalogPersonId(id);
@@ -676,7 +797,7 @@ export default function Tree() {
                       className={`ged-person${item.id === selected ? " active" : ""}`}
                       onClick={() => jumpTo(item.id)}
                     >
-                      <span className="ged-person-name">{item.name}</span>
+                      <span className="ged-person-name">{cardName(item)}</span>
                       {item.lifespan ? <span className="hint">{item.lifespan}</span> : null}
                       {item.source === "catalog" ? (
                         <span className="ged-in-catalog">In photos</span>
@@ -707,7 +828,7 @@ export default function Tree() {
                   />
                   {person ? (
                     <p className="ged-full-name">
-                      <strong>{person.name}</strong>
+                      <strong>{cardName(person)}</strong>
                       {person.lifespan ? ` · ${person.lifespan}` : ""}
                     </p>
                   ) : null}
@@ -716,11 +837,18 @@ export default function Tree() {
               {person ? (
                 <>
                   <FamilyChart
-                    key={`${person.id}:${entire ? "all" : "one"}`}
+                    key={`${person.id}:${double ? "double" : entire ? "all" : "one"}`}
                     chart={person.chart}
                     onOpen={openPerson}
                     full={full}
                     entire={entire}
+                    mode={double ? "double" : entire ? "all" : "one"}
+                    onToggleDouble={() => {
+                      const next = new URLSearchParams(params);
+                      if (double) next.delete("view");
+                      else next.set("view", "double");
+                      setParams(next, { replace: true });
+                    }}
                     onToggleEntire={() => {
                       const next = new URLSearchParams(params);
                       if (entire) next.delete("view");
@@ -731,7 +859,7 @@ export default function Tree() {
                   />
                   {full ? null : (
                     <div className="ged-caption">
-                      <strong>{person.name}</strong>
+                      <strong>{cardName(person)}</strong>
                       {person.lifespan ? ` · ${person.lifespan}` : ""}
                       {person.birth?.place ? ` · born ${person.birth.place}` : ""}
                       {person.catalog ? (

@@ -3110,7 +3110,9 @@ html.to-name-resizing * {
   position: absolute;
   z-index: 24;
   left: 0;
-  right: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: min(560px, calc(100vw - 32px));
   top: calc(100% + 6px);
   max-height: 320px;
   overflow: auto;
@@ -3125,7 +3127,8 @@ html.to-name-resizing * {
 .ged-suggest button {
   display: flex;
   justify-content: space-between;
-  gap: 10px;
+  align-items: baseline;
+  gap: 14px;
   width: 100%;
   margin: 0;
   padding: 8px 10px;
@@ -3137,6 +3140,17 @@ html.to-name-resizing * {
   box-shadow: none;
   border-radius: 8px;
   font-weight: 550;
+}
+.ged-suggest button > span:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ged-suggest button .hint {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 .ged-suggest button:hover,
 .ged-suggest button.active {
@@ -3249,25 +3263,25 @@ html.to-name-resizing * {
 .ged-card {
   position: absolute;
   z-index: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 2px;
+  display: block;
   margin: 0;
-  padding: 8px 10px;
+  padding: 0;
   min-height: 0;
   text-align: center;
   background: var(--card);
   color: var(--ink);
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 10px;
   box-shadow: 0 6px 16px color-mix(in srgb, var(--ink) 8%, transparent);
-  font-weight: 650;
+  font-weight: 500;
+  overflow: visible;
 }
 .ged-card:hover,
 .ged-card:focus-visible {
   z-index: 4;
   transform: none;
+  background: var(--card);
+  color: var(--ink);
   border-color: var(--accent);
   box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 18%, transparent);
 }
@@ -3275,17 +3289,168 @@ html.to-name-resizing * {
   border-color: var(--accent);
   box-shadow: inset 0 0 0 2px var(--accent);
 }
-.ged-card.male { background: color-mix(in srgb, var(--sky) 16%, var(--card)); }
-.ged-card.female { background: color-mix(in srgb, var(--accent) 12%, var(--card)); }
-.ged-card-name {
-  font-size: 0.92rem;
-  line-height: 1.2;
+.ged-card-photo {
+  position: absolute;
+  top: -30px;
+  left: 50%;
+  width: 60px;
+  height: 60px;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--muted) 30%, var(--card));
+  border: 3px solid var(--card);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--muted) 45%, transparent), 0 4px 10px color-mix(in srgb, var(--ink) 18%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.ged-card-life {
-  font-size: 0.75rem;
-  font-weight: 500;
+.ged-card.male .ged-card-photo {
+  background: color-mix(in srgb, var(--sky) 45%, var(--card));
+  box-shadow: 0 0 0 2px var(--sky), 0 4px 10px color-mix(in srgb, var(--ink) 18%, transparent);
+}
+.ged-card.female .ged-card-photo {
+  background: color-mix(in srgb, var(--accent) 35%, var(--card));
+  box-shadow: 0 0 0 2px var(--accent), 0 4px 10px color-mix(in srgb, var(--ink) 18%, transparent);
+}
+.ged-card.focus .ged-card-photo {
+  box-shadow: 0 0 0 3px var(--accent), 0 4px 10px color-mix(in srgb, var(--ink) 18%, transparent);
+}
+.ged-card-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.ged-glyph {
+  width: 70%;
+  height: 70%;
+  fill: color-mix(in srgb, var(--card) 85%, var(--ink));
+}
+.ged-card-head {
+  display: block;
+  margin-top: 32px;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--muted) 18%, var(--card));
+}
+.ged-card.male .ged-card-head { background: color-mix(in srgb, var(--sky) 28%, var(--card)); }
+.ged-card.female .ged-card-head { background: color-mix(in srgb, var(--accent) 22%, var(--card)); }
+.ged-card.focus .ged-card-head { background: var(--accent); color: #fff; }
+.ged-card-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  box-sizing: border-box;
+  height: calc(100% - 32px - 1.25em - 8px);
+  padding: 6px 9px 7px;
+  text-align: left;
+  font-size: 0.66rem;
+  line-height: 1.2;
+  color: var(--muted);
+  overflow: hidden;
+}
+.ged-fact {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ged-fact em {
+  font-style: normal;
+  font-weight: 700;
+  color: var(--ink);
+  margin-right: 5px;
+}
+.ged-fact small {
+  display: block;
+  font-size: inherit;
+  padding-left: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ged-card.compact {
+  text-align: left;
+  --branch: color-mix(in srgb, var(--muted) 45%, var(--card));
+}
+.ged-card.compact::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  right: -1px;
+  width: 7px;
+  border-radius: 0 10px 10px 0;
+  background: var(--branch);
+}
+.ged-card.compact.left::after {
+  right: auto;
+  left: -1px;
+  border-radius: 10px 0 0 10px;
+}
+.ged-card.compact .ged-card-photo {
+  top: 50%;
+  left: 10px;
+  width: 46px;
+  height: 46px;
+  transform: translateY(-50%);
+  border-width: 2px;
+}
+.ged-card.compact.left .ged-card-photo { left: 16px; }
+.ged-card.compact .ged-card-head {
+  margin: 0 12px 0 64px;
+  padding: 7px 0 1px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 0.76rem;
+}
+.ged-card.compact.left .ged-card-head { margin-left: 70px; }
+.ged-card.compact.focus .ged-card-head { background: transparent; color: var(--accent-ink); }
+.ged-card.compact .ged-card-facts {
+  margin: 0 12px 0 64px;
+  padding: 0 0 6px;
+  height: auto;
+  gap: 1px;
+  font-size: 0.62rem;
+}
+.ged-card.compact.left .ged-card-facts { margin-left: 70px; }
+.ged-card.compact .ged-fact small { display: none; }
+.ged-card.branch-self { --branch: var(--accent); }
+.ged-card.branch-sibling { --branch: color-mix(in srgb, var(--accent) 40%, var(--card)); }
+.ged-card.branch-f { --branch: #c9782f; }
+.ged-card.branch-ff { --branch: #b8412f; }
+.ged-card.branch-fm { --branch: #3f8f5a; }
+.ged-card.branch-m { --branch: #5b7fb5; }
+.ged-card.branch-mf { --branch: #7a56b8; }
+.ged-card.branch-mm { --branch: #c9578a; }
+.ged-chart-title {
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--card) 88%, transparent);
+  border: 1px solid var(--line);
+  pointer-events: none;
+}
+.ged-chart-kicker {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--muted);
 }
+.ged-chart-title strong { font-size: 0.95rem; color: var(--ink); }
 .ged-zoom {
   position: absolute;
   right: 12px;
