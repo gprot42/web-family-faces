@@ -261,6 +261,7 @@ def _person_ref(tree: dict[str, Any], pid: str) -> dict[str, Any] | None:
 _cover_cache: dict[int, int] = {}
 _cover_cache_stamp: tuple[Any, ...] | None = None
 _cover_lock = threading.Lock()
+_cover_refreshing = False
 
 
 def _catalog_cover_stamp(conn) -> tuple[Any, ...]:
@@ -277,25 +278,53 @@ def _catalog_covers(conn) -> dict[int, int]:
     """The same cover crop Faces in DB View shows: a pinned cover, else the ranked pick.
 
     The ranking scans every named face, so it is cached until the catalog changes."""
-    global _cover_cache, _cover_cache_stamp
+    global _cover_cache, _cover_cache_stamp, _cover_refreshing
     stamp = _catalog_cover_stamp(conn)
     if _cover_cache_stamp == stamp:
         return _cover_cache
-    # One ranking at a time: a page request arriving during the startup
-    # warm-up waits for that result instead of running a second scan.
+    if _cover_cache_stamp is not None:
+        # Naming or junking a face changes the stamp on nearly every click in
+        # the rest of the app. Answer with the last map now and refresh it in
+        # the background, so picking a tree person never waits for a rescan.
+        with _cover_lock:
+            if not _cover_refreshing:
+                _cover_refreshing = True
+                threading.Thread(target=_refresh_covers, args=(stamp,), daemon=True, name="photosort-tree-covers").start()
+        return _cover_cache
+    # First time (startup warm-up): compute now, one ranking at a time.
     with _cover_lock:
         if _cover_cache_stamp == stamp:
             return _cover_cache
-        from . import people as people_mod
-
-        covers: dict[int, int] = {}
-        for row in people_mod._list_people_covers_lite():
-            face_id = row.get("cover_face_id")
-            if face_id:
-                covers[int(row["id"])] = int(face_id)
-        _cover_cache = covers
+        _cover_cache = _rank_covers()
         _cover_cache_stamp = stamp
-        return covers
+        return _cover_cache
+
+
+def _rank_covers() -> dict[int, int]:
+    from . import people as people_mod
+
+    covers: dict[int, int] = {}
+    for row in people_mod._list_people_covers_lite():
+        face_id = row.get("cover_face_id")
+        if face_id:
+            covers[int(row["id"])] = int(face_id)
+    return covers
+
+
+def _refresh_covers(stamp: tuple[Any, ...]) -> None:
+    global _cover_cache, _cover_cache_stamp, _cover_refreshing
+    try:
+        covers = _rank_covers()
+        with _cover_lock:
+            _cover_cache = covers
+            _cover_cache_stamp = stamp
+    except Exception:
+        from . import log as log_mod
+
+        log_mod.exception("tree cover refresh failed")
+    finally:
+        with _cover_lock:
+            _cover_refreshing = False
 
 
 LOOSE = "~"
