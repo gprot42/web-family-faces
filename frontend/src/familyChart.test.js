@@ -258,3 +258,56 @@ test("layoutFanChart rings ancestors with the father's line on the left", async 
   assert.ok(byId.dad.path.startsWith("M") && byId.dad.r1 > byId.dad.r0);
   assert.ok(layout.width > 0 && layout.height > 0);
 });
+
+
+test("layoutFamilyTree keeps grandchildren under their own parent", () => {
+  const chart = {
+    focus: "g",
+    nodes: [
+      { id: "g", name: "George" },
+      { id: "joan", name: "Joan" },
+      { id: "elsie", name: "Elsie" },
+      { id: "c1", name: "Clifford" },
+      { id: "c2", name: "Roland" },
+      { id: "c3", name: "Ronald" },
+      { id: "p1", name: "Paul" },
+      { id: "p2", name: "Neil" },
+      { id: "p3", name: "Brian" },
+      { id: "p4", name: "Louisa" },
+      { id: "p5", name: "Patricia" },
+    ],
+    unions: [
+      { id: "F1", role: "own", partners: ["g"], children: ["joan", "elsie"] },
+      { id: "F2", role: "grandchildren", partners: ["joan"], children: ["c1", "c2", "c3"] },
+      { id: "F3", role: "grandchildren", partners: ["elsie"], children: ["p1", "p2", "p3", "p4", "p5"] },
+    ],
+  };
+  const layout = layoutFamilyTree(chart);
+  const byId = Object.fromEntries(layout.nodes.map((n) => [n.id, n]));
+  const centre = (n) => n.x + CARD_W / 2;
+  const joanKids = ["c1", "c2", "c3"].map((id) => byId[id]);
+  const elsieKids = ["p1", "p2", "p3", "p4", "p5"].map((id) => byId[id]);
+  const joanMid = (Math.min(...joanKids.map(centre)) + Math.max(...joanKids.map(centre))) / 2;
+  const elsieMid = (Math.min(...elsieKids.map(centre)) + Math.max(...elsieKids.map(centre))) / 2;
+  assert.ok(Math.abs(centre(byId.joan) - joanMid) < 1, "Joan centred over her children");
+  assert.ok(Math.abs(centre(byId.elsie) - elsieMid) < 1, "Elsie centred over her children");
+  assert.ok(Math.max(...joanKids.map(centre)) < byId.elsie.x, "no child of Joan sits under Elsie");
+  assert.ok(Math.min(...elsieKids.map((n) => n.x)) > Math.max(...joanKids.map((n) => n.x + CARD_W)), "families do not interleave");
+});
+
+test("fan palettes give every angle a hue and keep sides distinct", async () => {
+  const { PALETTES, paletteById, readPalette } = await import("./chartPalette.js");
+  const { fanColours } = await import("./familyChart.js");
+  assert.ok(PALETTES.length >= 4);
+  for (const p of PALETTES) {
+    for (const t of [0, Math.PI / 4, Math.PI / 2, (3 * Math.PI) / 4, Math.PI]) {
+      const c = fanColours(t, 3, p);
+      assert.match(c.fill, /^hsl\(-?\d+ \d+% \d+%\)$/, `${p.id} fill at ${t}`);
+    }
+    if (p.id !== "mono") {
+      assert.notEqual(Math.round(p.hue(Math.PI)), Math.round(p.hue(0)), `${p.id} sides differ`);
+    }
+  }
+  assert.equal(paletteById("nope").id, "earth");
+  assert.equal(readPalette(), "earth");
+});

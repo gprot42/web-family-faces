@@ -15,6 +15,7 @@ import {
   readLabelStyle,
   readNametag,
 } from "../nametag.js";
+import { PALETTES, readPalette, savePalette } from "../chartPalette.js";
 import { applyTheme, readTheme, THEMES } from "../theme.js";
 import {
   applyPlayIntervalMs,
@@ -33,6 +34,7 @@ import { tip } from "../tip.js";
 
 export default function Settings() {
   const [theme, setTheme] = useState(() => readTheme());
+  const [palette, setPalette] = useState(() => readPalette());
   const [nametag, setNametag] = useState(() => readNametag());
   const [labelSize, setLabelSize] = useState(() => readLabelSize());
   const [labelStyle, setLabelStyle] = useState(() => readLabelStyle());
@@ -352,6 +354,37 @@ export default function Settings() {
                 aria-checked={selected}
                 className={`theme-choice ${selected ? "active" : ""}`}
                 onClick={() => setTheme(applyTheme(item.id))}
+                {...tip(item.hint)}
+              >
+                <span className="theme-swatch" aria-hidden="true">
+                  {item.swatch.map((color) => (
+                    <span key={color} style={{ background: color }} />
+                  ))}
+                </span>
+                <strong>{item.label}</strong>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="card help-block settings-card">
+        <h2>Family tree colours</h2>
+        <p>
+          How the fan chart colours each line. The father's side is on the left of the fan and the
+          mother's on the right; every ring outward is a generation paler.
+        </p>
+        <div className="theme-grid" role="radiogroup" aria-label="Fan chart colours">
+          {PALETTES.map((item) => {
+            const selected = palette === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                className={`theme-choice ${selected ? "active" : ""}`}
+                onClick={() => setPalette(savePalette(item.id))}
                 {...tip(item.hint)}
               >
                 <span className="theme-swatch" aria-hidden="true">

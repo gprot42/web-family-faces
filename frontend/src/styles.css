@@ -3475,6 +3475,23 @@ html.to-name-resizing * {
   stroke-width: 2.5;
 }
 .ged-fan-glyph { fill: color-mix(in srgb, var(--accent) 35%, var(--card)); }
+.ged-empty-note {
+  position: absolute;
+  top: 78px;
+  left: 14px;
+  z-index: 3;
+  max-width: 420px;
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 0.86rem;
+  line-height: 1.4;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--card) 92%, transparent);
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 20px color-mix(in srgb, var(--ink) 10%, transparent);
+}
+.ged-empty-note strong { display: block; margin-bottom: 2px; }
 .ged-chart-title {
   position: absolute;
   top: 12px;

@@ -527,17 +527,37 @@ export function layoutFamilyTree(chart) {
     }
   }
 
+  // Each child of the focus gets a slot as wide as their own children below,
+  // so a grandchild never lands under an aunt or uncle.
+  function kidsOfChild(id) {
+    const out = [];
+    for (const union of gcU) {
+      if (!(union.partners || []).includes(id)) continue;
+      for (const k of union.children || []) {
+        if (nodeMap[k] && k !== focusId && !out.includes(k)) out.push(k);
+      }
+    }
+    return out;
+  }
+  const slotOf = {};
   let childMin = -Infinity;
   for (const union of own) {
     const kids = (union.children || []).filter((id) => nodeMap[id] && id !== focusId);
     if (!kids.length) continue;
     const partners = (union.partners || []).filter((id) => pos[id]);
     const mid = partners.length ? midX(partners, pos) : pos[focusId].x + CARD_W / 2;
-    const total = kids.length * CARD_W + Math.max(0, kids.length - 1) * GAP_X;
+    const widths = kids.map((id) => {
+      const n = kidsOfChild(id).length;
+      return Math.max(CARD_W, n * CARD_W + Math.max(0, n - 1) * GAP_X);
+    });
+    const total = widths.reduce((sum, w) => sum + w, 0) + Math.max(0, kids.length - 1) * GAP_X;
     let start = mid - total / 2;
     if (start < childMin) start = childMin;
+    let x = start;
     kids.forEach((id, i) => {
-      pos[id] = { x: start + i * (CARD_W + GAP_X), y: yChild };
+      pos[id] = { x: x + (widths[i] - CARD_W) / 2, y: yChild };
+      slotOf[id] = { x, w: widths[i] };
+      x += widths[i] + GAP_X;
     });
     childMin = start + total + GAP_X;
   }
@@ -577,9 +597,9 @@ export function layoutFamilyTree(chart) {
     const parents = (union.partners || []).filter((id) => pos[id] && pos[id].y === yChild);
     const kids = (union.children || []).filter((id) => nodeMap[id] && !pos[id]);
     if (!parents.length || !kids.length) continue;
-    const mid = midX(parents, pos);
     const total = kids.length * CARD_W + Math.max(0, kids.length - 1) * GAP_X;
-    let start = mid - total / 2;
+    const slot = slotOf[parents[0]];
+    let start = slot ? slot.x + (slot.w - total) / 2 : midX(parents, pos) - total / 2;
     if (start < gcMin) start = gcMin;
     kids.forEach((id, i) => {
       pos[id] = { x: start + i * (CARD_W + GAP_X), y: yGC };
@@ -930,17 +950,18 @@ export function fanHue(theta) {
   return Math.round(175 + (theta / half) * (95 - 175));
 }
 
-export function fanColours(theta, g) {
-  const hue = fanHue(theta);
+export function fanColours(theta, g, palette = null) {
+  const hue = Math.round(palette?.hue ? palette.hue(theta) : fanHue(theta));
+  const sat = palette?.sat ?? 46;
   const depth = Math.min(Math.max(g, 1), 9);
   const light = 78 + depth * 2;
   return {
-    fill: `hsl(${hue} 46% ${light}%)`,
-    color: `hsl(${hue} 52% ${Math.max(38, 58 - depth * 2)}%)`,
+    fill: `hsl(${hue} ${sat}% ${light}%)`,
+    color: `hsl(${hue} ${Math.min(70, sat + 6)}% ${Math.max(38, 58 - depth * 2)}%)`,
   };
 }
 
-export function layoutFanChart(chart, { depth = FAN_DEPTH } = {}) {
+export function layoutFanChart(chart, { depth = FAN_DEPTH, palette = null } = {}) {
   const focusId = chart?.focus;
   const nodeMap = Object.fromEntries((chart?.nodes || []).map((n) => [n.id, n]));
   const unions = chart?.unions || [];
@@ -981,7 +1002,7 @@ export function layoutFanChart(chart, { depth = FAN_DEPTH } = {}) {
       cy,
       path: ringPath(cx, cy, r0, r1, a0, a1),
       band: arcPath(cx, cy, r0 + 3, a0, a1),
-      ...fanColours(mid, g),
+      ...fanColours(mid, g, palette),
       radial,
       left: mid > Math.PI / 2,
       size,

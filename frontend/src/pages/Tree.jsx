@@ -14,6 +14,7 @@ import {
   viewOnFocus,
   wheelZoomFactor,
 } from "../familyChart.js";
+import { paletteById, readPalette } from "../chartPalette.js";
 import { expandShortNames, nameVariants, queryMatchesName } from "../nameSuggest.js";
 import { enterBrowserFullscreen, exitBrowserFullscreen } from "../play.js";
 import { tip } from "../tip.js";
@@ -24,6 +25,11 @@ export function cardName(node) {
   const married = String(node?.married_surname || "").trim();
   if (!married) return name;
   const birth = String(node?.surname || "").trim();
+  if (!birth || /^\(?(unknown|mother|father|\?+)\)?$/i.test(birth)) {
+    const words0 = name.split(/\s+/).filter(Boolean);
+    const stripped = birth && words0.length > 1 && words0[words0.length - 1].toLowerCase() === birth.toLowerCase() ? words0.slice(0, -1) : words0;
+    return `${stripped.join(" ")} ${married}`.trim();
+  }
   const words = name.split(/\s+/).filter(Boolean);
   const endsWithBirth = birth && words.length > 1 && words[words.length - 1].toLowerCase() === birth.toLowerCase();
   if (!endsWithBirth) return `${name} (${married})`;
@@ -53,54 +59,119 @@ function splitLines(text, max) {
   return lines.slice(0, 3);
 }
 
+// Rough text width for fitting: bold sans at this size.
+function textWidth(text, size) {
+  return String(text || "").length * size * 0.56;
+}
+
+// Split into at most `maxLines` lines that each fit `width` at `size`,
+// shrinking the font (down to `minSize`) and finally trimming with an ellipsis.
+function fitLines(text, { width, size, minSize, maxLines }) {
+  let fs = size;
+  while (fs >= minSize) {
+    const maxChars = Math.max(3, Math.floor(width / (fs * 0.56)));
+    const lines = splitLines(text, maxChars);
+    if (lines.length <= maxLines && lines.every((l) => textWidth(l, fs) <= width)) return { lines, size: fs };
+    fs -= 0.5;
+  }
+  fs = minSize;
+  const maxChars = Math.max(3, Math.floor(width / (fs * 0.56)));
+  const lines = splitLines(text, maxChars).slice(0, maxLines);
+  const last = lines[lines.length - 1] || "";
+  if (lines.length === maxLines && textWidth(last, fs) > width) lines[lines.length - 1] = `${last.slice(0, Math.max(1, maxChars - 1))}…`;
+  return { lines, size: fs };
+}
+
+function fanArc(cx, cy, r, a0, a1) {
+  const p1 = { x: cx + r * Math.cos(a1), y: cy - r * Math.sin(a1) };
+  const p2 = { x: cx + r * Math.cos(a0), y: cy - r * Math.sin(a0) };
+  return `M ${p1.x.toFixed(2)} ${p1.y.toFixed(2)} A ${r} ${r} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
+}
+
 function FanSegment({ node, onOpen }) {
   const deg = (node.mid * 180) / Math.PI;
   const rMid = (node.r0 + node.r1) / 2;
   const span = node.a1 - node.a0;
   const name = cardName(node);
   const years = node.lifespan || "";
-  const size = node.size;
   const photo = node.cover_url && node.g <= 3;
   let textEl;
   let photoEl = null;
   if (node.focus) {
+    // Portrait high in the half disc, text block fitted between it and the base.
+    const pr = 22;
     const px = node.cx;
-    const py = node.cy - 72;
+    const py = node.cy - 80;
     photoEl = (
       <>
         <clipPath id={`fan-clip-${node.id}`}>
-          <circle cx={px} cy={py} r={26} />
+          <circle cx={px} cy={py} r={pr} />
         </clipPath>
         {node.cover_url ? (
-          <image href={node.cover_url} x={px - 26} y={py - 26} width={52} height={52} preserveAspectRatio="xMidYMid slice" clipPath={`url(#fan-clip-${node.id})`} />
+          <image href={node.cover_url} x={px - pr} y={py - pr} width={pr * 2} height={pr * 2} preserveAspectRatio="xMidYMid slice" clipPath={`url(#fan-clip-${node.id})`} />
         ) : (
-          <circle cx={px} cy={py} r={26} className="ged-fan-glyph" />
+          <circle cx={px} cy={py} r={pr} className="ged-fan-glyph" />
         )}
       </>
     );
+    const top = py + pr + 6;
+    const bottom = node.cy - 8;
+    let size = 15;
+    let fit = fitLines(name, { width: 186, size, minSize: 9, maxLines: 2 });
+    const blockHeight = (fs, n) => n * fs * 1.15 + (years ? fs * 0.85 * 1.2 : 0);
+    while (blockHeight(fit.size, fit.lines.length) > bottom - top && fit.size > 9) {
+      size = fit.size - 0.5;
+      fit = fitLines(name, { width: 186, size, minSize: 9, maxLines: 2 });
+    }
+    const first = top + fit.size;
     textEl = (
-      <text x={node.cx} y={node.cy - 34} textAnchor="middle" fontSize={size} fontWeight={700}>
-        {splitLines(name, 20).map((line, i) => (
-          <tspan key={i} x={node.cx} dy={i ? size * 1.15 : 0}>{line}</tspan>
+      <text x={node.cx} y={first} textAnchor="middle" fontSize={fit.size} fontWeight={700}>
+        {fit.lines.map((line, i) => (
+          <tspan key={i} x={node.cx} dy={i ? fit.size * 1.15 : 0}>{line}</tspan>
         ))}
-        {years ? <tspan x={node.cx} dy={size * 1.2} fontWeight={500} fontSize={size * 0.85}>{years}</tspan> : null}
+        {years ? <tspan x={node.cx} dy={fit.size * 1.15} fontWeight={500} fontSize={fit.size * 0.85}>{years}</tspan> : null}
       </text>
     );
   } else if (!node.radial) {
-    const tp = { x: node.cx + (rMid + 6) * Math.cos(node.mid - span * 0.08), y: node.cy - (rMid + 6) * Math.sin(node.mid - span * 0.08) };
-    const lines = splitLines(name, node.g === 1 ? 22 : 16);
+    // Inner rings: text runs along the arc, where the whole arc length is
+    // available, on its own concentric path per line.
+    const pad = 0.05;
+    const a0 = node.a0 + pad * span;
+    const a1 = node.a1 - pad * span;
+    const photoRoom = photo ? (node.g === 1 ? 52 : 36) : 0;
+    const arcLen = rMid * (a1 - a0) - photoRoom;
+    const fit = fitLines(name, { width: arcLen, size: node.size, minSize: 8, maxLines: 2 });
+    const lineH = fit.size * 1.18;
+    const rows = [...fit.lines.map((l) => ({ text: l, bold: true, size: fit.size }))];
+    if (years) rows.push({ text: years, bold: false, size: Math.max(7, fit.size * 0.82) });
+    const total = rows.reduce((s, r, i) => s + (i ? lineH : 0), 0);
+    // Rows read top to bottom, so the first line sits on the outer arc.
+    let r = rMid + total / 2 - (photo ? 0 : 0);
+    const paths = [];
+    const texts = [];
+    rows.forEach((row, i) => {
+      const id = `fan-arc-${node.id}-${i}`;
+      paths.push(<path key={id} id={id} d={fanArc(node.cx, node.cy, r, a0, a1)} fill="none" />);
+      texts.push(
+        <text key={`t-${id}`} fontSize={row.size} fontWeight={row.bold ? 700 : 500}>
+          <textPath href={`#${id}`} startOffset="50%" textAnchor="middle">
+            {row.text}
+          </textPath>
+        </text>,
+      );
+      r -= lineH;
+    });
     textEl = (
-      <text x={tp.x} y={tp.y - ((lines.length - 1) * size * 1.15) / 2} textAnchor="middle" fontSize={size} fontWeight={700}>
-        {lines.map((line, i) => (
-          <tspan key={i} x={tp.x} dy={i ? size * 1.15 : 0}>{line}</tspan>
-        ))}
-        {years ? <tspan x={tp.x} dy={size * 1.2} fontWeight={500} fontSize={size * 0.82}>{years}</tspan> : null}
-      </text>
+      <>
+        <defs>{paths}</defs>
+        {texts}
+      </>
     );
     if (photo) {
-      const pr = node.g === 1 ? 26 : 18;
-      const pa = node.mid + span * (node.g === 1 ? 0.3 : 0.32);
-      const pp = { x: node.cx + rMid * Math.cos(pa), y: node.cy - rMid * Math.sin(pa) };
+      const pr = node.g === 1 ? 24 : 16;
+      const pa = node.a1 - (pad + 0.09) * span;
+      const rp = node.r0 + 30;
+      const pp = { x: node.cx + rp * Math.cos(pa), y: node.cy - rp * Math.sin(pa) };
       photoEl = (
         <>
           <clipPath id={`fan-clip-${node.id}`}>
@@ -112,22 +183,36 @@ function FanSegment({ node, onOpen }) {
       );
     }
   } else {
-    // Radial text: reads outward on the right, inward on the left so it is never upside down.
-    const r = node.left ? node.r1 - 8 : node.r0 + 8;
+    // Outer rings: radial text, reading outward on the right and inward on the
+    // left. Width is the ring depth; height is the arc at the inner radius.
+    const width = node.r1 - node.r0 - 14;
+    const height = node.r0 * span - 3;
+    let fit = fitLines(name, { width, size: node.size, minSize: 6, maxLines: 2 });
+    let rows = [...fit.lines];
+    let lineH = fit.size * 1.12;
+    if (years && (rows.length + 1) * lineH <= height) rows.push(years);
+    while (rows.length > 1 && rows.length * lineH > height) {
+      if (rows[rows.length - 1] === years) rows.pop();
+      else {
+        fit = fitLines(name, { width, size: fit.size, minSize: 6, maxLines: 1 });
+        rows = [...fit.lines];
+        lineH = fit.size * 1.12;
+        break;
+      }
+    }
+    const r = node.left ? node.r1 - 7 : node.r0 + 7;
     const p = { x: node.cx + r * Math.cos(node.mid), y: node.cy - r * Math.sin(node.mid) };
     const rot = node.left ? 180 - deg : -deg;
-    const lines = [...splitLines(name, 26), ...(years ? [years] : [])].slice(0, 3);
-    const lineH = size * 1.12;
     textEl = (
       <text
         transform={`translate(${p.x.toFixed(1)} ${p.y.toFixed(1)}) rotate(${rot.toFixed(1)})`}
         textAnchor="start"
-        fontSize={size}
+        fontSize={fit.size}
         fontWeight={700}
-        y={-((lines.length - 1) * lineH) / 2 + size * 0.35}
+        y={-((rows.length - 1) * lineH) / 2 + fit.size * 0.35}
       >
-        {lines.map((line, i) => (
-          <tspan key={i} x={0} dy={i ? lineH : 0} fontWeight={i && i === lines.length - 1 && years ? 500 : 700}>
+        {rows.map((line, i) => (
+          <tspan key={i} x={0} dy={i ? lineH : 0} fontWeight={line === years ? 500 : 700} fontSize={line === years ? fit.size * 0.9 : fit.size}>
             {line}
           </tspan>
         ))}
@@ -303,13 +388,18 @@ function FamilyChart({
   const layout = useMemo(
     () =>
       fan
-        ? layoutFanChart(chart, { depth: fanDepth })
+        ? layoutFanChart(chart, { depth: fanDepth, palette: paletteById(readPalette()) })
         : double
           ? layoutDoubleAncestorChart(chart)
           : layoutFamilyTree(chart),
     [chart, double, fan, fanDepth],
   );
   const fanRings = fan ? layout.nodes.reduce((m, n) => Math.max(m, n.g || 0), 0) : 0;
+  // Ancestor views with nothing above the person: say why, so a lone card is
+  // not mistaken for a broken chart.
+  const noAncestors =
+    (fan || double) &&
+    !layout.nodes.some((n) => !n.focus && n.branch !== "sibling" && (n.g == null || n.g > 0));
   const focusName = cardName(layout.nodes.find((n) => n.focus));
   const stageRef = useRef(null);
   const zoomRef = useRef(1);
@@ -621,6 +711,14 @@ function FamilyChart({
           <span className="ged-chart-kicker">{fan ? "Fan chart" : double ? "Double ancestor chart" : "Family chart"}</span>
           <strong>{focusName}</strong>
         </div>
+      ) : null}
+      {noAncestors ? (
+        <p className="ged-empty-note" role="status">
+          <strong>No ancestors to draw.</strong> The family tree file has no parents recorded for{" "}
+          {focusName}, so this chart stops at them. Nothing is wrong with the chart or the file.
+          Their spouse and children are on the Family view. To go further back, add their parents
+          in your genealogy program and load the file again.
+        </p>
       ) : null}
       <div className="ged-zoom zoom-tools" role="toolbar" aria-label="Chart tools">
         <div className="ged-panel-group" role="group" aria-label="View">
