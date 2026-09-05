@@ -1269,3 +1269,35 @@ def test_resume_points_at_unnamed_cluster(tmp_path, monkeypatch):
     assign_cluster(1, person["id"])
     target = state.resume_target()
     assert target["kind"] != "clusters"
+
+
+def test_looks_like_statue_weathered_stone_guardian_in_a_colour_scene(tmp_path):
+    """Grey sandstone with a faint warm cast reads as skin; in a colour photo it is stone."""
+    import numpy as np
+
+    rng = np.random.default_rng(3)
+    crop = np.clip(
+        np.array([106, 100, 98], dtype=np.float32) + rng.normal(0, 4, (80, 80, 3)),
+        0,
+        255,
+    ).astype(np.uint8)
+    stone = tmp_path / "guardian.png"
+    Image.fromarray(crop).save(stone)
+    scene = np.full((160, 120, 3), (140, 136, 132), dtype=np.uint8)
+    scene[100:160, :] = (70, 120, 60)  # plants
+    scene[:40, :] = (150, 170, 200)  # sky
+    temple = tmp_path / "temple.png"
+    Image.fromarray(scene).save(temple)
+    sepia = tmp_path / "sepia.png"
+    Image.new("RGB", (160, 120), (150, 140, 128)).save(sepia)
+    portrait = np.clip(
+        np.array([200, 160, 130], dtype=np.float32) + rng.normal(0, 4, (80, 80, 3)),
+        0,
+        255,
+    ).astype(np.uint8)
+    person = tmp_path / "person.png"
+    Image.fromarray(portrait).save(person)
+    assert looks_like_statue(stone, temple) is True
+    assert looks_like_statue(stone, sepia) is False
+    assert looks_like_statue(stone) is False
+    assert looks_like_statue(person, temple) is False

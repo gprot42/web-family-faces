@@ -691,6 +691,33 @@ def _scene_framed_painted_map(photo_path: Path | str | None, photo_id: int | Non
     )
 
 
+def _weathered_stone_head(
+    skin: np.ndarray,
+    gray: np.ndarray,
+    gray_n: float,
+    sat_mean: float,
+    photo_path: Path | str | None,
+    photo_id: int | None,
+) -> bool:
+    """Grey sandstone carving (temple guardian) in a photo with real colour.
+
+    Weathered stone carries a faint warm cast, R a few points above G and B
+    with almost no chroma, so the plain warm test reads it as skin and the
+    grey-head branch never runs. Here a warm pixel that is also near-grey does
+    not count as skin. Sepia family prints are warm-grey too, so the
+    surrounding photo must hold some cool colour (sky, plants, paint); a
+    tinted monochrome scan has none.
+    """
+    if gray_n < 0.85 or sat_mean > 0.32:
+        return False
+    if float((skin & ~gray).mean()) >= 0.08:
+        return False
+    stats = _scene_stats(photo_path, photo_id)
+    if stats is None or stats[2] < 0.15:
+        return False
+    return stats[4] >= 0.05
+
+
 def looks_like_statue(
     crop_path: Path,
     photo_path: Path | str | None = None,
@@ -736,6 +763,8 @@ def looks_like_statue(
     green_n = float(green.mean())
     gray_n = float(gray.mean())
     color_n = float(color.mean())
+    if _weathered_stone_head(skin, gray, gray_n, float(sat.mean()), photo_path, photo_id):
+        return True
     if skin_n < 0.08 and float(sat.mean()) <= 0.32 and _scene_is_colour(photo_path, photo_id):
         # Gray metal/stone head in a colour photo (Tian Tan Buddha vs B&W prints).
         if gray_n >= 0.85:
