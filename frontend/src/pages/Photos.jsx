@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api";
-import { ALL_FOLDERS_EVENT, addedFolderPaths, folderAnchor, folderBreadcrumb, folderDisplayName, folderIsIndexed, folderLabel, folderMatchesQuery, folderShortName, folderYear, FOLDER_TITLE_MAX, isFolderStarred, normalizeFolderPath, photoAlbumName, photoInFolders, readExcludedFolders, readFolderTitles, readImportFolders, readStarredFolders, setFolderTitle, toggleStarredFolder, writeExcludedFolders, writeFolderTitles, writeImportFolders, writeStarredFolders } from "../folders.js";
+import { ALL_FOLDERS_EVENT, addedFolderPaths, commonFolder, folderAnchor, folderBreadcrumb, folderDisplayName, folderIsIndexed, folderLabel, folderMatchesQuery, folderShortName, folderYear, FOLDER_TITLE_MAX, isFolderStarred, normalizeFolderPath, photoAlbumName, photoInFolders, readExcludedFolders, readFolderTitles, readImportFolders, readStarredFolders, setFolderTitle, toggleStarredFolder, writeExcludedFolders, writeFolderTitles, writeImportFolders, writeStarredFolders } from "../folders.js";
 import { emitPhotoChange, PHOTO_CHANGE_EVENT } from "../photoMenu.js";
 import JobGauge from "../components/JobGauge.jsx";
 import { beginPlay } from "../play.js";
@@ -438,8 +438,12 @@ function FolderPhotos() {
       if (!saved.length) {
         setLoading(true);
         try {
-          const stats = await api.stats();
-          const root = stats?.folder;
+          // Default to the folder holding every indexed album. stats.folder is
+          // only the most recent scan, so it can be a single album.
+          const indexed = await api.nameFolders().catch(() => null);
+          if (cancelled) return;
+          let root = commonFolder((indexed?.items || []).map((item) => item.path));
+          if (!root) root = (await api.stats())?.folder;
           if (cancelled) return;
           if (root) {
             writeImportFolders([root]);

@@ -93,6 +93,19 @@ export function isInside(child, parent) {
   return a.startsWith(`${b}/`);
 }
 
+/** Deepest folder that holds every path, or "" when there are none. */
+export function commonFolder(paths) {
+  const lists = (paths || []).filter(Boolean).map((p) => normalizeFolderPath(p).split("/"));
+  if (!lists.length) return "";
+  let shared = lists[0];
+  for (const parts of lists.slice(1)) {
+    let n = 0;
+    while (n < shared.length && n < parts.length && shared[n] === parts[n]) n += 1;
+    shared = shared.slice(0, n);
+  }
+  return shared.join("/") || "/";
+}
+
 export function pruneUnder(items, path) {
   return (items || []).filter((item) => !isSameOrInside(item, path));
 }
