@@ -34,7 +34,7 @@ export default function LabelLayoutToggle({ className = "secondary" }) {
         e.stopPropagation();
         setLayout(cycleLabelLayout());
       }}
-      {...tip(`${cur.hint} Click to try ${next.label}. Names you dragged stay until you pick another layout.`)}
+      {...tip(`${cur.hint} Click to try ${next.label}. Names you dragged stay where you put them.`)}
     >
       {cur.label}
     </button>

@@ -1067,7 +1067,6 @@ export default function LabeledPhoto({
   const overlay = overlayTags === undefined ? labelsOn : !!overlayTags;
   const [dragPin, setDragPin] = useState(null);
   const [localPins, setLocalPins] = useState({});
-  const [honorSavedPins, setHonorSavedPins] = useState(() => readLabelLayout() !== "smart");
   const drag = useRef(null);
   const skipClick = useRef(false);
   const pick = useRef(null);
@@ -1076,31 +1075,21 @@ export default function LabeledPhoto({
   useEffect(() => {
     setLocalPins({});
     setDragPin(null);
-    setHonorSavedPins(readLabelLayout() !== "smart");
   }, [photo.id]);
-  useEffect(() => {
-    function onLayout() {
-      setLocalPins({});
-      setDragPin(null);
-      setHonorSavedPins(false);
-    }
-    window.addEventListener(LABEL_LAYOUT_EVENT, onLayout);
-    return () => window.removeEventListener(LABEL_LAYOUT_EVENT, onLayout);
-  }, []);
+  // Dragged labels stay where they were put in every layout; the layout only
+  // places the labels nobody has moved.
   const pins = useMemo(() => {
     const out = {};
-    if (honorSavedPins) {
-      for (const f of faces) {
-        if (f.tag_x == null || f.tag_y == null) continue;
-        const left = Number(f.tag_x);
-        const top = Number(f.tag_y);
-        if (Number.isFinite(left) && Number.isFinite(top)) out[f.id] = { left, top };
-      }
+    for (const f of faces) {
+      if (f.tag_x == null || f.tag_y == null) continue;
+      const left = Number(f.tag_x);
+      const top = Number(f.tag_y);
+      if (Number.isFinite(left) && Number.isFinite(top)) out[f.id] = { left, top };
     }
     Object.assign(out, localPins);
     if (dragPin) out[dragPin.id] = { left: dragPin.left, top: dragPin.top };
     return out;
-  }, [faces, localPins, dragPin, honorSavedPins]);
+  }, [faces, localPins, dragPin]);
   const tagGroups = useMemo(
     () => (overlay ? layoutTags(faces, w, h, place, Boolean(showUnnamed || showHidden), pins, labelLayout, labelSize) : []),
     [overlay, faces, w, h, place, showUnnamed, showHidden, pins, labelLayout, labelSize],
