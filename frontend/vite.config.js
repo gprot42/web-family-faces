@@ -13,7 +13,8 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: `http://${apiHost}:${apiPort}`,
-        timeout: 600_000,
+        // Leave the socket timeout unset. A person zip is streamed from the
+        // album and can go quiet while a slow share reads the next file.
       },
     },
   },

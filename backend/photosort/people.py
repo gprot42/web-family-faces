@@ -1690,41 +1690,113 @@ def _label_faces_on_photos(photo_ids: list[int]) -> dict[int, list[dict[str, Any
         conn.close()
 
 
-def write_person_photo_zip(person_id: int, dest: Path, *, labels: bool = False) -> dict[str, Any] | None:
-    """Copy named originals into dest, or JPEG copies with name tags. Album files are only read."""
+class _ZipByteCount:
+    """File-like wrapper that hides seek so ZipFile streams a data descriptor."""
+
+    def __init__(self, raw: Any) -> None:
+        self.raw = raw
+        self.n = 0
+
+    def write(self, data: bytes | bytearray | memoryview) -> int:
+        written = self.raw.write(data)
+        if written is None:
+            written = len(data)
+        self.n += int(written)
+        return int(written)
+
+    def flush(self) -> None:
+        flush = getattr(self.raw, "flush", None)
+        if flush:
+            flush()
+
+
+def write_photo_zip(entries: list[dict[str, Any]], dest: Any, *, labels: bool = False) -> int:
+    """Stream originals, or labeled JPEG copies, into dest. Returns files stored.
+
+    Album files are only read. A file that cannot be opened is skipped. If a copy
+    fails after its zip member has started, copying stops and the archive is closed
+    so the bytes already sent stay a readable zip.
+    """
     from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
+    from . import log as log_mod
+
+    counter = _ZipByteCount(dest)
+    stored = 0
+    compression = ZIP_DEFLATED if labels else ZIP_STORED
+    with ZipFile(counter, "w", compression=compression, allowZip64=True) as zf:
+        if labels:
+            from .label_draw import labeled_jpeg_bytes
+
+            faces_by_photo = _label_faces_on_photos([int(item["photo_id"]) for item in entries])
+            used: set[str] = set()
+            for item in entries:
+                stem = Path(item["arcname"]).stem
+                arcname = unique_zip_name(Path(f"{stem}-labeled.jpg"), int(item["photo_id"]), used)
+                try:
+                    data = labeled_jpeg_bytes(
+                        item["src"],
+                        faces_by_photo.get(int(item["photo_id"])) or [],
+                        photo_id=int(item["photo_id"]),
+                        photo_w=int(item.get("width") or 0),
+                        photo_h=int(item.get("height") or 0),
+                        rotation=int(item.get("rotation") or 0),
+                    )
+                except Exception:
+                    log_mod.warning("photo zip skipped labels photo=%s", item.get("photo_id"))
+                    continue
+                status = _zip_member(zf, counter, arcname, data=data)
+                if status == "stop":
+                    break
+                if status == "ok":
+                    stored += 1
+            return stored
+        for item in entries:
+            status = _zip_member(zf, counter, str(item["arcname"]), src=item["src"])
+            if status == "stop":
+                break
+            if status == "ok":
+                stored += 1
+    return stored
+
+
+def _zip_member(
+    zf: Any,
+    counter: _ZipByteCount,
+    arcname: str,
+    *,
+    src: Path | None = None,
+    data: bytes | None = None,
+) -> str:
+    """Add one member. "stop" means a partial member is already in the archive."""
+    from . import log as log_mod
+
+    start = counter.n
+    try:
+        if data is not None:
+            zf.writestr(arcname, data)
+        else:
+            zf.write(src, arcname)
+    except BrokenPipeError:
+        raise
+    except Exception:
+        if counter.n != start:
+            log_mod.warning("photo zip stopped on %s", arcname)
+            return "stop"
+        log_mod.warning("photo zip skipped %s", arcname)
+        return "skip"
+    return "ok"
+
+
+def write_person_photo_zip(person_id: int, dest: Path, *, labels: bool = False) -> dict[str, Any] | None:
+    """Copy named originals into dest, or JPEG copies with name tags. Album files are only read."""
     listing = list_person_download_entries(person_id)
     if listing is None:
         return None
     listing["filename"] = person_zip_filename(listing["name"], labels=labels)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if not labels:
-        with ZipFile(dest, "w", compression=ZIP_STORED, allowZip64=True) as zf:
-            for item in listing["entries"]:
-                zf.write(item["src"], item["arcname"])
-        listing["path"] = dest
-        return listing
-    from .label_draw import labeled_jpeg_bytes
-
-    faces_by_photo = _label_faces_on_photos([int(item["photo_id"]) for item in listing["entries"]])
-    used: set[str] = set()
-    with ZipFile(dest, "w", compression=ZIP_DEFLATED, allowZip64=True) as zf:
-        for item in listing["entries"]:
-            stem = Path(item["arcname"]).stem
-            arcname = unique_zip_name(Path(f"{stem}-labeled.jpg"), int(item["photo_id"]), used)
-            try:
-                data = labeled_jpeg_bytes(
-                    item["src"],
-                    faces_by_photo.get(int(item["photo_id"])) or [],
-                    photo_id=int(item["photo_id"]),
-                    photo_w=int(item.get("width") or 0),
-                    photo_h=int(item.get("height") or 0),
-                    rotation=int(item.get("rotation") or 0),
-                )
-            except Exception:
-                continue
-            zf.writestr(arcname, data)
+    with dest.open("wb") as handle:
+        write_photo_zip(listing["entries"], handle, labels=labels)
     listing["path"] = dest
     return listing
 

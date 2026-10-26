@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import os
+import queue
 import threading
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from starlette.background import BackgroundTask
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -1932,47 +1934,118 @@ def merge_suggestions() -> dict[str, Any]:
     return {"items": suggest_mod.merge_suggestions()}
 
 
-def _unlink_temp(path: Path) -> None:
+_ZIP_CHUNK = 256 * 1024
+
+
+class _ZipChunks:
+    """Collects zip bytes and hands them to the response in fixed-size pieces."""
+
+    def __init__(self, out: queue.Queue, cancel: threading.Event) -> None:
+        self._out = out
+        self._cancel = cancel
+        self._buf = bytearray()
+
+    def write(self, data: bytes | bytearray | memoryview) -> int:
+        if self._cancel.is_set():
+            raise BrokenPipeError("download cancelled")
+        if not data:
+            return 0
+        blob = bytes(data)
+        self._buf += blob
+        self._drain(full_only=True)
+        return len(blob)
+
+    def flush(self) -> None:
+        self._drain(full_only=False)
+
+    def _drain(self, *, full_only: bool) -> None:
+        while len(self._buf) >= _ZIP_CHUNK:
+            self._send(bytes(self._buf[:_ZIP_CHUNK]))
+            del self._buf[:_ZIP_CHUNK]
+        if not full_only and self._buf:
+            self._send(bytes(self._buf))
+            self._buf.clear()
+
+    def _send(self, blob: bytes) -> None:
+        while not self._cancel.is_set():
+            try:
+                self._out.put(blob, timeout=0.2)
+                return
+            except queue.Full:
+                continue
+        raise BrokenPipeError("download cancelled")
+
+
+def _attachment_disposition(filename: str) -> str:
+    encoded = quote(filename)
+    if encoded != filename:
+        return f"attachment; filename*=utf-8''{encoded}"
+    return f'attachment; filename="{filename}"'
+
+
+async def _stream_person_zip(entries: list[dict[str, Any]], *, labels: bool) -> AsyncIterator[bytes]:
+    chunks: queue.Queue = queue.Queue(maxsize=4)
+    cancel = threading.Event()
+    writer = _ZipChunks(chunks, cancel)
+
+    def produce() -> None:
+        try:
+            people_mod.write_photo_zip(entries, writer, labels=labels)
+            writer.flush()
+            while not cancel.is_set():
+                try:
+                    chunks.put(None, timeout=0.2)
+                    return
+                except queue.Full:
+                    continue
+        except BrokenPipeError:
+            return
+        except Exception as exc:
+            while not cancel.is_set():
+                try:
+                    chunks.put(exc, timeout=0.2)
+                    return
+                except queue.Full:
+                    continue
+
+    thread = threading.Thread(target=produce, name="photosort-person-zip", daemon=True)
+    thread.start()
     try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        pass
+        while True:
+            try:
+                item = await asyncio.to_thread(chunks.get, True, 0.25)
+            except queue.Empty:
+                if not thread.is_alive() and chunks.empty():
+                    return
+                continue
+            if item is None:
+                return
+            if isinstance(item, Exception):
+                raise item
+            if item:
+                yield item
+    finally:
+        cancel.set()
 
 
 @app.get("/api/people/{person_id}/photos.zip")
-def download_person_photos(person_id: int, labels: bool = False):
-    import tempfile
-
-    handle = tempfile.NamedTemporaryFile(prefix="photosort-person-", suffix=".zip", delete=False)
-    handle.close()
-    dest = Path(handle.name)
-    try:
-        built = people_mod.write_person_photo_zip(person_id, dest, labels=labels)
-    except Exception:
-        _unlink_temp(dest)
-        raise
-    if built is None:
-        _unlink_temp(dest)
+async def download_person_photos(person_id: int, labels: bool = False):
+    listing = await asyncio.to_thread(people_mod.list_person_download_entries, person_id)
+    if listing is None:
         raise HTTPException(404, "Person not found")
-    if not built["entries"]:
-        _unlink_temp(dest)
+    if not listing["entries"]:
         raise HTTPException(
             404,
             "None of this person's photos are on this Mac. Mount the album if it is on a NAS.",
         )
-    if labels:
-        from zipfile import ZipFile
-
-        with ZipFile(dest) as zf:
-            if not zf.namelist():
-                _unlink_temp(dest)
-                raise HTTPException(500, "Could not draw names on those photos.")
-    return FileResponse(
-        dest,
+    filename = people_mod.person_zip_filename(listing["name"], labels=labels)
+    return StreamingResponse(
+        _stream_person_zip(listing["entries"], labels=labels),
         media_type="application/zip",
-        filename=built["filename"],
-        background=BackgroundTask(_unlink_temp, dest),
-        headers={"Cache-Control": "no-store"},
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": _attachment_disposition(filename),
+        },
     )
 
 

@@ -14,6 +14,7 @@ from photosort.people import (
     person_zip_filename,
     unique_zip_name,
     write_person_photo_zip,
+    write_photo_zip,
 )
 from photosort.util import now_iso
 
@@ -193,6 +194,41 @@ def test_write_person_photo_zip_with_labels_draws_names(tmp_path, monkeypatch):
     original = Image.open(photo).convert("RGB")
     assert labeled.size[0] >= original.size[0]
     assert labeled.tobytes() != original.resize(labeled.size).tobytes()
+
+
+class _Mem:
+    """Unseekable sink, same shape as the streamed download."""
+
+    def __init__(self):
+        self.buf = bytearray()
+
+    def write(self, data):
+        self.buf += data
+        return len(data)
+
+
+def test_write_photo_zip_streams_and_skips_missing(tmp_path):
+    keep = tmp_path / "keep.jpg"
+    _jpeg(keep, (1, 2, 3))
+    sink = _Mem()
+    stored = write_photo_zip(
+        [
+            {"src": tmp_path / "gone.jpg", "arcname": "gone.jpg", "photo_id": 1},
+            {
+                "src": keep,
+                "arcname": "keep.jpg",
+                "photo_id": 2,
+                "width": 40,
+                "height": 30,
+                "rotation": 0,
+            },
+        ],
+        sink,
+    )
+    assert stored == 1
+    with ZipFile(BytesIO(sink.buf)) as zf:
+        assert zf.namelist() == ["keep.jpg"]
+        assert zf.read("keep.jpg") == keep.read_bytes()
 
 
 def test_download_person_photos_http(tmp_path, monkeypatch):
